@@ -12,6 +12,17 @@ pub struct TextureData {
     pub rgba: Vec<u8>,
 }
 
+/// CPU-side HDR environment image data ready for environment upload calls.
+#[derive(Clone, Debug)]
+pub struct HdrTextureData {
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// Row-major RGBA32F pixel data.
+    pub rgba: Vec<f32>,
+}
+
 /// Where a scene material's texture content comes from.
 #[derive(Clone, Debug)]
 pub enum TextureSource {

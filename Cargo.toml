@@ -7,14 +7,16 @@ license = "GPL-3.0-only"
 repository = "https://github.com/grimandgreedy/viewport-lib"
 
 [features]
-default = ["png", "stl", "obj", "msh", "gltf", "fbx"]
+default = ["png", "hdr", "stl", "obj", "msh", "gltf", "fbx", "ply"]
 png = ["dep:image"]
+hdr = ["dep:image"]
 stl = ["dep:stl_io"]
 obj = ["dep:tobj"]
 msh = []
 gltf = ["dep:gltf"]
 fbx = ["dep:fbxcel-dom", "dep:anyhow", "png"]
-all-formats = ["png", "stl", "obj", "msh", "gltf", "fbx"]
+ply = []
+all-formats = ["png", "hdr", "stl", "obj", "msh", "gltf", "fbx", "ply"]
 
 [dependencies]
 anyhow = { version = "1", optional = true }

@@ -33,4 +33,6 @@ pub mod glyph;
 pub mod lighting;
 
 pub use error::IoError;
-pub use types::{IoMaterial, IoMesh, IoPointCloud, IoScene, TextureData, TextureSource};
+pub use types::{
+    HdrTextureData, IoMaterial, IoMesh, IoPointCloud, IoScene, TextureData, TextureSource,
+};
