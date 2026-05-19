@@ -27,6 +27,7 @@ accepts:
 
 - `surface_mesh/`
 - `scene/`
+- `dataset/`
 - `texture/`
 - `volume/`
 - `volume_mesh/`
@@ -43,7 +44,18 @@ Examples:
 - `surface_mesh/stl.rs`
 - `surface_mesh/msh.rs`
 - `scene/obj.rs`
+- `dataset/vtk.rs`
+- `dataset/vtp.rs`
+- `dataset/vtu.rs`
+- `dataset/xdmf.rs`
+- `dataset/exodus.rs`
+- `dataset/ensight.rs`
+- `dataset/tecplot.rs`
+- `dataset/cgns.rs`
+- `dataset/netcdf.rs`
+- `texture/jpeg.rs`
 - `texture/png.rs`
+- `scene/ply.rs`
 - `point_cloud/csv.rs`
 - `volume/raw.rs`
 - `volume/numpy.rs`
@@ -72,6 +84,18 @@ Scene:
 let scene = viewport_lib_io::scene::obj::scene_from_path("model.obj".as_ref())?;
 ```
 
+Scientific dataset:
+
+```rust
+let datasets = viewport_lib_io::dataset::vtk::datasets_from_path("field.vtu".as_ref())?;
+```
+
+PLY scene:
+
+```rust
+let scene = viewport_lib_io::scene::ply::scene_from_path("scan_or_mesh.ply".as_ref())?;
+```
+
 Point cloud:
 
 ```rust
@@ -97,7 +121,9 @@ These currently include:
 - `IoMesh`
 - `IoMaterial`
 - `IoPointCloud`
+- `IoDataSet`
 - `IoVolume`
+- `IoVolumeGeometry`
 - `TextureData`
 - `TextureSource`
 - `IoError`

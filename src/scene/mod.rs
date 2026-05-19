@@ -9,3 +9,6 @@ pub mod gltf;
 #[cfg(feature = "obj")]
 /// OBJ scene decoding.
 pub mod obj;
+#[cfg(feature = "ply")]
+/// PLY scene decoding.
+pub mod ply;

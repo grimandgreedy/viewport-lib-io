@@ -122,7 +122,12 @@ pub struct IoPointCloud {
 #[derive(Clone, Debug)]
 pub enum IoVolumeGeometry {
     /// Uniform voxel spacing.
-    Uniform { origin: [f32; 3], spacing: [f32; 3] },
+    Uniform {
+        /// World-space origin of the first sample.
+        origin: [f32; 3],
+        /// Uniform spacing between samples on each axis.
+        spacing: [f32; 3],
+    },
     /// Axis-aligned grid with variable spacing along each axis.
     Rectilinear {
         /// Sample coordinates along X.
