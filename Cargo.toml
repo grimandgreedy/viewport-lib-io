@@ -7,15 +7,20 @@ license = "GPL-3.0-only"
 repository = "https://github.com/grimandgreedy/viewport-lib"
 
 [features]
-default = ["png", "stl", "obj", "msh"]
+default = ["png", "stl", "obj", "msh", "gltf", "fbx"]
 png = ["dep:image"]
 stl = ["dep:stl_io"]
 obj = ["dep:tobj"]
 msh = []
-all-formats = ["png", "stl", "obj", "msh"]
+gltf = ["dep:gltf"]
+fbx = ["dep:fbxcel-dom", "dep:anyhow", "png"]
+all-formats = ["png", "stl", "obj", "msh", "gltf", "fbx"]
 
 [dependencies]
+anyhow = { version = "1", optional = true }
+fbxcel-dom = { version = "0.0.10", optional = true }
 glam = { version = "=0.30.10", features = ["bytemuck"] }
+gltf = { version = "1", features = ["import"], optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "hdr"], optional = true }
 stl_io = { version = "0.7", optional = true }
 thiserror = "2.0"
