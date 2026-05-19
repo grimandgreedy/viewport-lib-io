@@ -1,0 +1,22 @@
+[package]
+name = "viewport-lib-io"
+version = "0.1.0"
+edition = "2024"
+description = "Optional IO helpers for viewport-lib"
+license = "GPL-3.0-only"
+repository = "https://github.com/grimandgreedy/viewport-lib"
+
+[features]
+default = ["png", "stl", "obj"]
+png = ["dep:image"]
+stl = ["dep:stl_io"]
+obj = ["dep:tobj"]
+all-formats = ["png", "stl", "obj"]
+
+[dependencies]
+glam = { version = "=0.30.10", features = ["bytemuck"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "hdr"], optional = true }
+stl_io = { version = "0.7", optional = true }
+thiserror = "2.0"
+tobj = { version = "4", optional = true }
+viewport-lib = { path = "../viewport-lib" }
