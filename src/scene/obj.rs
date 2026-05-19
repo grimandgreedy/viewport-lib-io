@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::error::IoError;
-use crate::scene::{IoMaterial, IoMesh, IoScene, TextureSource};
+use crate::types::{IoMaterial, IoMesh, IoScene, TextureSource};
 
 /// Decode an OBJ file into a CPU-side scene.
 pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {

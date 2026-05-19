@@ -1,9 +1,9 @@
 use std::path::Path;
 
 use crate::error::IoError;
-use crate::scene::TextureData;
+use crate::types::TextureData;
 
-/// Decode an image file into RGBA8 pixels.
+/// Decode a PNG file into RGBA8 pixels.
 pub fn texture_from_path(path: &Path) -> Result<TextureData, IoError> {
     #[cfg(feature = "png")]
     {
@@ -23,7 +23,7 @@ pub fn texture_from_path(path: &Path) -> Result<TextureData, IoError> {
         let _ = path;
         Err(IoError::MissingFeature {
             feature: "png",
-            context: "texture decoding",
+            context: "PNG texture decoding",
         })
     }
 }

@@ -23,7 +23,4 @@ pub enum IoError {
     /// A referenced dependency was not found.
     #[error("missing dependency: {0}")]
     MissingDependency(PathBuf),
-    /// Upload to viewport-lib failed.
-    #[error("viewport upload failed: {0}")]
-    Upload(#[from] viewport_lib::ViewportError),
 }
