@@ -7,8 +7,9 @@ license = "GPL-3.0-only"
 repository = "https://github.com/grimandgreedy/viewport-lib"
 
 [features]
-default = ["png", "hdr", "stl", "obj", "msh", "gltf", "fbx", "ply", "csv", "numpy", "raw"]
+default = ["png", "jpeg", "hdr", "stl", "obj", "msh", "gltf", "fbx", "ply", "csv", "numpy", "raw", "vtk"]
 png = ["dep:image"]
+jpeg = ["dep:image"]
 hdr = ["dep:image"]
 stl = ["dep:stl_io"]
 obj = ["dep:tobj"]
@@ -19,7 +20,8 @@ ply = []
 csv = []
 numpy = ["dep:flate2"]
 raw = ["dep:serde", "dep:serde_json"]
-all-formats = ["png", "hdr", "stl", "obj", "msh", "gltf", "fbx", "ply", "csv", "numpy", "raw"]
+vtk = ["dep:vtkio"]
+all-formats = ["png", "jpeg", "hdr", "stl", "obj", "msh", "gltf", "fbx", "ply", "csv", "numpy", "raw", "vtk"]
 
 [dependencies]
 anyhow = { version = "1", optional = true }
@@ -33,4 +35,5 @@ serde_json = { version = "1", optional = true }
 stl_io = { version = "0.7", optional = true }
 thiserror = "2.0"
 tobj = { version = "4", optional = true }
+vtkio = { version = "0.6", optional = true }
 viewport-lib = { path = "../viewport-lib" }

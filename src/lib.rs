@@ -23,6 +23,8 @@ pub mod volume_mesh;
 pub mod sparse_volume;
 /// Point-cloud input family.
 pub mod point_cloud;
+/// Scientific/container dataset input family.
+pub mod dataset;
 /// Gaussian-splat input family.
 pub mod gaussian_splat;
 /// Path and polyline input family.
@@ -34,6 +36,6 @@ pub mod lighting;
 
 pub use error::IoError;
 pub use types::{
-    HdrTextureData, IoMaterial, IoMesh, IoPointCloud, IoScene, IoVolume, TextureData,
-    TextureSource,
+    HdrTextureData, IoDataSet, IoMaterial, IoMesh, IoPointCloud, IoScene, IoSparseVolume,
+    IoVolume, IoVolumeGeometry, IoVolumeMesh, TextureData, TextureSource,
 };

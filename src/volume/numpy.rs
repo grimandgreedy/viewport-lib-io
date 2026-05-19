@@ -5,7 +5,7 @@ use std::path::Path;
 use flate2::read::DeflateDecoder;
 
 use crate::error::IoError;
-use crate::types::IoVolume;
+use crate::types::{IoVolume, IoVolumeGeometry};
 
 #[derive(Clone, Debug)]
 struct NpyArray {
@@ -52,8 +52,10 @@ pub fn volume_from_path(path: &Path) -> Result<IoVolume, IoError> {
         return Ok(IoVolume {
             name: "NumPy Volume".to_string(),
             dims: dims.unwrap_or([0, 0, 0]),
-            origin: [0.0, 0.0, 0.0],
-            spacing: [1.0, 1.0, 1.0],
+            geometry: IoVolumeGeometry::Uniform {
+                origin: [0.0, 0.0, 0.0],
+                spacing: [1.0, 1.0, 1.0],
+            },
             scalar_fields,
         });
     }
@@ -72,8 +74,10 @@ pub fn volume_from_path(path: &Path) -> Result<IoVolume, IoError> {
     Ok(IoVolume {
         name: "NumPy Volume".to_string(),
         dims,
-        origin: [0.0, 0.0, 0.0],
-        spacing: [1.0, 1.0, 1.0],
+        geometry: IoVolumeGeometry::Uniform {
+            origin: [0.0, 0.0, 0.0],
+            spacing: [1.0, 1.0, 1.0],
+        },
         scalar_fields,
     })
 }

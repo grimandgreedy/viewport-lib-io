@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::error::IoError;
-use crate::types::IoVolume;
+use crate::types::{IoVolume, IoVolumeGeometry};
 
 #[derive(Debug, Deserialize)]
 struct RawManifest {
@@ -91,8 +91,10 @@ fn volume_from_manifest(manifest: RawManifest, bytes: &[u8]) -> Result<IoVolume,
     Ok(IoVolume {
         name: "Raw Volume".to_string(),
         dims: [nx as u32, ny as u32, nz as u32],
-        origin: manifest.origin.unwrap_or([0.0, 0.0, 0.0]),
-        spacing: manifest.spacing.unwrap_or([1.0, 1.0, 1.0]),
+        geometry: IoVolumeGeometry::Uniform {
+            origin: manifest.origin.unwrap_or([0.0, 0.0, 0.0]),
+            spacing: manifest.spacing.unwrap_or([1.0, 1.0, 1.0]),
+        },
         scalar_fields,
     })
 }
