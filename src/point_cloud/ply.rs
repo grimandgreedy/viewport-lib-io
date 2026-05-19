@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::error::IoError;
@@ -239,9 +239,19 @@ fn point_cloud_from_bytes(bytes: &[u8]) -> Result<IoPointCloud, IoError> {
         positions,
         colors,
         scalars: Vec::new(),
+        scalar_attributes: HashMap::new(),
     };
     if scalar_bufs.len() == 1 {
         point_cloud.scalars = scalar_bufs.remove(0);
+        if let Some((_, prop)) = extra_props.first() {
+            point_cloud
+                .scalar_attributes
+                .insert(prop.name.clone(), point_cloud.scalars.clone());
+        }
+    } else {
+        for (values, (_, prop)) in scalar_bufs.into_iter().zip(extra_props.iter()) {
+            point_cloud.scalar_attributes.insert(prop.name.clone(), values);
+        }
     }
 
     Ok(point_cloud)

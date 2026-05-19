@@ -114,6 +114,35 @@ pub struct IoPointCloud {
     pub colors: Vec<[f32; 4]>,
     /// Optional scalar values.
     pub scalars: Vec<f32>,
+    /// Named scalar attributes carried with the point cloud.
+    pub scalar_attributes: HashMap<String, Vec<f32>>,
+}
+
+/// CPU-side dense structured volume data for `viewport-lib` volume uploads.
+#[derive(Clone, Debug, Default)]
+pub struct IoVolume {
+    /// Volume name or field-set label.
+    pub name: String,
+    /// Point dimensions `[nx, ny, nz]`.
+    pub dims: [u32; 3],
+    /// World-space origin of the first sample.
+    pub origin: [f32; 3],
+    /// Uniform spacing between samples on each axis.
+    pub spacing: [f32; 3],
+    /// Named scalar fields in x-fastest order.
+    pub scalar_fields: HashMap<String, Vec<f32>>,
+}
+
+impl IoVolume {
+    /// World-space axis-aligned bounds of the volume.
+    pub fn bounds(&self) -> ([f32; 3], [f32; 3]) {
+        let max = [
+            self.origin[0] + self.spacing[0] * self.dims[0].saturating_sub(1) as f32,
+            self.origin[1] + self.spacing[1] * self.dims[1].saturating_sub(1) as f32,
+            self.origin[2] + self.spacing[2] * self.dims[2].saturating_sub(1) as f32,
+        ];
+        (self.origin, max)
+    }
 }
 
 /// CPU-side scene result for multi-object formats.

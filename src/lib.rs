@@ -34,5 +34,6 @@ pub mod lighting;
 
 pub use error::IoError;
 pub use types::{
-    HdrTextureData, IoMaterial, IoMesh, IoPointCloud, IoScene, TextureData, TextureSource,
+    HdrTextureData, IoMaterial, IoMesh, IoPointCloud, IoScene, IoVolume, TextureData,
+    TextureSource,
 };

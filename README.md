@@ -44,6 +44,9 @@ Examples:
 - `surface_mesh/msh.rs`
 - `scene/obj.rs`
 - `texture/png.rs`
+- `point_cloud/csv.rs`
+- `volume/raw.rs`
+- `volume/numpy.rs`
 
 ## Usage
 
@@ -69,6 +72,22 @@ Scene:
 let scene = viewport_lib_io::scene::obj::scene_from_path("model.obj".as_ref())?;
 ```
 
+Point cloud:
+
+```rust
+let points = viewport_lib_io::point_cloud::csv::point_cloud_from_path("samples.csv".as_ref())?;
+```
+
+Volume:
+
+```rust
+let volume = viewport_lib_io::volume::raw::volume_from_path("density.json".as_ref())?;
+let density = &volume.scalar_fields["density"];
+let volume_id = renderer
+    .resources_mut()
+    .upload_volume(&device, &queue, density, volume.dims);
+```
+
 ## Shared Types
 
 Shared decode-side types live in `src/types.rs`.
@@ -78,6 +97,7 @@ These currently include:
 - `IoMesh`
 - `IoMaterial`
 - `IoPointCloud`
+- `IoVolume`
 - `TextureData`
 - `TextureSource`
 - `IoError`
