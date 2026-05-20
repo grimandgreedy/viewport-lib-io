@@ -3,7 +3,8 @@ use std::path::Path;
 
 use crate::error::IoError;
 use crate::types::{
-    IoDataSet, IoPointCloud, IoSparseVolume, IoVolume, IoVolumeGeometry, IoVolumeMesh,
+    AttributeData, AttributeDomain, IoDataSet, IoPointCloud, IoSparseVolume, IoVolume,
+    IoVolumeGeometry, IoVolumeMesh, SurfaceMesh, CELL_SENTINEL,
 };
 
 /// Decode a VTK-family file into one scientific dataset per piece.
@@ -26,9 +27,6 @@ pub fn datasets_from_path(path: &Path) -> Result<Vec<IoDataSet>, IoError> {
 #[cfg(feature = "vtk")]
 mod imp {
     use super::*;
-    use viewport_lib::{
-        AttributeData, CELL_SENTINEL, MeshData, SparseVolumeGridData, VolumeMeshData,
-    };
     use vtkio::Vtk;
     use vtkio::model::{
         Attribute, Attributes, CellType, Cells, DataSet, PolyDataPiece, UnstructuredGridPiece,
@@ -103,22 +101,22 @@ mod imp {
                     let normals = compute_normals(&positions, &indices);
                     let (point_data, cell_data, edge_data) =
                         extract_attributes(&piece.data, positions.len(), indices.len() / 3, false);
-                    let mut scalar_fields = point_data.clone();
-                    for (name, values) in &cell_data {
-                        scalar_fields
-                            .entry(format!("{name}:cell"))
-                            .or_insert_with(|| values.clone());
-                    }
                     Ok(IoDataSet {
                         name: format!("rectilinear_grid_piece_{index}"),
                         surface_mesh: Some(build_mesh_data(
-                            positions, indices, normals, point_data, cell_data, edge_data,
+                            positions,
+                            indices,
+                            normals,
+                            point_data.clone(),
+                            cell_data.clone(),
+                            edge_data,
                         )),
                         volume: Some(IoVolume {
                             name: format!("rectilinear_grid_piece_{index}"),
                             dims: [ni as u32, nj as u32, nk as u32],
                             geometry: IoVolumeGeometry::Rectilinear { xs, ys, zs },
-                            scalar_fields,
+                            point_fields: point_data,
+                            cell_fields: cell_data,
                         }),
                         ..IoDataSet::default()
                     })
@@ -162,12 +160,6 @@ mod imp {
                         });
                     }
 
-                    let mut scalar_fields = point_data.clone();
-                    for (name, values) in &cell_data {
-                        scalar_fields
-                            .entry(format!("{name}:cell"))
-                            .or_insert_with(|| values.clone());
-                    }
                     let volume_mesh =
                         build_image_data_volume_mesh(ni, nj, nk, origin, spacing, &point_data, &cell_data);
                     Ok(IoDataSet {
@@ -176,9 +168,10 @@ mod imp {
                             name: format!("image_data_piece_{index}"),
                             dims: [ni as u32, nj as u32, nk as u32],
                             geometry: IoVolumeGeometry::Uniform { origin, spacing },
-                            scalar_fields,
+                            point_fields: point_data.clone(),
+                            cell_fields: cell_data.clone(),
                         }),
-                        volume_mesh: volume_mesh.map(|data| Box::new(IoVolumeMesh(data))),
+                        volume_mesh: volume_mesh.map(Box::new),
                         ..IoDataSet::default()
                     })
                 })
@@ -209,7 +202,7 @@ mod imp {
         if indices.is_empty() {
             return Ok(IoDataSet {
                 name,
-                point_cloud: Some(build_point_cloud("VTK Point Cloud".into(), positions, point_data)),
+                point_set: Some(build_point_cloud("VTK Point Cloud".into(), positions, point_data)),
                 ..IoDataSet::default()
             });
         }
@@ -242,8 +235,8 @@ mod imp {
             if let Some(sparse) = try_sparse_voxel_grid(&positions, &piece.cells, &cell_data) {
                 return Ok(IoDataSet {
                     name,
-                    point_cloud: Some(build_point_cloud("VTK Voxel Points".into(), positions, point_data)),
-                    sparse_volume: Some(Box::new(IoSparseVolume(sparse))),
+                    point_set: Some(build_point_cloud("VTK Voxel Points".into(), positions, point_data)),
+                    sparse_grid: Some(Box::new(sparse)),
                     ..IoDataSet::default()
                 });
             }
@@ -254,7 +247,7 @@ mod imp {
             let point_data = extract_attributes(&piece.data, positions.len(), 0, false).0;
             return Ok(IoDataSet {
                 name,
-                point_cloud: Some(build_point_cloud("VTK Points".into(), positions, point_data)),
+                point_set: Some(build_point_cloud("VTK Points".into(), positions, point_data)),
                 ..IoDataSet::default()
             });
         }
@@ -274,7 +267,7 @@ mod imp {
             surface_mesh: Some(build_mesh_data(
                 positions, indices, normals, point_data, cell_data, edge_data,
             )),
-            volume_mesh: volume_mesh.map(|data| Box::new(IoVolumeMesh(data))),
+            volume_mesh: volume_mesh.map(Box::new),
             ..IoDataSet::default()
         })
     }
@@ -286,19 +279,22 @@ mod imp {
         point_data: HashMap<String, Vec<f32>>,
         cell_data: HashMap<String, Vec<f32>>,
         edge_data: HashMap<String, Vec<f32>>,
-    ) -> MeshData {
-        let mut mesh = MeshData::default();
+    ) -> SurfaceMesh {
+        let mut mesh = SurfaceMesh::default();
         mesh.positions = positions;
         mesh.normals = normals;
         mesh.indices = indices;
         for (name, values) in point_data {
-            mesh.attributes.insert(name, AttributeData::Vertex(values));
+            mesh.attributes
+                .insert(name, AttributeData::scalars(AttributeDomain::Point, values));
         }
         for (name, values) in cell_data {
-            mesh.attributes.insert(name, AttributeData::Face(values));
+            mesh.attributes
+                .insert(name, AttributeData::scalars(AttributeDomain::Cell, values));
         }
         for (name, values) in edge_data {
-            mesh.attributes.insert(name, AttributeData::Halfedge(values));
+            mesh.attributes
+                .insert(name, AttributeData::scalars(AttributeDomain::Halfedge, values));
         }
         mesh
     }
@@ -334,7 +330,7 @@ mod imp {
         spacing: [f32; 3],
         point_data: &HashMap<String, Vec<f32>>,
         cell_data: &HashMap<String, Vec<f32>>,
-    ) -> Option<VolumeMeshData> {
+    ) -> Option<IoVolumeMesh> {
         let nci = ni.saturating_sub(1);
         let ncj = nj.saturating_sub(1);
         let nck = nk.saturating_sub(1);
@@ -378,14 +374,14 @@ mod imp {
             }
         }
 
-        let mut volume_mesh = VolumeMeshData::default();
+        let mut volume_mesh = IoVolumeMesh::default();
         volume_mesh.positions = positions;
         volume_mesh.cells = cells;
         for (name, values) in cell_data {
-            volume_mesh.cell_scalars.insert(name.clone(), values.clone());
+            volume_mesh.cell_fields.insert(name.clone(), values.clone());
         }
         for (name, values) in point_data {
-            if volume_mesh.cell_scalars.contains_key(name) {
+            if volume_mesh.cell_fields.contains_key(name) {
                 continue;
             }
             let averaged = cell_vids
@@ -398,7 +394,7 @@ mod imp {
                         / 8.0
                 })
                 .collect();
-            volume_mesh.cell_scalars.insert(name.clone(), averaged);
+            volume_mesh.cell_fields.insert(name.clone(), averaged);
         }
         Some(volume_mesh)
     }
@@ -408,7 +404,7 @@ mod imp {
         cells: &Cells,
         cell_data: &HashMap<String, Vec<f32>>,
         point_data: &HashMap<String, Vec<f32>>,
-    ) -> Option<VolumeMeshData> {
+    ) -> Option<IoVolumeMesh> {
         let cell_verts = collect_cells(&cells.cell_verts);
         let mut vm_cells = Vec::new();
         let mut original_indices = Vec::new();
@@ -476,7 +472,7 @@ mod imp {
             return None;
         }
 
-        let mut volume_mesh = VolumeMeshData::default();
+        let mut volume_mesh = IoVolumeMesh::default();
         volume_mesh.positions = positions.to_vec();
         volume_mesh.cells = vm_cells;
         for (name, values) in cell_data {
@@ -484,10 +480,10 @@ mod imp {
                 .iter()
                 .map(|&index| values.get(index).copied().unwrap_or(0.0))
                 .collect();
-            volume_mesh.cell_scalars.insert(name.clone(), mapped);
+            volume_mesh.cell_fields.insert(name.clone(), mapped);
         }
         for (name, values) in point_data {
-            if volume_mesh.cell_scalars.contains_key(name) {
+            if volume_mesh.cell_fields.contains_key(name) {
                 continue;
             }
             let averaged = volume_mesh
@@ -507,7 +503,7 @@ mod imp {
                     if count > 0 { sum / count as f32 } else { 0.0 }
                 })
                 .collect();
-            volume_mesh.cell_scalars.insert(name.clone(), averaged);
+            volume_mesh.cell_fields.insert(name.clone(), averaged);
         }
         Some(volume_mesh)
     }
@@ -516,7 +512,7 @@ mod imp {
         positions: &[[f32; 3]],
         cells: &Cells,
         cell_data: &HashMap<String, Vec<f32>>,
-    ) -> Option<SparseVolumeGridData> {
+    ) -> Option<IoSparseVolume> {
         if cells.types.is_empty() || cells.types.iter().any(|&t| t != CellType::Voxel) {
             return None;
         }
@@ -603,13 +599,13 @@ mod imp {
             return None;
         }
 
-        let mut sparse = SparseVolumeGridData::default();
+        let mut sparse = IoSparseVolume::default();
         sparse.origin = origin;
         sparse.cell_size = cell_size;
         sparse.active_cells = active_cells;
         for (name, values) in cell_data {
             if values.len() == num_cells {
-                sparse.cell_scalars.insert(name.clone(), values.clone());
+                sparse.cell_fields.insert(name.clone(), values.clone());
             }
         }
         Some(sparse)

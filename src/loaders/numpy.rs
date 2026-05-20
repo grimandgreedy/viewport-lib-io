@@ -56,7 +56,8 @@ pub fn volume_from_path(path: &Path) -> Result<IoVolume, IoError> {
                 origin: [0.0, 0.0, 0.0],
                 spacing: [1.0, 1.0, 1.0],
             },
-            scalar_fields,
+            point_fields: scalar_fields,
+            cell_fields: HashMap::new(),
         });
     }
 
@@ -78,7 +79,8 @@ pub fn volume_from_path(path: &Path) -> Result<IoVolume, IoError> {
             origin: [0.0, 0.0, 0.0],
             spacing: [1.0, 1.0, 1.0],
         },
-        scalar_fields,
+        point_fields: scalar_fields,
+        cell_fields: HashMap::new(),
     })
 }
 

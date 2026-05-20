@@ -1,88 +1,11 @@
 use std::collections::HashMap;
 
 use crate::types::{
-    IoDataSet, IoPointCloud, IoSparseVolume, IoVolume, IoVolumeGeometry, IoVolumeMesh,
+    AttributeData, AttributeDomain, DecodedDataSet, PointSet, SparseGrid, StructuredVolume,
+    SurfaceMesh, VolumeGridGeometry, VolumeMesh,
 };
-use viewport_lib::{AttributeData, MeshData, SparseVolumeGridData, VolumeMeshData};
 
-/// Newtype wrapper that provides `Clone` and `Debug` for [`SparseVolumeGridData`],
-/// which does not derive those traits itself.
-pub struct SparseVolumeWrapper(pub SparseVolumeGridData);
-
-impl Clone for SparseVolumeWrapper {
-    fn clone(&self) -> Self {
-        let mut out = SparseVolumeGridData::default();
-        out.origin = self.0.origin;
-        out.cell_size = self.0.cell_size;
-        out.active_cells = self.0.active_cells.clone();
-        out.cell_scalars = self.0.cell_scalars.clone();
-        out.node_scalars = self.0.node_scalars.clone();
-        out.cell_colours = self.0.cell_colours.clone();
-        SparseVolumeWrapper(out)
-    }
-}
-
-impl std::fmt::Debug for SparseVolumeWrapper {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SparseVolumeWrapper")
-            .field("origin", &self.0.origin)
-            .field("cell_size", &self.0.cell_size)
-            .field("active_cells_count", &self.0.active_cells.len())
-            .finish()
-    }
-}
-
-impl std::ops::Deref for SparseVolumeWrapper {
-    type Target = SparseVolumeGridData;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for SparseVolumeWrapper {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-/// Newtype wrapper that provides `Clone` and `Debug` for [`VolumeMeshData`],
-/// which does not derive those traits itself.
-pub struct VolumeMeshWrapper(pub VolumeMeshData);
-
-impl Clone for VolumeMeshWrapper {
-    fn clone(&self) -> Self {
-        let mut out = VolumeMeshData::default();
-        out.positions = self.0.positions.clone();
-        out.cells = self.0.cells.clone();
-        out.cell_scalars = self.0.cell_scalars.clone();
-        out.cell_colours = self.0.cell_colours.clone();
-        VolumeMeshWrapper(out)
-    }
-}
-
-impl std::fmt::Debug for VolumeMeshWrapper {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VolumeMeshWrapper")
-            .field("positions_count", &self.0.positions.len())
-            .field("cells_count", &self.0.cells.len())
-            .finish()
-    }
-}
-
-impl std::ops::Deref for VolumeMeshWrapper {
-    type Target = VolumeMeshData;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for VolumeMeshWrapper {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-/// Structured scalar volume data for volume rendering.
+/// Structured scalar volume data for scientific dataset loaders.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct VolumeGrid {
     /// Point dimensions `[nx, ny, nz]`.
@@ -137,9 +60,6 @@ impl VolumeGrid {
     }
 
     /// Produce a uniform sample volume for the named scalar attribute.
-    ///
-    /// For uniform grids this returns the underlying samples directly. For rectilinear
-    /// grids it resamples to a uniform lattice with the same dimensions and bounding box.
     pub fn resample_scalar_uniform(
         &self,
         name: &str,
@@ -204,31 +124,29 @@ impl VolumeGrid {
     }
 }
 
-/// A loaded dataset: triangulated surface geometry with named scalar attribute arrays.
+/// Internal scientific dataset model used by several source loaders.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Dataset {
     /// Vertex positions in world space.
     pub positions: Vec<[f32; 3]>,
-    /// Triangle index list (every 3 indices form one triangle).
+    /// Triangle index list.
     pub indices: Vec<u32>,
-    /// Per-vertex normals (same length as `positions`).
+    /// Per-vertex normals.
     pub normals: Vec<[f32; 3]>,
-    /// Point-centred (per-vertex) scalar fields, keyed by attribute name.
+    /// Point-centred scalar fields.
     pub point_data: HashMap<String, Vec<f32>>,
-    /// Cell-centred (per-triangle) scalar fields, keyed by attribute name.
+    /// Cell-centred scalar fields.
     pub cell_data: HashMap<String, Vec<f32>>,
-    /// Per-halfedge scalar fields (one per directed edge [3*tri + k]).
+    /// Per-halfedge scalar fields.
     pub edge_data: HashMap<String, Vec<f32>>,
-    /// Sparse voxel grid representation for hex-structured CFD meshes.
+    /// Sparse voxel grid representation.
     #[serde(skip)]
-    pub sparse_volume: Option<Box<SparseVolumeWrapper>>,
-    /// Optional structured volume representation for ImageData / RectilinearGrid sources.
+    pub sparse_volume: Option<Box<SparseGrid>>,
+    /// Optional structured volume representation.
     pub volume: Option<VolumeGrid>,
-    /// Unstructured volume mesh (hex, tet, wedge, pyramid cells).
-    /// Populated for VTK UnstructuredGrid files with volumetric cells.
-    /// Not serialised — reconstructed from the source file on load.
+    /// Optional unstructured volume mesh.
     #[serde(skip)]
-    pub volume_mesh: Option<Box<VolumeMeshWrapper>>,
+    pub volume_mesh: Option<Box<VolumeMesh>>,
 }
 
 impl Dataset {
@@ -254,37 +172,48 @@ impl Dataset {
         None
     }
 
-    /// Convert into a [`MeshData`] ready for viewport upload.
-    pub fn to_mesh_data(&self) -> MeshData {
+    fn to_surface_mesh(&self) -> SurfaceMesh {
         let mut attributes = HashMap::new();
         for (name, values) in &self.point_data {
-            attributes.insert(name.clone(), AttributeData::Vertex(values.clone()));
+            attributes.insert(
+                name.clone(),
+                AttributeData::scalars(AttributeDomain::Point, values.clone()),
+            );
         }
         for (name, values) in &self.cell_data {
-            attributes.insert(name.clone(), AttributeData::Cell(values.clone()));
+            attributes.insert(
+                name.clone(),
+                AttributeData::scalars(AttributeDomain::Cell, values.clone()),
+            );
         }
         for (name, values) in &self.edge_data {
-            attributes.insert(name.clone(), AttributeData::Edge(values.clone()));
+            attributes.insert(
+                name.clone(),
+                AttributeData::scalars(AttributeDomain::Halfedge, values.clone()),
+            );
         }
-        let mut mesh = MeshData::default();
-        mesh.positions = self.positions.clone();
-        mesh.normals = self.normals.clone();
-        mesh.indices = self.indices.clone();
-        mesh.attributes = attributes;
-        mesh
+        SurfaceMesh {
+            positions: self.positions.clone(),
+            normals: self.normals.clone(),
+            indices: self.indices.clone(),
+            uvs: None,
+            tangents: None,
+            attributes,
+            skin_weights: None,
+        }
     }
 
-    pub fn into_io_dataset(self) -> IoDataSet {
+    pub fn into_io_dataset(self) -> DecodedDataSet {
         let has_surface_mesh = !self.positions.is_empty() && !self.indices.is_empty();
-        let has_point_cloud = !self.positions.is_empty() && self.indices.is_empty();
+        let has_point_set = !self.positions.is_empty() && self.indices.is_empty();
 
         let surface_mesh = if has_surface_mesh {
-            Some(self.to_mesh_data())
+            Some(self.to_surface_mesh())
         } else {
             None
         };
 
-        let point_cloud = if has_point_cloud {
+        let point_set = if has_point_set {
             let scalar_attributes = self.point_data.clone();
             let scalars = if scalar_attributes.len() == 1 {
                 scalar_attributes
@@ -295,7 +224,7 @@ impl Dataset {
             } else {
                 Vec::new()
             };
-            Some(IoPointCloud {
+            Some(PointSet {
                 name: String::new(),
                 positions: self.positions.clone(),
                 colors: Vec::new(),
@@ -306,33 +235,28 @@ impl Dataset {
             None
         };
 
-        let volume = self.volume.map(|volume| IoVolume {
+        let volume = self.volume.map(|volume| StructuredVolume {
             name: String::new(),
             dims: volume.dims,
             geometry: match volume.geometry {
                 VolumeGeometry::Uniform { origin, spacing } => {
-                    IoVolumeGeometry::Uniform { origin, spacing }
+                    VolumeGridGeometry::Uniform { origin, spacing }
                 }
                 VolumeGeometry::Rectilinear { xs, ys, zs } => {
-                    IoVolumeGeometry::Rectilinear { xs, ys, zs }
+                    VolumeGridGeometry::Rectilinear { xs, ys, zs }
                 }
             },
-            scalar_fields: {
-                let mut fields = volume.point_data;
-                for (name, values) in volume.cell_data {
-                    fields.entry(format!("{name}:cell")).or_insert(values);
-                }
-                fields
-            },
+            point_fields: volume.point_data,
+            cell_fields: volume.cell_data,
         });
 
-        IoDataSet {
+        DecodedDataSet {
             name: String::new(),
             surface_mesh,
-            point_cloud,
+            point_set,
             volume,
-            sparse_volume: self.sparse_volume.map(|value| Box::new(IoSparseVolume(value.0))),
-            volume_mesh: self.volume_mesh.map(|value| Box::new(IoVolumeMesh(value.0))),
+            sparse_grid: self.sparse_volume,
+            volume_mesh: self.volume_mesh,
         }
     }
 }
@@ -356,9 +280,8 @@ fn cell_to_point_structured(dims: [u32; 3], cell_values: &[f32]) -> Option<Vec<f
     let mut sums = vec![0.0f32; point_count];
     let mut counts = vec![0u32; point_count];
 
-    let point_index = |ix: usize, iy: usize, iz: usize| -> usize {
-        ix + iy * nx as usize + iz * nx as usize * ny as usize
-    };
+    let point_index =
+        |ix: usize, iy: usize, iz: usize| -> usize { ix + iy * nx as usize + iz * nx as usize * ny as usize };
     let cell_index = |ix: usize, iy: usize, iz: usize| -> usize { ix + iy * cx + iz * cx * cy };
 
     for iz in 0..cz {

@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::error::IoError;
-use crate::types::{IoMesh, IoPointCloud, IoScene};
+use crate::types::{AttributeData, AttributeDomain, IoMesh, IoPointCloud, IoScene, SurfaceMesh};
 
 /// Decode a PLY file into a CPU-side scene.
 pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
@@ -281,7 +281,7 @@ fn load_ply(bytes: &[u8]) -> Result<IoScene, IoError> {
         return Ok(IoScene {
             meshes: Vec::new(),
             materials: Vec::new(),
-            point_clouds: vec![IoPointCloud {
+            point_sets: vec![IoPointCloud {
                 name: "Point Cloud".to_string(),
                 positions,
                 colors,
@@ -323,7 +323,7 @@ fn load_ply(bytes: &[u8]) -> Result<IoScene, IoError> {
     };
 
     // Store extra scalar attributes in MeshData.
-    let mut mesh_data = viewport_lib::MeshData::default();
+    let mut mesh_data = SurfaceMesh::default();
     mesh_data.positions = positions;
     mesh_data.normals = normals;
     mesh_data.indices = indices;
@@ -331,7 +331,7 @@ fn load_ply(bytes: &[u8]) -> Result<IoScene, IoError> {
         if !buf.is_empty() {
             mesh_data.attributes.insert(
                 prop.name.clone(),
-                viewport_lib::AttributeData::Vertex(buf.clone()),
+                AttributeData::scalars(AttributeDomain::Point, buf.clone()),
             );
         }
     }
@@ -341,7 +341,7 @@ fn load_ply(bytes: &[u8]) -> Result<IoScene, IoError> {
     Ok(IoScene {
         meshes: vec![IoMesh {
             name: "PLY Mesh".to_string(),
-            mesh_data,
+            mesh: mesh_data,
             material_index: None,
             transform: glam::Mat4::IDENTITY,
             two_sided: false,
@@ -350,7 +350,7 @@ fn load_ply(bytes: &[u8]) -> Result<IoScene, IoError> {
             metadata: std::collections::HashMap::new(),
         }],
         materials: Vec::new(),
-        point_clouds: Vec::new(),
+        point_sets: Vec::new(),
     })
 }
 

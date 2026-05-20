@@ -11,7 +11,7 @@ use fbxcel_dom::v7400::object::TypedObjectHandle;
 use fbxcel_dom::v7400::Document;
 
 use crate::error::IoError;
-use crate::types::{IoMaterial, IoMesh, IoScene, TextureData, TextureSource};
+use crate::types::{IoMaterial, IoMesh, IoScene, SurfaceMesh, TextureData, TextureSource};
 
 /// Decode an FBX file into a CPU-side scene.
 pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
@@ -198,7 +198,7 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
                                 .map(|uvs| vertex_indices.iter().map(|&i| uvs[i]).collect());
                             let sub_indices: Vec<u32> = (0..vertex_indices.len() as u32).collect();
 
-                            let mut mesh_data = viewport_lib::MeshData::default();
+                            let mut mesh_data = SurfaceMesh::default();
                             mesh_data.positions = sub_positions;
                             mesh_data.normals = sub_normals;
                             mesh_data.indices = sub_indices;
@@ -212,7 +212,7 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
 
                             meshes.push(IoMesh {
                                 name: format!("{model_name}.mat{local_material_index}"),
-                                mesh_data,
+                                mesh: mesh_data,
                                 material_index: model_materials.get(local_material_index).copied(),
                                 transform: node_transform,
                                 two_sided: false,
@@ -224,7 +224,7 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
                     }
                 }
 
-                let mut mesh_data = viewport_lib::MeshData::default();
+                let mut mesh_data = SurfaceMesh::default();
                 mesh_data.positions = positions;
                 mesh_data.normals = normals;
                 mesh_data.indices = (0..mesh_data.positions.len() as u32).collect();
@@ -232,7 +232,7 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
 
                 meshes.push(IoMesh {
                     name: model_name,
-                    mesh_data,
+                    mesh: mesh_data,
                     material_index: model_materials.first().copied(),
                     transform: node_transform,
                     two_sided: false,

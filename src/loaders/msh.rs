@@ -2,9 +2,10 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::error::IoError;
+use crate::types::SurfaceMesh;
 
-/// Decode a Gmsh `.msh` file into `viewport-lib` mesh data.
-pub fn mesh_from_path(path: &Path) -> Result<viewport_lib::MeshData, IoError> {
+/// Decode a Gmsh `.msh` file into neutral surface mesh data.
+pub fn mesh_from_path(path: &Path) -> Result<SurfaceMesh, IoError> {
     let text = std::fs::read_to_string(path)?;
     load_msh(&text)
 }
@@ -12,7 +13,7 @@ pub fn mesh_from_path(path: &Path) -> Result<viewport_lib::MeshData, IoError> {
 /// Nodes indexed by their Gmsh tag. Tags are arbitrary integers, not dense indices.
 type NodeMap = HashMap<u64, [f64; 3]>;
 
-fn load_msh(text: &str) -> Result<viewport_lib::MeshData, IoError> {
+fn load_msh(text: &str) -> Result<SurfaceMesh, IoError> {
     let version = parse_version(text)?;
 
     let nodes = if version < 4.0 {
@@ -69,7 +70,7 @@ fn load_msh(text: &str) -> Result<viewport_lib::MeshData, IoError> {
 
     let normals = compute_smooth_normals(&positions, &indices);
 
-    let mut mesh_data = viewport_lib::MeshData::default();
+    let mut mesh_data = SurfaceMesh::default();
     mesh_data.positions = positions;
     mesh_data.normals = normals;
     mesh_data.indices = indices;

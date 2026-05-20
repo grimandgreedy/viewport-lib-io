@@ -95,7 +95,8 @@ fn volume_from_manifest(manifest: RawManifest, bytes: &[u8]) -> Result<IoVolume,
             origin: manifest.origin.unwrap_or([0.0, 0.0, 0.0]),
             spacing: manifest.spacing.unwrap_or([1.0, 1.0, 1.0]),
         },
-        scalar_fields,
+        point_fields: scalar_fields,
+        cell_fields: HashMap::new(),
     })
 }
 

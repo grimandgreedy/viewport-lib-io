@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::error::IoError;
-use crate::types::{IoMaterial, IoMesh, IoScene, TextureSource};
+use crate::types::{IoMaterial, IoMesh, IoScene, SurfaceMesh, TextureSource};
 
 /// Decode an OBJ file into a CPU-side scene.
 pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
@@ -49,7 +49,7 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
             .into_iter()
             .map(|model| {
                 let mesh = model.mesh;
-                let mut mesh_data = viewport_lib::MeshData::default();
+                let mut mesh_data = SurfaceMesh::default();
 
                 mesh_data.positions = mesh
                     .positions
@@ -79,7 +79,7 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
 
                 IoMesh {
                     name: model.name,
-                    mesh_data,
+                    mesh: mesh_data,
                     material_index: mesh.material_id,
                     ..IoMesh::default()
                 }

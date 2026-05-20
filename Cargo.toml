@@ -46,4 +46,3 @@ stl_io = { version = "0.7", optional = true }
 thiserror = "2.0"
 tobj = { version = "4", optional = true }
 vtkio = { version = "0.6", optional = true }
-viewport-lib = { path = "../viewport-lib" }

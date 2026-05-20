@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::error::IoError;
-use crate::types::{IoMaterial, IoMesh, IoScene, TextureData, TextureSource};
+use crate::types::{IoMaterial, IoMesh, IoScene, SurfaceMesh, TextureData, TextureSource};
 
 /// Decode a glTF or GLB file into a CPU-side scene.
 pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
@@ -127,7 +127,7 @@ fn convert_primitive(
         base_name
     };
 
-    let mut mesh_data = viewport_lib::MeshData::default();
+    let mut mesh_data = SurfaceMesh::default();
     mesh_data.positions = positions;
     mesh_data.normals = normals;
     mesh_data.indices = indices;
@@ -136,7 +136,7 @@ fn convert_primitive(
 
     Some(IoMesh {
         name,
-        mesh_data,
+        mesh: mesh_data,
         material_index,
         transform: glam::Mat4::IDENTITY,
         two_sided: primitive.material().double_sided(),
