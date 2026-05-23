@@ -2,9 +2,17 @@
 name = "viewport-lib-io"
 version = "0.1.0"
 edition = "2024"
-description = "Optional IO helpers for viewport-lib"
+description = "File format loaders and exporters for viewport-lib"
+readme = "README.md"
 license = "GPL-3.0-only"
-repository = "https://github.com/grimandgreedy/viewport-lib"
+repository = "https://github.com/grimandgreedy/viewport-lib-io"
+homepage = "https://github.com/grimandgreedy/viewport-lib-io"
+documentation = "https://docs.rs/viewport-lib-io"
+keywords = ["3d", "gltf", "loader", "visualization", "viewport", "viewport-lib"]
+categories = ["graphics", "parser-implementations", "filesystem"]
+rust-version = "1.85"
+publish = true
+exclude = ["examples/"]
 
 [features]
 default = ["png", "jpeg", "hdr", "stl", "obj", "msh", "gltf", "fbx", "ply", "csv", "numpy", "raw", "vtk", "xdmf", "exodus", "ensight", "tecplot", "cgns", "netcdf"]
