@@ -46,3 +46,8 @@ stl_io = { version = "0.7", optional = true }
 thiserror = "2.0"
 tobj = { version = "4", optional = true }
 vtkio = { version = "0.6", optional = true }
+
+[[example]]
+name = "probe-gltf"
+path = "examples/probe_gltf.rs"
+required-features = ["gltf"]

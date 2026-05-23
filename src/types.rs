@@ -143,6 +143,98 @@ pub struct SkinWeights {
     pub joint_weights: Vec<[f32; 4]>,
 }
 
+/// One joint in a skeleton hierarchy.
+#[derive(Clone, Debug)]
+pub struct Joint {
+    /// Display name for the joint, copied from the source file when present.
+    pub name: String,
+    /// Index of the parent joint within the same skeleton, or `None` for the
+    /// root. Always less than the joint's own index (topological order).
+    pub parent: Option<u8>,
+    /// Inverse of the joint's world-space transform in the bind pose.
+    pub inverse_bind: glam::Mat4,
+}
+
+/// A joint hierarchy with bind-pose inverse matrices, source-agnostic.
+#[derive(Clone, Debug, Default)]
+pub struct Skeleton {
+    /// Skeleton name, when the source format provides one.
+    pub name: String,
+    /// Joints in topological order: each parent index is less than its own.
+    pub joints: Vec<Joint>,
+}
+
+/// Which component of a joint's local transform an animation track drives.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum AnimationChannel {
+    /// Translation channel (Vec3 sampler values).
+    Translation,
+    /// Rotation channel (Quat sampler values).
+    Rotation,
+    /// Scale channel (Vec3 sampler values).
+    Scale,
+}
+
+/// How an animation sampler blends between adjacent keyframes.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum AnimationInterpolation {
+    /// Hold the value of the lower keyframe until the next one starts.
+    Step,
+    /// Vec3 channels lerp; Quat channels slerp.
+    Linear,
+    /// Cubic-spline interpolation as defined by glTF. Not yet consumed by
+    /// downstream players; preserved on import for round-trip fidelity.
+    CubicSpline,
+}
+
+/// Per-keyframe values for an animation sampler. The variant must match the
+/// channel of the parent track.
+#[derive(Clone, Debug)]
+pub enum AnimationTrackValues {
+    /// Translation or scale keyframes.
+    Vec3(Vec<glam::Vec3>),
+    /// Rotation keyframes.
+    Quat(Vec<glam::Quat>),
+}
+
+/// Keyframe times paired with values plus an interpolation mode.
+#[derive(Clone, Debug)]
+pub struct AnimationSampler {
+    /// Interpolation mode between keyframes.
+    pub interpolation: AnimationInterpolation,
+    /// Keyframe times in seconds, non-empty and strictly increasing.
+    pub times: Vec<f32>,
+    /// Keyframe values, same length as `times`. For `CubicSpline`, each
+    /// keyframe carries three values (in-tangent, value, out-tangent) so the
+    /// inner length is `3 * times.len()`.
+    pub values: AnimationTrackValues,
+}
+
+/// One animation track: a sampler bound to one channel on one joint.
+#[derive(Clone, Debug)]
+pub struct AnimationTrack {
+    /// Index into the target [`Skeleton::joints`].
+    pub joint: usize,
+    /// Which component of the joint's local transform this track drives.
+    pub channel: AnimationChannel,
+    /// Keyframe sampler producing values for this channel.
+    pub sampler: AnimationSampler,
+}
+
+/// A collection of tracks that together animate one or more joints.
+#[derive(Clone, Debug)]
+pub struct AnimationClip {
+    /// Clip name, when the source format provides one.
+    pub name: String,
+    /// Length of the clip in seconds, derived from the maximum sampler time.
+    pub duration: f32,
+    /// Index of the [`Skeleton`] this clip targets within the parent
+    /// [`SceneData::skeletons`].
+    pub skeleton_index: usize,
+    /// Per-channel tracks.
+    pub tracks: Vec<AnimationTrack>,
+}
+
 /// Source-agnostic surface mesh data.
 #[derive(Clone, Debug, Default)]
 pub struct SurfaceMesh {
@@ -181,6 +273,8 @@ pub struct SceneMesh {
     pub vertex_attribute_names: Vec<String>,
     /// Optional importer-specific tags.
     pub metadata: HashMap<String, String>,
+    /// Index into `SceneData::skeletons`, if this mesh is skinned.
+    pub skeleton_index: Option<usize>,
 }
 
 impl Default for SceneMesh {
@@ -194,6 +288,7 @@ impl Default for SceneMesh {
             parent_index: None,
             vertex_attribute_names: Vec::new(),
             metadata: HashMap::new(),
+            skeleton_index: None,
         }
     }
 }
@@ -460,6 +555,10 @@ pub struct SceneData {
     pub materials: Vec<MaterialData>,
     /// Point sets carried by the scene.
     pub point_sets: Vec<PointSet>,
+    /// Skeletons referenced by skinned meshes via `SceneMesh::skeleton_index`.
+    pub skeletons: Vec<Skeleton>,
+    /// Animation clips targeting the scene's skeletons.
+    pub animations: Vec<AnimationClip>,
 }
 
 pub(crate) type TextureData = RasterImageData;

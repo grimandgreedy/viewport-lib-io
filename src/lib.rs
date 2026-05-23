@@ -14,8 +14,9 @@ pub mod loaders;
 
 pub use error::IoError;
 pub use types::{
-    AttributeData, AttributeDomain, AttributeValues, CELL_SENTINEL, DecodedDataSet,
-    GaussianSplatSet, HdrImageData, MaterialData, PointSet, RasterImageData, SceneData,
-    SceneMesh, ShDegree, SkinWeights, SparseGrid, StructuredVolume, SurfaceMesh, TextureSource,
-    VolumeGridGeometry, VolumeMesh,
+    AnimationChannel, AnimationClip, AnimationInterpolation, AnimationSampler, AnimationTrack,
+    AnimationTrackValues, AttributeData, AttributeDomain, AttributeValues, CELL_SENTINEL,
+    DecodedDataSet, GaussianSplatSet, HdrImageData, Joint, MaterialData, PointSet,
+    RasterImageData, SceneData, SceneMesh, ShDegree, Skeleton, SkinWeights, SparseGrid,
+    StructuredVolume, SurfaceMesh, TextureSource, VolumeGridGeometry, VolumeMesh,
 };

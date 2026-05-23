@@ -279,8 +279,6 @@ fn load_ply(bytes: &[u8]) -> Result<IoScene, IoError> {
 
     if face_count == 0 {
         return Ok(IoScene {
-            meshes: Vec::new(),
-            materials: Vec::new(),
             point_sets: vec![IoPointCloud {
                 name: "Point Cloud".to_string(),
                 positions,
@@ -288,6 +286,7 @@ fn load_ply(bytes: &[u8]) -> Result<IoScene, IoError> {
                 scalars: Vec::new(),
                 scalar_attributes: std::collections::HashMap::new(),
             }],
+            ..IoScene::default()
         });
     }
 
@@ -342,15 +341,10 @@ fn load_ply(bytes: &[u8]) -> Result<IoScene, IoError> {
         meshes: vec![IoMesh {
             name: "PLY Mesh".to_string(),
             mesh: mesh_data,
-            material_index: None,
-            transform: glam::Mat4::IDENTITY,
-            two_sided: false,
-            parent_index: None,
             vertex_attribute_names,
-            metadata: std::collections::HashMap::new(),
+            ..IoMesh::default()
         }],
-        materials: Vec::new(),
-        point_sets: Vec::new(),
+        ..IoScene::default()
     })
 }
 
