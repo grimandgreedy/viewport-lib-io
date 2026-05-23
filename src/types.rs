@@ -4,6 +4,15 @@ use std::path::PathBuf;
 /// Sentinel used to pad unused slots in fixed-width volumetric cell connectivity.
 pub const CELL_SENTINEL: u32 = u32::MAX;
 
+/// Maximum number of joints permitted in a single skeleton.
+///
+/// Skinning palettes in real-time renderers are fixed-size; 256 matches the
+/// conventional palette limit used across the viewport-lib stack. Loaders
+/// reject any source skeleton that exceeds this bound rather than silently
+/// truncating, and per-vertex `[u8; 4]` joint indices fit exactly into this
+/// range.
+pub const MAX_JOINTS: usize = 256;
+
 /// CPU-side RGBA8 image data.
 #[derive(Clone, Debug)]
 pub struct RasterImageData {

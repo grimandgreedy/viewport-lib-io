@@ -4,6 +4,15 @@
 //!
 //! This crate owns file-format decoding and source-agnostic data structures.
 //! It does not depend on `viewport-lib` runtime or upload types directly.
+//!
+//! # Coordinate convention
+//!
+//! Decoded scene data is right-handed Z-up. Source formats that store data
+//! in a different frame (e.g. glTF, which is right-handed Y-up) are
+//! reoriented at load. Vertex positions, normals, tangents, mesh
+//! transforms, skeleton inverse-bind matrices, and animation samples are
+//! all rotated once during decoding; downstream consumers do not need to
+//! re-rotate.
 
 /// Error types for `viewport-lib-io`.
 pub mod error;
@@ -16,7 +25,7 @@ pub use error::IoError;
 pub use types::{
     AnimationChannel, AnimationClip, AnimationInterpolation, AnimationSampler, AnimationTrack,
     AnimationTrackValues, AttributeData, AttributeDomain, AttributeValues, CELL_SENTINEL,
-    DecodedDataSet, GaussianSplatSet, HdrImageData, Joint, MaterialData, PointSet,
+    DecodedDataSet, GaussianSplatSet, HdrImageData, Joint, MAX_JOINTS, MaterialData, PointSet,
     RasterImageData, SceneData, SceneMesh, ShDegree, Skeleton, SkinWeights, SparseGrid,
     StructuredVolume, SurfaceMesh, TextureSource, VolumeGridGeometry, VolumeMesh,
 };

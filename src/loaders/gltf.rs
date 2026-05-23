@@ -3,11 +3,15 @@ use std::path::Path;
 use crate::error::IoError;
 use crate::types::{
     AnimationChannel, AnimationClip, AnimationInterpolation, AnimationSampler, AnimationTrack,
-    AnimationTrackValues, IoMaterial, IoMesh, IoScene, Joint, Skeleton, SkinWeights, SurfaceMesh,
-    TextureData, TextureSource,
+    AnimationTrackValues, IoMaterial, IoMesh, IoScene, Joint, MAX_JOINTS, Skeleton, SkinWeights,
+    SurfaceMesh, TextureData, TextureSource,
 };
 
 /// Decode a glTF or GLB file into a CPU-side scene.
+///
+/// Reads the file at `path` and delegates to [`scene_from_slice`]. The
+/// parent directory is used as the base for resolving external buffers and
+/// image URIs.
 pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
     #[cfg(feature = "gltf")]
     {
@@ -17,21 +21,62 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
                 format!("file not found: {}", path.display()),
             )));
         }
-
         let bytes = std::fs::read(path)?;
         let parent_dir = path.parent().unwrap_or(Path::new("."));
-        let gltf = gltf::Gltf::from_slice_without_validation(&bytes)
-            .map_err(|error| IoError::Parse(format!("glTF load failed ({}): {error:?}", path.display())))?;
+        scene_from_slice(&bytes, Some(parent_dir))
+    }
+
+    #[cfg(not(feature = "gltf"))]
+    {
+        let _ = path;
+        Err(IoError::MissingFeature {
+            feature: "gltf",
+            context: "glTF scene decoding",
+        })
+    }
+}
+
+/// Decode a glTF or GLB blob already held in memory.
+///
+/// `base` is the directory used to resolve external buffer / image URIs.
+/// Pass `None` when the caller has no filesystem context (in-memory tests,
+/// packed bundles, network resolvers); external references will then fail
+/// to resolve with [`IoError::Parse`]. Self-contained GLBs and embedded
+/// data URIs work regardless of `base`.
+pub fn scene_from_slice(data: &[u8], base: Option<&Path>) -> Result<IoScene, IoError> {
+    #[cfg(feature = "gltf")]
+    {
+        let gltf = gltf::Gltf::from_slice_without_validation(data)
+            .map_err(|error| IoError::Parse(format!("glTF load failed: {error:?}")))?;
         let blob = gltf.blob.clone();
-        let buffers = gltf::import_buffers(&gltf, Some(parent_dir), blob)
-            .map_err(|error| IoError::Parse(format!("glTF buffers failed ({}): {error:?}", path.display())))?;
+        let buffers = gltf::import_buffers(&gltf, base, blob)
+            .map_err(|error| IoError::Parse(format!("glTF buffers failed: {error:?}")))?;
         let document = gltf.document;
-        let images = gltf::import_images(&document, Some(parent_dir), &buffers).unwrap_or_default();
+        let images = gltf::import_images(&document, base, &buffers).unwrap_or_default();
+
+        // External texture URIs are resolved relative to `base`. When `base`
+        // is `None` we fall back to the current working directory only as a
+        // last resort; data URIs and embedded textures still work either way.
+        let texture_base = base.unwrap_or(Path::new("."));
 
         let materials = document
             .materials()
-            .map(|material| convert_material(&material, &images, parent_dir))
+            .map(|material| convert_material(&material, &images, texture_base))
             .collect();
+
+        // Reject skeletons that overflow the fixed-size skinning palette
+        // before any decoding work commits. The per-vertex joint index type
+        // is `[u8; 4]`, so anything past MAX_JOINTS cannot be referenced
+        // anyway.
+        for skin in document.skins() {
+            let count = skin.joints().count();
+            if count > MAX_JOINTS {
+                return Err(IoError::Parse(format!(
+                    "skin '{}' has {count} joints, exceeds MAX_JOINTS = {MAX_JOINTS}",
+                    skin.name().unwrap_or("<unnamed>"),
+                )));
+            }
+        }
 
         // Skeletons must be built before meshes/animations so the index map
         // (glTF node index -> joint index within a skeleton) is available.
@@ -52,14 +97,15 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
             }
         }
 
-        // glTF uses a right-handed Y-up coordinate system; viewport-lib uses
-        // right-handed Z-up. Apply the standard rotation as a left-multiply
-        // on every mesh's scene transform. The skinning math, vertex bakes,
-        // and joint inverse-bind matrices stay in glTF coordinates -- only
-        // the final render transform rotates -- so the conversion is
-        // self-contained and reversible.
+        // glTF uses right-handed Y-up; viewport-lib-io emits right-handed
+        // Z-up. The conversion happens once, here, on every piece of data
+        // that carries an orientation: vertex positions, normals, tangents,
+        // per-mesh transforms, joint inverse-bind matrices, and animation
+        // samples (see convert_skeletons / convert_animations). After this
+        // point the entire IoScene is in Z-up; downstream consumers do not
+        // re-rotate.
         for mesh in &mut meshes {
-            mesh.transform = Y_UP_TO_Z_UP * mesh.transform;
+            reorient_mesh_z_up(mesh);
         }
 
         let animations = convert_animations(&document, &buffers, &joint_lookup);
@@ -75,7 +121,7 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
 
     #[cfg(not(feature = "gltf"))]
     {
-        let _ = path;
+        let _ = (data, base);
         Err(IoError::MissingFeature {
             feature: "gltf",
             context: "glTF scene decoding",
@@ -409,9 +455,372 @@ mod tests {
             _ => panic!("expected Quat values"),
         }
 
+        // Z-up reorientation: glTF positions (0, 1, 0) and (1, 0, 0) become
+        // (0, 0, 1) and (1, 0, 0) once the loader emits Z-up data.
+        let positions = &mesh.mesh.positions;
+        assert_eq!(positions.len(), 3);
+        assert!((positions[0][0] - 0.0).abs() < 1e-5);
+        assert!((positions[0][1] - 0.0).abs() < 1e-5);
+        assert!((positions[0][2] - 0.0).abs() < 1e-5);
+        assert!((positions[1][0] - 1.0).abs() < 1e-5);
+        assert!((positions[1][1] - 0.0).abs() < 1e-5);
+        assert!((positions[1][2] - 0.0).abs() < 1e-5);
+        assert!((positions[2][0] - 0.0).abs() < 1e-5);
+        assert!((positions[2][1] - 0.0).abs() < 1e-5);
+        assert!((positions[2][2] - 1.0).abs() < 1e-5);
+
         let _ = std::fs::remove_file(gltf_path);
         let _ = std::fs::remove_file(bin_path);
         let _ = std::fs::remove_dir(dir);
+    }
+
+    // --- Z-up reorientation helpers ---
+
+    #[test]
+    fn vec3_y_axis_maps_to_z_axis() {
+        let v = reorient_vec3([0.0, 1.0, 0.0]);
+        assert!((v[0]).abs() < 1e-6);
+        assert!((v[1]).abs() < 1e-6);
+        assert!((v[2] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn vec3_z_axis_maps_to_negative_y_axis() {
+        let v = reorient_vec3([0.0, 0.0, 1.0]);
+        assert!((v[0]).abs() < 1e-6);
+        assert!((v[1] + 1.0).abs() < 1e-6);
+        assert!((v[2]).abs() < 1e-6);
+    }
+
+    #[test]
+    fn vec3_x_axis_unchanged() {
+        let v = reorient_vec3([1.0, 0.0, 0.0]);
+        assert!((v[0] - 1.0).abs() < 1e-6);
+        assert!((v[1]).abs() < 1e-6);
+        assert!((v[2]).abs() < 1e-6);
+    }
+
+    #[test]
+    fn tangent_xyz_rotates_but_w_preserved() {
+        let t = reorient_tangent([0.0, 1.0, 0.0, -1.0]);
+        assert!((t[2] - 1.0).abs() < 1e-6);
+        assert!((t[3] + 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn quat_y_axis_rotation_becomes_z_axis_rotation() {
+        let q_y_up = glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let q_z_up = reorient_quat(q_y_up);
+        let expected = glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        assert!(q_z_up.abs_diff_eq(expected, 1e-5));
+    }
+
+    #[test]
+    fn quat_x_axis_rotation_unchanged() {
+        let q = glam::Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
+        let r = reorient_quat(q);
+        assert!(r.abs_diff_eq(q, 1e-5));
+    }
+
+    #[test]
+    fn scale_swaps_y_and_z_components() {
+        let s = reorient_scale(glam::Vec3::new(2.0, 3.0, 5.0));
+        assert_eq!(s, glam::Vec3::new(2.0, 5.0, 3.0));
+    }
+
+    #[test]
+    fn affine_translation_along_y_lands_along_z() {
+        let m = glam::Mat4::from_translation(glam::Vec3::Y * 2.0);
+        let m_z = reorient_affine_mat4(m);
+        let p = m_z.transform_point3(glam::Vec3::ZERO);
+        assert!((p - glam::Vec3::Z * 2.0).length() < 1e-5);
+    }
+
+    #[cfg(feature = "gltf")]
+    #[test]
+    fn scene_from_slice_matches_scene_from_path() {
+        // Reuse the same fixture-building pattern as the skin test but at a
+        // smaller scale: one triangle, no skin, no materials.
+        let dir = temp_dir("gltf_slice_vs_path");
+        let gltf_path = dir.join("triangle.gltf");
+        let bin_path = dir.join("triangle.bin");
+
+        let mut bin = Vec::new();
+        for v in [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in [0u32, 1, 2] {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        std::fs::write(&bin_path, &bin).unwrap();
+
+        let json = r#"{
+  "asset": { "version": "2.0" },
+  "scene": 0,
+  "scenes": [{ "nodes": [0] }],
+  "nodes": [{ "mesh": 0 }],
+  "meshes": [{
+    "primitives": [{
+      "attributes": { "POSITION": 0 },
+      "indices": 1
+    }]
+  }],
+  "buffers": [{ "uri": "triangle.bin", "byteLength": 48 }],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0,  "byteLength": 36 },
+    { "buffer": 0, "byteOffset": 36, "byteLength": 12, "target": 34963 }
+  ],
+  "accessors": [
+    { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0,0,0], "max": [1,1,0] },
+    { "bufferView": 1, "componentType": 5125, "count": 3, "type": "SCALAR" }
+  ]
+}"#;
+        std::fs::write(&gltf_path, json).unwrap();
+
+        let from_path = scene_from_path(&gltf_path).unwrap();
+        let bytes = std::fs::read(&gltf_path).unwrap();
+        let from_slice = scene_from_slice(&bytes, Some(dir.as_path())).unwrap();
+
+        assert_eq!(from_path.meshes.len(), from_slice.meshes.len());
+        let a = &from_path.meshes[0].mesh.positions;
+        let b = &from_slice.meshes[0].mesh.positions;
+        assert_eq!(a.len(), b.len());
+        for (pa, pb) in a.iter().zip(b.iter()) {
+            for k in 0..3 {
+                assert!((pa[k] - pb[k]).abs() < 1e-6);
+            }
+        }
+
+        let _ = std::fs::remove_file(gltf_path);
+        let _ = std::fs::remove_file(bin_path);
+        let _ = std::fs::remove_dir(dir);
+    }
+
+    #[cfg(feature = "gltf")]
+    #[test]
+    fn scene_from_slice_without_base_rejects_external_buffer() {
+        let json = r#"{
+  "asset": { "version": "2.0" },
+  "scene": 0,
+  "scenes": [{ "nodes": [0] }],
+  "nodes": [{ "mesh": 0 }],
+  "meshes": [{
+    "primitives": [{
+      "attributes": { "POSITION": 0 },
+      "indices": 1
+    }]
+  }],
+  "buffers": [{ "uri": "external.bin", "byteLength": 48 }],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0,  "byteLength": 36 },
+    { "buffer": 0, "byteOffset": 36, "byteLength": 12, "target": 34963 }
+  ],
+  "accessors": [
+    { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0,0,0], "max": [1,1,0] },
+    { "bufferView": 1, "componentType": 5125, "count": 3, "type": "SCALAR" }
+  ]
+}"#;
+        let err = scene_from_slice(json.as_bytes(), None)
+            .expect_err("external buffer should fail to resolve without base");
+        match err {
+            IoError::Parse(msg) => assert!(
+                msg.contains("buffers") || msg.contains("external") || msg.contains("Uri"),
+                "expected a buffer-resolution error, got: {msg}",
+            ),
+            other => panic!("expected IoError::Parse, got {other:?}"),
+        }
+    }
+
+    // --- Weight normalisation ---
+
+    #[test]
+    fn weights_summing_above_one_renormalise() {
+        let normalised = normalise_skin_weights([0.5, 0.5, 0.5, 0.5]);
+        let sum: f32 = normalised.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-6);
+        for v in normalised {
+            assert!((v - 0.25).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn weights_summing_to_two_renormalise_to_one() {
+        let normalised = normalise_skin_weights([1.0, 1.0, 0.0, 0.0]);
+        let sum: f32 = normalised.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-6);
+        assert!((normalised[0] - 0.5).abs() < 1e-6);
+        assert!((normalised[1] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn zero_weight_vertex_falls_back_to_full_bind_on_joint_zero() {
+        let normalised = normalise_skin_weights([0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(normalised, [1.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn near_zero_weights_below_threshold_fall_back() {
+        let normalised = normalise_skin_weights([1e-9, 1e-9, 0.0, 0.0]);
+        assert_eq!(normalised, [1.0, 0.0, 0.0, 0.0]);
+    }
+
+    // --- MAX_JOINTS enforcement ---
+
+    #[cfg(feature = "gltf")]
+    #[test]
+    fn skin_exceeding_max_joints_is_rejected() {
+        // Build a glTF with one mesh and a skin referencing MAX_JOINTS + 1
+        // joint nodes. We only need the structure to parse; the buffer can
+        // be a stub since we error out before reading skinning data.
+        let n_joints = MAX_JOINTS + 1;
+
+        // Buffer: 3 positions (36 bytes), 3 indices (12 bytes), 3 joint
+        // tuples (12 bytes), 3 weights (48 bytes), n_joints identity
+        // inverse-bind matrices (n_joints * 64 bytes).
+        let mut bin = Vec::new();
+        for v in [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in [0u32, 1, 2] {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        for _ in 0..3 {
+            bin.extend_from_slice(&[0u8, 0, 0, 0]);
+        }
+        for _ in 0..3 {
+            for v in [1.0f32, 0.0, 0.0, 0.0] {
+                bin.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        let identity = glam::Mat4::IDENTITY.to_cols_array();
+        for _ in 0..n_joints {
+            for v in identity {
+                bin.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+
+        let positions_len = 36;
+        let indices_len = 12;
+        let joints_len = 12;
+        let weights_len = 48;
+        let ib_len = n_joints * 64;
+        let buffer_len = positions_len + indices_len + joints_len + weights_len + ib_len;
+        assert_eq!(bin.len(), buffer_len);
+
+        let positions_offset = 0;
+        let indices_offset = positions_offset + positions_len;
+        let joints_offset = indices_offset + indices_len;
+        let weights_offset = joints_offset + joints_len;
+        let ib_offset = weights_offset + weights_len;
+
+        // Joint node indices: 1..=n_joints. Node 0 is the mesh node.
+        let mut joint_indices: Vec<String> = Vec::with_capacity(n_joints);
+        for j in 0..n_joints {
+            joint_indices.push((j + 1).to_string());
+        }
+        let joint_list = joint_indices.join(",");
+
+        // Each joint is its own glTF node. Keep them flat (no parents) so
+        // the test focuses on the count check.
+        let mut nodes_json = String::from(r#"{ "mesh": 0, "skin": 0 }"#);
+        for _ in 0..n_joints {
+            nodes_json.push_str(",{}");
+        }
+
+        let json = format!(
+            r#"{{
+  "asset": {{ "version": "2.0" }},
+  "scene": 0,
+  "scenes": [{{ "nodes": [0] }}],
+  "nodes": [{nodes_json}],
+  "meshes": [{{
+    "primitives": [{{
+      "attributes": {{ "POSITION": 0, "JOINTS_0": 2, "WEIGHTS_0": 3 }},
+      "indices": 1
+    }}]
+  }}],
+  "skins": [{{
+    "joints": [{joint_list}],
+    "inverseBindMatrices": 4
+  }}],
+  "buffers": [{{ "byteLength": {buffer_len} }}],
+  "bufferViews": [
+    {{ "buffer": 0, "byteOffset": {positions_offset}, "byteLength": {positions_len} }},
+    {{ "buffer": 0, "byteOffset": {indices_offset},   "byteLength": {indices_len}, "target": 34963 }},
+    {{ "buffer": 0, "byteOffset": {joints_offset},    "byteLength": {joints_len} }},
+    {{ "buffer": 0, "byteOffset": {weights_offset},   "byteLength": {weights_len} }},
+    {{ "buffer": 0, "byteOffset": {ib_offset},        "byteLength": {ib_len} }}
+  ],
+  "accessors": [
+    {{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0,0,0], "max": [1,1,0] }},
+    {{ "bufferView": 1, "componentType": 5125, "count": 3, "type": "SCALAR" }},
+    {{ "bufferView": 2, "componentType": 5121, "count": 3, "type": "VEC4" }},
+    {{ "bufferView": 3, "componentType": 5126, "count": 3, "type": "VEC4" }},
+    {{ "bufferView": 4, "componentType": 5126, "count": {n_joints}, "type": "MAT4" }}
+  ]
+}}"#
+        );
+
+        // Pack as GLB so the binary buffer travels with the JSON and the
+        // loader does not need a base path for an external `.bin`.
+        let glb = make_glb(json.as_bytes(), &bin);
+        let err = scene_from_slice(&glb, None).expect_err("should reject oversize skin");
+        match err {
+            IoError::Parse(msg) => assert!(
+                msg.contains("MAX_JOINTS") && msg.contains(&format!("{n_joints}")),
+                "expected MAX_JOINTS error citing the joint count, got: {msg}",
+            ),
+            other => panic!("expected IoError::Parse, got {other:?}"),
+        }
+    }
+
+    /// Pack a glTF JSON + binary buffer into a self-contained GLB blob.
+    /// Used by tests that want a `scene_from_slice`-friendly fixture with
+    /// no external `.bin` file on disk.
+    #[cfg(feature = "gltf")]
+    fn make_glb(json: &[u8], bin: &[u8]) -> Vec<u8> {
+        // glTF 2.0 GLB layout: 12-byte header, 8-byte JSON chunk header,
+        // padded JSON body, 8-byte BIN chunk header, padded BIN body.
+        fn pad4(len: usize) -> usize {
+            (4 - (len & 3)) & 3
+        }
+        let json_pad = pad4(json.len());
+        let bin_pad = pad4(bin.len());
+        let json_len = json.len() + json_pad;
+        let bin_len = bin.len() + bin_pad;
+        let total = 12 + 8 + json_len + 8 + bin_len;
+
+        let mut out = Vec::with_capacity(total);
+        // Header.
+        out.extend_from_slice(&0x46546C67u32.to_le_bytes()); // "glTF"
+        out.extend_from_slice(&2u32.to_le_bytes()); // version
+        out.extend_from_slice(&(total as u32).to_le_bytes());
+        // JSON chunk.
+        out.extend_from_slice(&(json_len as u32).to_le_bytes());
+        out.extend_from_slice(&0x4E4F534Au32.to_le_bytes()); // "JSON"
+        out.extend_from_slice(json);
+        for _ in 0..json_pad {
+            out.push(b' ');
+        }
+        // BIN chunk.
+        out.extend_from_slice(&(bin_len as u32).to_le_bytes());
+        out.extend_from_slice(&0x004E4942u32.to_le_bytes()); // "BIN\0"
+        out.extend_from_slice(bin);
+        for _ in 0..bin_pad {
+            out.push(0);
+        }
+        out
+    }
+
+    #[test]
+    fn affine_inverse_pair_is_identity() {
+        let product = Y_UP_TO_Z_UP * Y_UP_TO_Z_UP_INV;
+        let i = glam::Mat4::IDENTITY;
+        for c in 0..4 {
+            for r in 0..4 {
+                assert!((product.col(c)[r] - i.col(c)[r]).abs() < 1e-6);
+            }
+        }
     }
 }
 
@@ -574,7 +983,7 @@ fn convert_primitive(
                 .into_iter()
                 .map(|q| [q[0] as u8, q[1] as u8, q[2] as u8, q[3] as u8])
                 .collect(),
-            joint_weights: jw,
+            joint_weights: jw.into_iter().map(normalise_skin_weights).collect(),
         }),
         _ => None,
     };
@@ -761,14 +1170,100 @@ fn to_rgba8(data: &gltf::image::Data) -> Vec<u8> {
     }
 }
 
-/// Rotation that maps right-handed Y-up (glTF) into right-handed Z-up
-/// (viewport-lib). +90 degrees around X: Y -> Z, Z -> -Y, X unchanged.
+// ---------------------------------------------------------------------------
+// Y-up to Z-up reorientation
+//
+// glTF stores everything in right-handed Y-up. viewport-lib-io exposes a
+// right-handed Z-up scene. The conversion is a +90 degree rotation about the
+// X-axis: Y -> Z, Z -> -Y, X unchanged. Every orientation-bearing piece of
+// data (positions, normals, tangents, mesh transforms, inverse-bind matrices,
+// animation samples) is rotated once at load. The maths is the same as the
+// `reorient_*` helpers in drake-assets' rigged loader.
+// ---------------------------------------------------------------------------
+
+/// +90 degree rotation about X as a Mat4.
 const Y_UP_TO_Z_UP: glam::Mat4 = glam::Mat4::from_cols(
     glam::Vec4::new(1.0, 0.0, 0.0, 0.0),
     glam::Vec4::new(0.0, 0.0, 1.0, 0.0),
     glam::Vec4::new(0.0, -1.0, 0.0, 0.0),
     glam::Vec4::new(0.0, 0.0, 0.0, 1.0),
 );
+
+/// Inverse of [`Y_UP_TO_Z_UP`]: -90 degrees about X, i.e. its transpose.
+const Y_UP_TO_Z_UP_INV: glam::Mat4 = glam::Mat4::from_cols(
+    glam::Vec4::new(1.0, 0.0, 0.0, 0.0),
+    glam::Vec4::new(0.0, 0.0, -1.0, 0.0),
+    glam::Vec4::new(0.0, 1.0, 0.0, 0.0),
+    glam::Vec4::new(0.0, 0.0, 0.0, 1.0),
+);
+
+/// Rotate a position or direction vector from Y-up into Z-up:
+/// `(x, y, z) -> (x, -z, y)`.
+fn reorient_vec3(v: [f32; 3]) -> [f32; 3] {
+    [v[0], -v[2], v[1]]
+}
+
+/// Rotate a tangent vec4: xyz is direction, w is bitangent sign and stays.
+fn reorient_tangent(t: [f32; 4]) -> [f32; 4] {
+    [t[0], -t[2], t[1], t[3]]
+}
+
+/// Conjugate an affine transform by the Y-up to Z-up rotation: `R * M * R^-1`.
+fn reorient_affine_mat4(m: glam::Mat4) -> glam::Mat4 {
+    Y_UP_TO_Z_UP * m * Y_UP_TO_Z_UP_INV
+}
+
+/// Y-up to Z-up rotation as a quaternion (used for animation rotation tracks).
+fn y_up_to_z_up_quat() -> glam::Quat {
+    glam::Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)
+}
+
+/// Conjugate a unit quaternion by the Y-up to Z-up rotation: `R * q * R^-1`.
+fn reorient_quat(q: glam::Quat) -> glam::Quat {
+    let r = y_up_to_z_up_quat();
+    r * q * r.conjugate()
+}
+
+/// Permute the components of a per-axis scale vector under the X-axis +90
+/// rotation. Anisotropic scales remain correct because the rotation is
+/// axis-aligned; arbitrary-axis non-uniform scale is not representable as a
+/// scale vector in any frame.
+fn reorient_scale(s: glam::Vec3) -> glam::Vec3 {
+    glam::Vec3::new(s.x, s.z, s.y)
+}
+
+/// Normalise a vertex's four blend weights so they sum to 1. A vertex with
+/// vanishingly small total influence (degenerate authoring, or weights that
+/// got rounded to zero on quantisation) falls back to a full-weight bind to
+/// joint 0 so the runtime never has to divide by zero or render a missing
+/// vertex. Threshold matches the convention in DRAKE's rigged loader.
+fn normalise_skin_weights(w: [f32; 4]) -> [f32; 4] {
+    let sum = w[0] + w[1] + w[2] + w[3];
+    if sum > 1e-6 {
+        let inv = 1.0 / sum;
+        [w[0] * inv, w[1] * inv, w[2] * inv, w[3] * inv]
+    } else {
+        [1.0, 0.0, 0.0, 0.0]
+    }
+}
+
+/// Rotate a single [`IoMesh`]'s vertex attributes and world transform into
+/// Z-up. Skin weights are indices and per-vertex scalars, so they need no
+/// reorientation.
+fn reorient_mesh_z_up(mesh: &mut IoMesh) {
+    for p in &mut mesh.mesh.positions {
+        *p = reorient_vec3(*p);
+    }
+    for n in &mut mesh.mesh.normals {
+        *n = reorient_vec3(*n);
+    }
+    if let Some(tangents) = mesh.mesh.tangents.as_mut() {
+        for t in tangents.iter_mut() {
+            *t = reorient_tangent(*t);
+        }
+    }
+    mesh.transform = reorient_affine_mat4(mesh.transform);
+}
 
 /// (skeleton_index, joint_index_within_skeleton) for each glTF node that is a
 /// joint of any skin. Animation channels use this to look up which joint they
@@ -875,14 +1370,14 @@ fn convert_skeletons(
             let node = &joints_in_skin[skin_pos];
             let parent = parent_in_skin[skin_pos]
                 .map(|p| skin_pos_to_joint[p] as u8);
-            let inverse_bind = inverse_binds
+            let inverse_bind_y_up = inverse_binds
                 .get(skin_pos)
                 .copied()
                 .unwrap_or(glam::Mat4::IDENTITY);
             joints.push(Joint {
                 name: node.name().unwrap_or_default().to_string(),
                 parent,
-                inverse_bind,
+                inverse_bind: reorient_affine_mat4(inverse_bind_y_up),
             });
         }
 
@@ -963,16 +1458,31 @@ fn convert_animations(
             }
             let clip_end = times.last().copied().unwrap_or(0.0);
 
+            // Animation samples describe a joint's local transform; they
+            // are reoriented into Z-up here so the player can consume them
+            // without any per-frame conversion. Translations rotate,
+            // rotations conjugate, scales permute their Y and Z components
+            // (axis-aligned permutation under the X-axis 90 rotation).
             let values = match reader.read_outputs() {
                 Some(gltf::animation::util::ReadOutputs::Translations(iter)) => {
-                    AnimationTrackValues::Vec3(iter.map(glam::Vec3::from).collect())
+                    AnimationTrackValues::Vec3(
+                        iter.map(|v| {
+                            let r = reorient_vec3(v);
+                            glam::Vec3::from_array(r)
+                        })
+                        .collect(),
+                    )
                 }
                 Some(gltf::animation::util::ReadOutputs::Scales(iter)) => {
-                    AnimationTrackValues::Vec3(iter.map(glam::Vec3::from).collect())
+                    AnimationTrackValues::Vec3(
+                        iter.map(|v| reorient_scale(glam::Vec3::from_array(v))).collect(),
+                    )
                 }
                 Some(gltf::animation::util::ReadOutputs::Rotations(iter)) => {
                     AnimationTrackValues::Quat(
-                        iter.into_f32().map(glam::Quat::from_array).collect(),
+                        iter.into_f32()
+                            .map(|q| reorient_quat(glam::Quat::from_array(q)))
+                            .collect(),
                     )
                 }
                 _ => continue,
