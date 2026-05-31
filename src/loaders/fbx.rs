@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::BufReader;
 use std::path::Path;
 
@@ -11,7 +12,10 @@ use fbxcel_dom::v7400::object::TypedObjectHandle;
 use fbxcel_dom::v7400::Document;
 
 use crate::error::IoError;
-use crate::types::{IoMaterial, IoMesh, IoScene, SurfaceMesh, TextureData, TextureSource};
+use crate::types::{
+    IoMaterial, IoMesh, IoScene, Joint, Skeleton, SkinWeights, SurfaceMesh, TextureData,
+    TextureSource,
+};
 
 /// Decode an FBX file into a CPU-side scene.
 pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
@@ -36,6 +40,7 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
 
         let mut meshes = Vec::new();
         let mut materials = Vec::new();
+        let mut skeletons: Vec<Skeleton> = Vec::new();
         let mut material_map: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
 
         for object in document.objects() {
@@ -83,11 +88,21 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
                 }
 
                 let mut positions = Vec::with_capacity(triangle_vertices.len());
+                let mut vertex_cp_index: Vec<u32> = Vec::with_capacity(triangle_vertices.len());
                 let mut positions_ok = true;
+                let mut max_cp_index: u32 = 0;
                 for triangle_vertex in triangle_vertices.triangle_vertex_indices() {
-                    match triangle_vertices.control_point(triangle_vertex) {
-                        Some(point) => positions.push([point.x as f32, point.y as f32, point.z as f32]),
-                        None => {
+                    let cpi = triangle_vertices.control_point_index(triangle_vertex);
+                    match (cpi, triangle_vertices.control_point(triangle_vertex)) {
+                        (Some(cpi), Some(point)) => {
+                            positions.push([point.x as f32, point.y as f32, point.z as f32]);
+                            let raw = cpi.to_u32();
+                            vertex_cp_index.push(raw);
+                            if raw > max_cp_index {
+                                max_cp_index = raw;
+                            }
+                        }
+                        _ => {
                             positions_ok = false;
                             break;
                         }
@@ -176,6 +191,49 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
 
                 let normals = normals_vec.unwrap_or_else(|| compute_flat_normals(&positions));
 
+                // Skin extraction: if this geometry has any deformers, build a
+                // skeleton entry and per-vertex (joint_indices, joint_weights).
+                let extracted_skin = extract_skin(
+                    &geometry,
+                    &document,
+                    (max_cp_index as usize).saturating_add(1),
+                    &axis_transform,
+                    unit_scale,
+                );
+                let (skin_per_vertex, skeleton_index): (
+                    Option<SkinWeights>,
+                    Option<usize>,
+                ) = if let Some(skin) = extracted_skin {
+                    let mut ji: Vec<[u8; 4]> = Vec::with_capacity(positions.len());
+                    let mut jw: Vec<[f32; 4]> = Vec::with_capacity(positions.len());
+                    for &cp in &vertex_cp_index {
+                        let influences = skin
+                            .cp_influences
+                            .get(cp as usize)
+                            .map(|v| v.as_slice())
+                            .unwrap_or(&[]);
+                        let mut idx = [0u8; 4];
+                        let mut wt = [0f32; 4];
+                        for (k, (i, w)) in influences.iter().take(4).enumerate() {
+                            idx[k] = *i;
+                            wt[k] = *w;
+                        }
+                        ji.push(idx);
+                        jw.push(wt);
+                    }
+                    let sk_idx = skeletons.len();
+                    skeletons.push(skin.skeleton);
+                    (
+                        Some(SkinWeights {
+                            joint_indices: ji,
+                            joint_weights: jw,
+                        }),
+                        Some(sk_idx),
+                    )
+                } else {
+                    (None, None)
+                };
+
                 if let Some(ref material_per_vertex) = material_indices_per_vert {
                     if !model_materials.is_empty() && material_per_vertex.iter().any(|&m| m != 0) {
                         let num_local_materials = model_materials.len();
@@ -198,11 +256,23 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
                                 .map(|uvs| vertex_indices.iter().map(|&i| uvs[i]).collect());
                             let sub_indices: Vec<u32> = (0..vertex_indices.len() as u32).collect();
 
+                            let sub_skin = skin_per_vertex.as_ref().map(|sw| SkinWeights {
+                                joint_indices: vertex_indices
+                                    .iter()
+                                    .map(|&i| sw.joint_indices[i])
+                                    .collect(),
+                                joint_weights: vertex_indices
+                                    .iter()
+                                    .map(|&i| sw.joint_weights[i])
+                                    .collect(),
+                            });
+
                             let mut mesh_data = SurfaceMesh::default();
                             mesh_data.positions = sub_positions;
                             mesh_data.normals = sub_normals;
                             mesh_data.indices = sub_indices;
                             mesh_data.uvs = sub_uvs;
+                            mesh_data.skin_weights = sub_skin;
 
                             let parent_index = if meshes.len() > first_mesh_index {
                                 Some(first_mesh_index)
@@ -217,6 +287,7 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
                                 transform: node_transform,
                                 two_sided: false,
                                 parent_index,
+                                skeleton_index,
                                 ..IoMesh::default()
                             });
                         }
@@ -229,6 +300,7 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
                 mesh_data.normals = normals;
                 mesh_data.indices = (0..mesh_data.positions.len() as u32).collect();
                 mesh_data.uvs = uvs_vec;
+                mesh_data.skin_weights = skin_per_vertex;
 
                 meshes.push(IoMesh {
                     name: model_name,
@@ -237,6 +309,7 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
                     transform: node_transform,
                     two_sided: false,
                     parent_index: None,
+                    skeleton_index,
                     ..IoMesh::default()
                 });
             }
@@ -247,6 +320,7 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
         Ok(IoScene {
             meshes,
             materials,
+            skeletons,
             ..IoScene::default()
         })
     }
@@ -621,4 +695,333 @@ fn compute_flat_normals(positions: &[[f32; 3]]) -> Vec<[f32; 3]> {
         normals[base + 2] = [n.x, n.y, n.z];
     }
     normals
+}
+
+// ---------------------------------------------------------------------------
+// Skin extraction
+// ---------------------------------------------------------------------------
+
+/// Skin data harvested from one mesh's deformers. `cp_influences` is indexed
+/// by control-point index; each entry holds up to four `(joint, weight)`
+/// pairs sorted by descending weight and normalised to sum to 1.0.
+#[cfg(feature = "fbx")]
+struct ExtractedSkin {
+    skeleton: Skeleton,
+    cp_influences: Vec<Vec<(u8, f32)>>,
+}
+
+#[cfg(feature = "fbx")]
+struct BoneInfo {
+    name: String,
+    parent_id: Option<i64>,
+    transform_link: glam::Mat4,
+}
+
+#[cfg(feature = "fbx")]
+struct ClusterEntry {
+    bone_id: i64,
+    indexes: Vec<i32>,
+    weights: Vec<f64>,
+}
+
+#[cfg(feature = "fbx")]
+fn extract_skin(
+    geometry: &fbxcel_dom::v7400::object::geometry::MeshHandle<'_>,
+    document: &Document,
+    control_point_count: usize,
+    axis_transform: &glam::Mat4,
+    unit_scale: f32,
+) -> Option<ExtractedSkin> {
+    let mut clusters: Vec<ClusterEntry> = Vec::new();
+    let mut bones: HashMap<i64, BoneInfo> = HashMap::new();
+
+    for skin in geometry.skins() {
+        for cluster in skin.clusters() {
+            // The bone is on the source side of the cluster: a Model
+            // (LimbNode/Null). source_objects/destination_objects are inherited
+            // via Deref from ClusterHandle → ObjectHandle.
+            let bone_id_and_name = cluster
+                .source_objects()
+                .filter(|c| c.label().is_none())
+                .filter_map(|c| c.object_handle())
+                .find_map(|obj| match obj.get_typed() {
+                    TypedObjectHandle::Model(m) => match m {
+                        fbxcel_dom::v7400::object::model::TypedModelHandle::LimbNode(_)
+                        | fbxcel_dom::v7400::object::model::TypedModelHandle::Null(_) => {
+                            let raw = obj.object_id().raw();
+                            let name = obj.name().unwrap_or("").to_string();
+                            Some((raw, name, parent_model_id(&obj)))
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                });
+            let Some((bone_id, bone_name, parent_id)) = bone_id_and_name else {
+                continue;
+            };
+
+            let node = cluster.node();
+            let indexes = read_i32_array(&node, "Indexes").unwrap_or_default();
+            let weights = read_f64_array(&node, "Weights").unwrap_or_default();
+            if indexes.is_empty() || weights.is_empty() {
+                continue;
+            }
+            let transform_link = read_mat4(&node, "TransformLink").unwrap_or(glam::Mat4::IDENTITY);
+
+            bones.entry(bone_id).or_insert(BoneInfo {
+                name: bone_name,
+                parent_id,
+                transform_link,
+            });
+
+            clusters.push(ClusterEntry {
+                bone_id,
+                indexes,
+                weights,
+            });
+        }
+    }
+    if clusters.is_empty() {
+        return None;
+    }
+
+    // Walk parent chains and add any missing ancestor bones so the hierarchy
+    // is complete even if a joint between two used bones has no cluster.
+    let mut frontier: Vec<i64> = bones.keys().copied().collect();
+    while let Some(id) = frontier.pop() {
+        let Some(parent_id) = bones.get(&id).and_then(|b| b.parent_id) else {
+            continue;
+        };
+        if bones.contains_key(&parent_id) {
+            continue;
+        }
+        if let Some(obj) = lookup_object(document, parent_id) {
+            bones.insert(
+                parent_id,
+                BoneInfo {
+                    name: obj.name().unwrap_or("").to_string(),
+                    parent_id: parent_model_id(&obj),
+                    transform_link: glam::Mat4::IDENTITY,
+                },
+            );
+            frontier.push(parent_id);
+        }
+    }
+
+    // Topological order: parent index < child index.
+    let id_order = topo_sort(&bones);
+    let id_to_idx: HashMap<i64, u8> = id_order
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (*id, i as u8))
+        .collect();
+
+    let unit_scale_mat = glam::Mat4::from_scale(glam::Vec3::splat(unit_scale));
+    // Match the Y-up to Z-up reorientation that drake-assets applies to FBX
+    // vertex positions, so joint inverse-binds land in the same scene space.
+    let y_up_to_z_up_mat = glam::Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2);
+
+    let joints: Vec<Joint> = id_order
+        .iter()
+        .map(|id| {
+            let info = &bones[id];
+            let world = y_up_to_z_up_mat * *axis_transform * unit_scale_mat * info.transform_link;
+            Joint {
+                name: info.name.clone(),
+                parent: info.parent_id.and_then(|pid| id_to_idx.get(&pid).copied()),
+                inverse_bind: world.inverse(),
+            }
+        })
+        .collect();
+    let skeleton = Skeleton {
+        name: String::new(),
+        joints,
+    };
+
+    // Per-control-point influences, then top-4-select and normalise.
+    let mut raw: Vec<Vec<(u8, f32)>> = vec![Vec::new(); control_point_count];
+    for cluster in &clusters {
+        let Some(&joint_idx) = id_to_idx.get(&cluster.bone_id) else {
+            continue;
+        };
+        for (i, &cp_i32) in cluster.indexes.iter().enumerate() {
+            let cp = cp_i32 as usize;
+            if cp >= raw.len() {
+                continue;
+            }
+            let w = *cluster.weights.get(i).unwrap_or(&0.0) as f32;
+            if w == 0.0 {
+                continue;
+            }
+            raw[cp].push((joint_idx, w));
+        }
+    }
+    for entry in &mut raw {
+        entry.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        entry.truncate(4);
+        let sum: f32 = entry.iter().map(|(_, w)| w).sum();
+        if sum > 0.0 {
+            for (_, w) in entry.iter_mut() {
+                *w /= sum;
+            }
+        }
+    }
+
+    Some(ExtractedSkin {
+        skeleton,
+        cp_influences: raw,
+    })
+}
+
+#[cfg(feature = "fbx")]
+fn lookup_object<'a>(
+    document: &'a Document,
+    object_id: i64,
+) -> Option<fbxcel_dom::v7400::object::ObjectHandle<'a>> {
+    document
+        .objects()
+        .find(|o| o.object_id().raw() == object_id)
+}
+
+#[cfg(feature = "fbx")]
+fn parent_model_id(obj: &fbxcel_dom::v7400::object::ObjectHandle<'_>) -> Option<i64> {
+    use fbxcel_dom::v7400::object::model::TypedModelHandle as M;
+    let model = match obj.get_typed() {
+        TypedObjectHandle::Model(M::LimbNode(n)) => n.parent_model()?,
+        TypedObjectHandle::Model(M::Null(n)) => n.parent_model()?,
+        _ => return None,
+    };
+    // TypedModelHandle derefs to ModelHandle → ObjectHandle, so the chained
+    // `**` reaches the ObjectHandle and we can read its raw id.
+    let object_id_raw = match model {
+        M::LimbNode(n) => (**n).object_id().raw(),
+        M::Null(n) => (**n).object_id().raw(),
+        M::Mesh(n) => (**n).object_id().raw(),
+        M::Camera(n) => (**n).object_id().raw(),
+        M::Light(n) => (**n).object_id().raw(),
+        _ => return None,
+    };
+    Some(object_id_raw)
+}
+
+#[cfg(feature = "fbx")]
+fn topo_sort(bones: &HashMap<i64, BoneInfo>) -> Vec<i64> {
+    let mut visited: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    let mut out: Vec<i64> = Vec::new();
+    let all_ids: Vec<i64> = bones.keys().copied().collect();
+
+    fn visit(
+        id: i64,
+        bones: &HashMap<i64, BoneInfo>,
+        visited: &mut std::collections::HashSet<i64>,
+        out: &mut Vec<i64>,
+    ) {
+        if !visited.insert(id) {
+            return;
+        }
+        if let Some(p) = bones.get(&id).and_then(|b| b.parent_id)
+            && bones.contains_key(&p)
+        {
+            visit(p, bones, visited, out);
+        }
+        out.push(id);
+    }
+    for id in all_ids {
+        visit(id, bones, &mut visited, &mut out);
+    }
+    out
+}
+
+#[cfg(feature = "fbx")]
+fn read_i32_array(
+    node: &fbxcel::tree::v7400::NodeHandle<'_>,
+    name: &str,
+) -> Option<Vec<i32>> {
+    let child = node.first_child_by_name(name)?;
+    match child.attributes().first()? {
+        fbxcel::low::v7400::AttributeValue::ArrI32(v) => Some(v.clone()),
+        fbxcel::low::v7400::AttributeValue::ArrI64(v) => {
+            Some(v.iter().map(|&i| i as i32).collect())
+        }
+        _ => None,
+    }
+}
+
+#[cfg(feature = "fbx")]
+fn read_f64_array(
+    node: &fbxcel::tree::v7400::NodeHandle<'_>,
+    name: &str,
+) -> Option<Vec<f64>> {
+    let child = node.first_child_by_name(name)?;
+    match child.attributes().first()? {
+        fbxcel::low::v7400::AttributeValue::ArrF64(v) => Some(v.clone()),
+        fbxcel::low::v7400::AttributeValue::ArrF32(v) => {
+            Some(v.iter().map(|&f| f as f64).collect())
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[cfg(feature = "fbx")]
+    #[test]
+    fn smoke_skin_extraction_gamergirl_01() {
+        let path = Path::new(
+            "/Users/noah/Clone/DRAKE/crates/drake-demo/assets/GamerGirl/Base_mesh/SK_GamerGirl_01.fbx",
+        );
+        if !path.exists() {
+            eprintln!("skipping: GamerGirl pack not present");
+            return;
+        }
+        let scene = scene_from_path(path).expect("fbx must load");
+        assert!(
+            !scene.skeletons.is_empty(),
+            "expected at least one skeleton extracted from skinned FBX"
+        );
+        let skeleton = &scene.skeletons[0];
+        assert!(
+            !skeleton.joints.is_empty(),
+            "skeleton must contain at least one joint"
+        );
+        let skinned_count = scene
+            .meshes
+            .iter()
+            .filter(|m| m.skeleton_index.is_some() && m.mesh.skin_weights.is_some())
+            .count();
+        assert!(
+            skinned_count > 0,
+            "expected at least one mesh with bound skin weights"
+        );
+        // Sanity-check the weights of one skinned mesh.
+        if let Some(mesh) = scene
+            .meshes
+            .iter()
+            .find(|m| m.mesh.skin_weights.is_some())
+        {
+            let sw = mesh.mesh.skin_weights.as_ref().unwrap();
+            assert_eq!(sw.joint_indices.len(), mesh.mesh.positions.len());
+            assert_eq!(sw.joint_weights.len(), mesh.mesh.positions.len());
+            // Find at least one vertex with non-zero weight.
+            let has_weight = sw
+                .joint_weights
+                .iter()
+                .any(|w| w.iter().any(|&v| v > 0.0));
+            assert!(has_weight, "all vertex skin weights are zero");
+        }
+    }
+}
+
+#[cfg(feature = "fbx")]
+fn read_mat4(node: &fbxcel::tree::v7400::NodeHandle<'_>, name: &str) -> Option<glam::Mat4> {
+    let values = read_f64_array(node, name)?;
+    if values.len() < 16 {
+        return None;
+    }
+    // FBX stores matrices column-major.
+    let m: [f32; 16] = std::array::from_fn(|i| values[i] as f32);
+    Some(glam::Mat4::from_cols_array(&m))
 }
