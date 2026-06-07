@@ -13,8 +13,9 @@ use fbxcel_dom::v7400::Document;
 
 use crate::error::IoError;
 use crate::types::{
-    IoMaterial, IoMesh, IoScene, Joint, Skeleton, SkinWeights, SurfaceMesh, TextureData,
-    TextureSource,
+    AnimationChannel, AnimationClip, AnimationInterpolation, AnimationSampler, AnimationTrack,
+    AnimationTrackValues, IoMaterial, IoMesh, IoScene, Joint, Skeleton, SkinWeights, SurfaceMesh,
+    TextureData, TextureSource,
 };
 
 /// Decode an FBX file into a CPU-side scene.
@@ -317,10 +318,13 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
 
         assign_hierarchy(&document, &mut meshes);
 
+        let animations = extract_animations(&document, &mut skeletons);
+
         Ok(IoScene {
             meshes,
             materials,
             skeletons,
+            animations,
             ..IoScene::default()
         })
     }
@@ -406,14 +410,19 @@ fn fan_triangulator(
     Ok(())
 }
 
-fn extract_node_transform(
-    mesh_model: &fbxcel_dom::v7400::object::model::MeshHandle<'_>,
-    axis_transform: &glam::Mat4,
-    unit_scale: f32,
-) -> glam::Mat4 {
-    let props = match mesh_model.direct_properties() {
-        Some(props) => props,
-        None => return *axis_transform * glam::Mat4::from_scale(glam::Vec3::splat(unit_scale)),
+/// Read the FBX-space local TRS for a model node, plus its geometric
+/// offset. Returns `(local, geometric)` matrices without any axis
+/// transform or unit scaling applied — those are intended to be applied
+/// once at the root of the walk by [`extract_node_transform`].
+///
+/// Works for any `ModelHandle` variant (Mesh, Null, LimbNode, ...). For
+/// nodes without a `Properties70` block (rare; mostly a no-op root),
+/// returns identity for both.
+fn extract_local_components(
+    model: &fbxcel_dom::v7400::object::model::ModelHandle<'_>,
+) -> (glam::Mat4, glam::Mat4) {
+    let Some(props) = model.direct_properties() else {
+        return (glam::Mat4::IDENTITY, glam::Mat4::IDENTITY);
     };
 
     let translation = read_vec3_property(&props, "Lcl Translation").unwrap_or(glam::Vec3::ZERO);
@@ -448,7 +457,69 @@ fn extract_node_transform(
     let geometric = geo_t * geo_r * geo_s;
 
     let local = t * r_off * r_piv * pre_r * r * post_r_inv * r_piv_inv * s_off * s_piv * s * s_piv_inv;
-    *axis_transform * glam::Mat4::from_scale(glam::Vec3::splat(unit_scale)) * local * geometric
+    (local, geometric)
+}
+
+/// Compute the absolute world transform for a Mesh node, walking up the
+/// full FBX parent chain through every node type (Mesh, Null, LimbNode,
+/// ...). Each ancestor contributes its `local` TRS. Geometric offset is
+/// the leaf node's only (it does not propagate to children). Axis
+/// transform + unit scale are applied once at the root.
+///
+/// Unity-exported FBX commonly stacks Mesh → Null → Mesh chains where
+/// the Null nodes carry the placement transforms (LODGroup containers,
+/// "DummyHelper" exporter scaffolding). Earlier versions of this loader
+/// only extracted each node's own local transform and tracked Mesh →
+/// Mesh parent links separately; transforms on Null/LimbNode parents
+/// silently dropped, producing detached "floating" sub-meshes in the
+/// output scene. This walk picks up every ancestor type, so the world
+/// position matches what a runtime engine using FBX cumulative
+/// transforms would produce.
+fn extract_node_transform(
+    mesh_model: &fbxcel_dom::v7400::object::model::MeshHandle<'_>,
+    axis_transform: &glam::Mat4,
+    unit_scale: f32,
+) -> glam::Mat4 {
+    use fbxcel_dom::v7400::object::model::TypedModelHandle;
+    use std::ops::Deref;
+
+    let (mut cumulative, geometric) = extract_local_components(mesh_model.deref());
+
+    // Walk parents up the chain. `parent_model()` returns
+    // `Option<TypedModelHandle>`; we dispatch by variant to read its
+    // local TRS, then chain to its own parent.
+    let mut current: Option<TypedModelHandle<'_>> = mesh_model.parent_model();
+    let mut depth_guard = 0;
+    while let Some(parent) = current {
+        depth_guard += 1;
+        if depth_guard > 256 {
+            // FBX hierarchies hundreds deep are pathological; bail rather
+            // than infinite-loop on a malformed file.
+            break;
+        }
+        let (parent_local, _parent_geometric) = match &parent {
+            TypedModelHandle::Mesh(m) => extract_local_components(m.deref()),
+            TypedModelHandle::Null(n) => extract_local_components(n.deref()),
+            TypedModelHandle::LimbNode(n) => extract_local_components(n.deref()),
+            TypedModelHandle::Light(l) => extract_local_components(l.deref()),
+            TypedModelHandle::Camera(c) => extract_local_components(c.deref()),
+            // Unknown / future variants: stop walking so we don't drop
+            // the ones we already accumulated. Mirrors the conservative
+            // posture of the rest of this loader.
+            _ => break,
+        };
+        cumulative = parent_local * cumulative;
+        current = match parent {
+            TypedModelHandle::Mesh(m) => m.parent_model(),
+            TypedModelHandle::Null(n) => n.parent_model(),
+            TypedModelHandle::LimbNode(n) => n.parent_model(),
+            TypedModelHandle::Light(l) => l.parent_model(),
+            TypedModelHandle::Camera(c) => c.parent_model(),
+            _ => None,
+        };
+    }
+
+    *axis_transform * glam::Mat4::from_scale(glam::Vec3::splat(unit_scale)) * cumulative * geometric
 }
 
 fn read_vec3_property(
@@ -817,8 +888,8 @@ fn extract_skin(
         .collect();
 
     let unit_scale_mat = glam::Mat4::from_scale(glam::Vec3::splat(unit_scale));
-    // Match the Y-up to Z-up reorientation that drake-assets applies to FBX
-    // vertex positions, so joint inverse-binds land in the same scene space.
+    // Match the Y-up to Z-up reorientation applied to FBX vertex positions,
+    // so joint inverse-binds land in the same scene space.
     let y_up_to_z_up_mat = glam::Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2);
 
     let joints: Vec<Joint> = id_order
@@ -962,57 +1033,357 @@ fn read_f64_array(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::Path;
+// ---------------------------------------------------------------------------
+// Animation extraction
+// ---------------------------------------------------------------------------
 
-    #[cfg(feature = "fbx")]
-    #[test]
-    fn smoke_skin_extraction_gamergirl_01() {
-        let path = Path::new(
-            "/Users/noah/Clone/DRAKE/crates/drake-demo/assets/GamerGirl/Base_mesh/SK_GamerGirl_01.fbx",
-        );
-        if !path.exists() {
-            eprintln!("skipping: GamerGirl pack not present");
-            return;
-        }
-        let scene = scene_from_path(path).expect("fbx must load");
-        assert!(
-            !scene.skeletons.is_empty(),
-            "expected at least one skeleton extracted from skinned FBX"
-        );
-        let skeleton = &scene.skeletons[0];
-        assert!(
-            !skeleton.joints.is_empty(),
-            "skeleton must contain at least one joint"
-        );
-        let skinned_count = scene
-            .meshes
-            .iter()
-            .filter(|m| m.skeleton_index.is_some() && m.mesh.skin_weights.is_some())
-            .count();
-        assert!(
-            skinned_count > 0,
-            "expected at least one mesh with bound skin weights"
-        );
-        // Sanity-check the weights of one skinned mesh.
-        if let Some(mesh) = scene
-            .meshes
-            .iter()
-            .find(|m| m.mesh.skin_weights.is_some())
-        {
-            let sw = mesh.mesh.skin_weights.as_ref().unwrap();
-            assert_eq!(sw.joint_indices.len(), mesh.mesh.positions.len());
-            assert_eq!(sw.joint_weights.len(), mesh.mesh.positions.len());
-            // Find at least one vertex with non-zero weight.
-            let has_weight = sw
-                .joint_weights
-                .iter()
-                .any(|w| w.iter().any(|&v| v > 0.0));
-            assert!(has_weight, "all vertex skin weights are zero");
+/// One ktime tick is 1 / 46_186_158_000 second. Conventional FBX constant.
+#[cfg(feature = "fbx")]
+const FBX_KTIME_PER_SECOND: f64 = 46_186_158_000.0;
+
+#[cfg(feature = "fbx")]
+fn extract_animations(document: &Document, skeletons: &mut Vec<Skeleton>) -> Vec<AnimationClip> {
+    let mut anim_stacks: Vec<fbxcel_dom::v7400::object::ObjectHandle<'_>> = Vec::new();
+    for obj in document.objects() {
+        let c = obj.class();
+        if c == "AnimStack" || c == "AnimationStack" {
+            anim_stacks.push(obj);
         }
     }
+    if anim_stacks.is_empty() {
+        return Vec::new();
+    }
+
+    // Build a rig skeleton from every LimbNode/Null model in the document so
+    // animation tracks have a stable joint indexing. If a skin already produced
+    // a skeleton whose bone set matches, reuse it; otherwise append a new one.
+    let (rig_skeleton, model_id_to_joint) = build_rig_from_limbs(document);
+    if model_id_to_joint.is_empty() {
+        return Vec::new();
+    }
+
+    // Find a matching existing skeleton by bone name set, otherwise append.
+    let rig_skel_idx = find_or_insert_rig(skeletons, rig_skeleton);
+    // Name -> idx in the final rig skeleton (post-insert), for tracks remapping.
+    let rig_name_to_idx: HashMap<String, usize> = skeletons[rig_skel_idx]
+        .joints
+        .iter()
+        .enumerate()
+        .map(|(i, j)| (j.name.clone(), i))
+        .collect();
+
+    // Cache per-bone PreRotation / PostRotation / RotationOrder so each
+    // rotation curve sample can compose them as the FBX bone matrix does:
+    //   R_local = PreR * R_anim * inverse(PostR)
+    // This matches the bind-pose decomposition (which already bakes in PreR
+    // via the bone's TransformLink), so at t=0 the curve agrees with bind.
+    let mut bone_rot_ctx: HashMap<i64, (glam::Mat4, glam::Mat4, i32)> = HashMap::new();
+    for obj in document.objects() {
+        if !model_id_to_joint.contains_key(&obj.object_id().raw()) {
+            continue;
+        }
+        let Some(props) = obj.direct_properties() else { continue };
+        let pre = read_vec3_property(&props, "PreRotation").unwrap_or(glam::Vec3::ZERO);
+        let post = read_vec3_property(&props, "PostRotation").unwrap_or(glam::Vec3::ZERO);
+        let order = read_int_property(&props, "RotationOrder").unwrap_or(0);
+        let pre_m = euler_to_mat4(pre, 0);
+        let post_inv_m = euler_to_mat4(post, 0).inverse();
+        bone_rot_ctx.insert(obj.object_id().raw(), (pre_m, post_inv_m, order));
+    }
+
+    let mut clips = Vec::new();
+    for stack in anim_stacks {
+        let name = stack.name().unwrap_or("AnimStack").to_string();
+        let mut tracks: Vec<AnimationTrack> = Vec::new();
+        let mut max_t: f32 = 0.0;
+
+        // Stack -> Layers (layers connect TO stack: layer is source, stack is dest)
+        let layers: Vec<fbxcel_dom::v7400::object::ObjectHandle<'_>> = stack
+            .source_objects()
+            .filter_map(|c| c.object_handle())
+            .filter(|o| { let c = o.class(); c == "AnimLayer" || c == "AnimationLayer" })
+            .collect();
+
+        for layer in layers {
+            // Layer -> CurveNodes (curvenodes connect TO layer)
+            let curve_nodes: Vec<fbxcel_dom::v7400::object::ObjectHandle<'_>> = layer
+                .source_objects()
+                .filter_map(|c| c.object_handle())
+                .filter(|o| { let c = o.class(); c == "AnimCurveNode" || c == "AnimationCurveNode" })
+                .collect();
+
+            for cn in curve_nodes {
+                // CurveNode -> Model with property label
+                let target = cn
+                    .destination_objects()
+                    .find_map(|c| {
+                        let label = c.label()?;
+                        let obj = c.object_handle()?;
+                        let model_id = obj.object_id().raw();
+                        let joint_idx = model_id_to_joint.get(&model_id)?;
+                        let bone_name = obj.name().unwrap_or("").to_string();
+                        Some((*joint_idx, bone_name, label.to_string(), model_id))
+                    });
+                let Some((local_joint_idx, bone_name, property, model_id)) = target else {
+                    continue;
+                };
+                let channel = match property.as_str() {
+                    "Lcl Translation" => AnimationChannel::Translation,
+                    "Lcl Rotation" => AnimationChannel::Rotation,
+                    "Lcl Scaling" => AnimationChannel::Scale,
+                    _ => continue,
+                };
+
+                // Resolve joint index in the final rig skeleton via name.
+                let _ = local_joint_idx;
+                let Some(&rig_joint) = rig_name_to_idx.get(&bone_name) else {
+                    continue;
+                };
+
+                // CurveNode <- Curves labelled "d|X" "d|Y" "d|Z"
+                let mut axis_curves: [Option<(Vec<f32>, Vec<f32>)>; 3] = [None, None, None];
+                for c in cn.source_objects() {
+                    let Some(label) = c.label() else { continue };
+                    let axis = match label {
+                        "d|X" | "d|X|X" => 0,
+                        "d|Y" | "d|Y|Y" => 1,
+                        "d|Z" | "d|Z|Z" => 2,
+                        _ => continue,
+                    };
+                    let Some(obj) = c.object_handle() else { continue };
+                    let cc = obj.class();
+                    if cc != "AnimCurve" && cc != "AnimationCurve" {
+                        continue;
+                    }
+                    let node = obj.node();
+                    let Some(times) = read_i64_array(&node, "KeyTime") else { continue };
+                    let Some(values) = read_f32_array(&node, "KeyValueFloat") else { continue };
+                    if times.is_empty() || times.len() != values.len() {
+                        continue;
+                    }
+                    let times_s: Vec<f32> = times
+                        .iter()
+                        .map(|t| (*t as f64 / FBX_KTIME_PER_SECOND) as f32)
+                        .collect();
+                    axis_curves[axis] = Some((times_s, values));
+                }
+                if axis_curves.iter().all(|c| c.is_none()) {
+                    continue;
+                }
+
+                // Union times across the three axes.
+                let mut union_times: Vec<f32> = Vec::new();
+                for c in axis_curves.iter().flatten() {
+                    union_times.extend_from_slice(&c.0);
+                }
+                if union_times.is_empty() {
+                    continue;
+                }
+                union_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                union_times.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+
+                // For each axis, default-value lookup. If curve is missing,
+                // hold a constant value (0 for translation/rotation, 1 for scale).
+                let default = if matches!(channel, AnimationChannel::Scale) {
+                    1.0
+                } else {
+                    0.0
+                };
+                let sample_axis = |a: usize, t: f32| -> f32 {
+                    match &axis_curves[a] {
+                        None => default,
+                        Some((ts, vs)) => sample_linear(ts, vs, t),
+                    }
+                };
+
+                if let Some(last) = union_times.last() {
+                    if *last > max_t {
+                        max_t = *last;
+                    }
+                }
+
+                let values = match channel {
+                    AnimationChannel::Translation | AnimationChannel::Scale => {
+                        let v: Vec<glam::Vec3> = union_times
+                            .iter()
+                            .map(|t| {
+                                glam::Vec3::new(
+                                    sample_axis(0, *t),
+                                    sample_axis(1, *t),
+                                    sample_axis(2, *t),
+                                )
+                            })
+                            .collect();
+                        AnimationTrackValues::Vec3(v)
+                    }
+                    AnimationChannel::Rotation => {
+                        // Compose with PreRotation / PostRotation as FBX does:
+                        //   R_local = PreR * R_anim * inverse(PostR)
+                        // The bind pose (derived from TransformLink) already
+                        // bakes in PreR, so this composition matches it at t=0.
+                        let (pre_m, post_inv_m, order) = bone_rot_ctx
+                            .get(&model_id)
+                            .copied()
+                            .unwrap_or((glam::Mat4::IDENTITY, glam::Mat4::IDENTITY, 0));
+                        let v: Vec<glam::Quat> = union_times
+                            .iter()
+                            .map(|t| {
+                                let deg = glam::Vec3::new(
+                                    sample_axis(0, *t),
+                                    sample_axis(1, *t),
+                                    sample_axis(2, *t),
+                                );
+                                let r_anim = euler_to_mat4(deg, order);
+                                let m = pre_m * r_anim * post_inv_m;
+                                glam::Quat::from_mat4(&m).normalize()
+                            })
+                            .collect();
+                        AnimationTrackValues::Quat(v)
+                    }
+                };
+
+                tracks.push(AnimationTrack {
+                    joint: rig_joint,
+                    channel,
+                    sampler: AnimationSampler {
+                        interpolation: AnimationInterpolation::Linear,
+                        times: union_times,
+                        values,
+                    },
+                });
+            }
+        }
+
+        if tracks.is_empty() {
+            continue;
+        }
+        clips.push(AnimationClip {
+            name,
+            duration: max_t,
+            skeleton_index: rig_skel_idx,
+            tracks,
+        });
+    }
+    clips
+}
+
+#[cfg(feature = "fbx")]
+fn find_or_insert_rig(skeletons: &mut Vec<Skeleton>, rig: Skeleton) -> usize {
+    let rig_names: std::collections::HashSet<&str> =
+        rig.joints.iter().map(|j| j.name.as_str()).collect();
+    for (i, sk) in skeletons.iter().enumerate() {
+        let sk_names: std::collections::HashSet<&str> =
+            sk.joints.iter().map(|j| j.name.as_str()).collect();
+        // Reuse an existing skeleton iff it covers the rig fully (bone names).
+        if rig_names.iter().all(|n| sk_names.contains(n)) {
+            return i;
+        }
+    }
+    let idx = skeletons.len();
+    skeletons.push(rig);
+    idx
+}
+
+/// Build a Skeleton from every LimbNode/Null model in the document, returning
+/// the skeleton and a model-id -> joint-index map.
+#[cfg(feature = "fbx")]
+fn build_rig_from_limbs(document: &Document) -> (Skeleton, HashMap<i64, u8>) {
+    use fbxcel_dom::v7400::object::model::TypedModelHandle as M;
+
+    let mut bones: HashMap<i64, BoneInfo> = HashMap::new();
+    for obj in document.objects() {
+        let TypedObjectHandle::Model(m) = obj.get_typed() else {
+            continue;
+        };
+        let is_bone = matches!(m, M::LimbNode(_) | M::Null(_));
+        if !is_bone {
+            continue;
+        }
+        let id = obj.object_id().raw();
+        let name = obj.name().unwrap_or("").to_string();
+        let parent = parent_model_id(&obj);
+        bones.insert(
+            id,
+            BoneInfo {
+                name,
+                parent_id: parent,
+                transform_link: glam::Mat4::IDENTITY,
+            },
+        );
+    }
+    if bones.is_empty() {
+        return (Skeleton::default(), HashMap::new());
+    }
+
+    let id_order = topo_sort(&bones);
+    let id_to_idx: HashMap<i64, u8> = id_order
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (*id, i as u8))
+        .collect();
+
+    let joints: Vec<Joint> = id_order
+        .iter()
+        .map(|id| {
+            let info = &bones[id];
+            Joint {
+                name: info.name.clone(),
+                parent: info.parent_id.and_then(|pid| id_to_idx.get(&pid).copied()),
+                inverse_bind: glam::Mat4::IDENTITY,
+            }
+        })
+        .collect();
+    (
+        Skeleton {
+            name: String::new(),
+            joints,
+        },
+        id_to_idx,
+    )
+}
+
+#[cfg(feature = "fbx")]
+fn read_i64_array(node: &fbxcel::tree::v7400::NodeHandle<'_>, name: &str) -> Option<Vec<i64>> {
+    let child = node.first_child_by_name(name)?;
+    match child.attributes().first()? {
+        fbxcel::low::v7400::AttributeValue::ArrI64(v) => Some(v.clone()),
+        fbxcel::low::v7400::AttributeValue::ArrI32(v) => Some(v.iter().map(|&i| i as i64).collect()),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "fbx")]
+fn read_f32_array(node: &fbxcel::tree::v7400::NodeHandle<'_>, name: &str) -> Option<Vec<f32>> {
+    let child = node.first_child_by_name(name)?;
+    match child.attributes().first()? {
+        fbxcel::low::v7400::AttributeValue::ArrF32(v) => Some(v.clone()),
+        fbxcel::low::v7400::AttributeValue::ArrF64(v) => Some(v.iter().map(|&f| f as f32).collect()),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "fbx")]
+fn sample_linear(times: &[f32], values: &[f32], t: f32) -> f32 {
+    if times.is_empty() {
+        return 0.0;
+    }
+    if t <= times[0] {
+        return values[0];
+    }
+    if t >= *times.last().unwrap() {
+        return *values.last().unwrap();
+    }
+    for i in 1..times.len() {
+        if t <= times[i] {
+            let span = times[i] - times[i - 1];
+            if span <= 0.0 {
+                return values[i];
+            }
+            let a = (t - times[i - 1]) / span;
+            return values[i - 1] * (1.0 - a) + values[i] * a;
+        }
+    }
+    *values.last().unwrap()
 }
 
 #[cfg(feature = "fbx")]

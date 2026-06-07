@@ -969,8 +969,7 @@ fn convert_primitive(
 
     // Skin attributes. glTF stores joint indices as either u8 or u16; we
     // normalise to u8 because the runtime substrate uses [u8; 4] today. Joint
-    // indices above 255 are clamped with a warning. Phase 5 of the skeletal
-    // plan will widen this to u16.
+    // indices above 255 are clamped with a warning.
     let joint_indices_u16: Option<Vec<[u16; 4]>> = reader
         .read_joints(0)
         .map(|iter| iter.into_u16().collect());
@@ -1177,8 +1176,7 @@ fn to_rgba8(data: &gltf::image::Data) -> Vec<u8> {
 // right-handed Z-up scene. The conversion is a +90 degree rotation about the
 // X-axis: Y -> Z, Z -> -Y, X unchanged. Every orientation-bearing piece of
 // data (positions, normals, tangents, mesh transforms, inverse-bind matrices,
-// animation samples) is rotated once at load. The maths is the same as the
-// `reorient_*` helpers in drake-assets' rigged loader.
+// animation samples) is rotated once at load.
 // ---------------------------------------------------------------------------
 
 /// +90 degree rotation about X as a Mat4.
@@ -1236,7 +1234,7 @@ fn reorient_scale(s: glam::Vec3) -> glam::Vec3 {
 /// vanishingly small total influence (degenerate authoring, or weights that
 /// got rounded to zero on quantisation) falls back to a full-weight bind to
 /// joint 0 so the runtime never has to divide by zero or render a missing
-/// vertex. Threshold matches the convention in DRAKE's rigged loader.
+/// vertex.
 fn normalise_skin_weights(w: [f32; 4]) -> [f32; 4] {
     let sum = w[0] + w[1] + w[2] + w[3];
     if sum > 1e-6 {
