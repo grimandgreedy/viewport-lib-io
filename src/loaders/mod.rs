@@ -16,6 +16,10 @@ pub mod ensight;
 /// Exodus II dataset decoding.
 pub mod exodus;
 
+/// OpenEXR image decoding.
+#[cfg(feature = "exr")]
+pub mod exr;
+
 /// FBX scene decoding.
 #[cfg(feature = "fbx")]
 pub mod fbx;
