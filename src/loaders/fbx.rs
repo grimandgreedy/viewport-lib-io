@@ -519,7 +519,22 @@ fn extract_node_transform(
         };
     }
 
-    *axis_transform * glam::Mat4::from_scale(glam::Vec3::splat(unit_scale)) * cumulative * geometric
+    // Per-leaf axis-transform veto: if the cumulative chain (Lcl
+    // Rotation on the mesh or any Null/LimbNode ancestor) already lands
+    // +Y on +Z, the scene-level Y→Z fix from `get_axis_transform` would
+    // double up. This happens in mixed Unity asset packs where some FBX
+    // leaves bake the convention via `Lcl Rotation = (90, 0, 0)` and
+    // others rely on the importer to do it.
+    let cumulative_y_in_world = cumulative.transform_vector3(glam::Vec3::Y);
+    let already_z_up = cumulative_y_in_world.z.abs() > 0.9
+        && cumulative_y_in_world.y.abs() < 0.5;
+    let effective_axis = if already_z_up {
+        glam::Mat4::IDENTITY
+    } else {
+        *axis_transform
+    };
+
+    effective_axis * glam::Mat4::from_scale(glam::Vec3::splat(unit_scale)) * cumulative * geometric
 }
 
 fn read_vec3_property(
@@ -655,6 +670,23 @@ fn extract_texture(
     None
 }
 
+/// Build the axis-conversion matrix that lands FBX vertices into the
+/// loader's canonical output frame: Z-up, right-handed, CCW-front.
+///
+/// FBX `GlobalSettings.UpAxis` encodes the source up axis as `0 = X`,
+/// `1 = Y`, `2 = Z`. In principle a `UpAxis = Z` file is already in our
+/// frame, but in practice many Unity-exported asset packs (Leartes Roman
+/// Street, etc.) write `UpAxis = Z` while the raw vertex stream is still
+/// Y-up — the file's own scene-level convention is contradicted by the
+/// geometry. Some sub-meshes in the same pack carry a compensating
+/// `Lcl Rotation = (90, 0, 0)` on the leaf; most don't.
+///
+/// The strategy used here: **always** produce a Y→Z axis transform
+/// (`+90°` about X), then in [`extract_node_transform`] suppress it for
+/// any leaf whose cumulative parent chain already lands +Y on +Z. That
+/// covers the "exporter compensated via `Lcl Rotation`" case (tree
+/// foliage) without breaking the "exporter left raw Y-up" case (roofs,
+/// pots, arcs, walls).
 fn get_axis_transform(document: &Document) -> (glam::Mat4, f32) {
     let settings = match document.global_settings() {
         Some(settings) => settings,
@@ -688,9 +720,16 @@ fn get_axis_transform(document: &Document) -> (glam::Mat4, f32) {
         .unwrap_or(1.0);
 
     let unit_scale = unit_scale_factor / 100.0;
+    // Treat all FBX content as Y-up at the raw-vertex level (see
+    // doc-comment): a +90° rotation about X maps `(x, y, z) → (x, -z, y)`.
+    // `extract_node_transform` undoes this where the leaf's own
+    // hierarchy already converts +Y to +Z.
     let axis_transform = match up_axis {
-        1 | 2 => glam::Mat4::IDENTITY,
-        _ => glam::Mat4::IDENTITY,
+        // X-up sources are vanishingly rare; if we ever encounter one
+        // we'd rather pass through than guess a swap that breaks more
+        // than it fixes.
+        0 => glam::Mat4::IDENTITY,
+        _ => glam::Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2),
     };
 
     (axis_transform, unit_scale)
@@ -888,15 +927,14 @@ fn extract_skin(
         .collect();
 
     let unit_scale_mat = glam::Mat4::from_scale(glam::Vec3::splat(unit_scale));
-    // Match the Y-up to Z-up reorientation applied to FBX vertex positions,
-    // so joint inverse-binds land in the same scene space.
-    let y_up_to_z_up_mat = glam::Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2);
-
+    // `axis_transform` already lands vertices in Z-up via `get_axis_transform`.
+    // Joint inverse-binds compose with the same chain so they end up in the
+    // same scene space as the skinned vertices.
     let joints: Vec<Joint> = id_order
         .iter()
         .map(|id| {
             let info = &bones[id];
-            let world = y_up_to_z_up_mat * *axis_transform * unit_scale_mat * info.transform_link;
+            let world = *axis_transform * unit_scale_mat * info.transform_link;
             Joint {
                 name: info.name.clone(),
                 parent: info.parent_id.and_then(|pid| id_to_idx.get(&pid).copied()),

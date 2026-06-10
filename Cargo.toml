@@ -60,3 +60,8 @@ vtkio = { version = "0.6", optional = true }
 name = "probe-gltf"
 path = "examples/probe_gltf.rs"
 required-features = ["gltf"]
+
+[[example]]
+name = "probe-fbx-axis"
+path = "examples/probe_fbx_axis.rs"
+required-features = ["fbx"]
