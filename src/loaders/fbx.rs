@@ -5,11 +5,11 @@ use std::path::Path;
 use anyhow::Error as AnyhowError;
 use fbxcel_dom::any::AnyDocument;
 use fbxcel_dom::fbxcel;
+use fbxcel_dom::v7400::Document;
 use fbxcel_dom::v7400::data::mesh::layer::TypedLayerElementHandle;
 use fbxcel_dom::v7400::data::mesh::{PolygonVertexIndex, PolygonVertices};
-use fbxcel_dom::v7400::object::model::TypedModelHandle;
 use fbxcel_dom::v7400::object::TypedObjectHandle;
-use fbxcel_dom::v7400::Document;
+use fbxcel_dom::v7400::object::model::TypedModelHandle;
 
 use crate::error::IoError;
 use crate::types::{
@@ -25,14 +25,14 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
         let file = std::fs::File::open(path)?;
         let reader = BufReader::new(file);
 
-        let document = match AnyDocument::from_seekable_reader(reader)
-            .map_err(|error| IoError::Parse(format!("FBX load failed ({}): {error:?}", path.display())))?
-        {
+        let document = match AnyDocument::from_seekable_reader(reader).map_err(|error| {
+            IoError::Parse(format!("FBX load failed ({}): {error:?}", path.display()))
+        })? {
             AnyDocument::V7400(_, document) => document,
             _ => {
                 return Err(IoError::Parse(
                     "unsupported FBX version (only binary FBX 7.4/7.5 supported)".into(),
-                ))
+                ));
             }
         };
 
@@ -42,16 +42,19 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
         let mut meshes = Vec::new();
         let mut materials = Vec::new();
         let mut skeletons: Vec<Skeleton> = Vec::new();
-        let mut material_map: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+        let mut material_map: std::collections::HashMap<i64, usize> =
+            std::collections::HashMap::new();
 
         for object in document.objects() {
-            if let TypedObjectHandle::Model(TypedModelHandle::Mesh(mesh_model)) = object.get_typed() {
+            if let TypedObjectHandle::Model(TypedModelHandle::Mesh(mesh_model)) = object.get_typed()
+            {
                 let model_name = mesh_model
                     .name()
                     .map(std::borrow::ToOwned::to_owned)
                     .unwrap_or_else(|| format!("fbx_mesh_{}", meshes.len()));
 
-                let node_transform = extract_node_transform(&mesh_model, &axis_transform, unit_scale);
+                let node_transform =
+                    extract_node_transform(&mesh_model, &axis_transform, unit_scale);
 
                 let model_materials: Vec<usize> = mesh_model
                     .materials()
@@ -114,10 +117,26 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
                 }
 
                 let mut normals_vec: Option<Vec<[f32; 3]>> = None;
-                let mut uvs_vec: Option<Vec<[f32; 2]>> = None;
+                // Collect every UV channel we can decode. Picking the
+                // right one happens after the loop — a single FBX can
+                // expose UV0 as a wind / vertex-shader parameter
+                // channel (V values up to ~70) and UV1 as the real
+                // texture coordinates. Always taking the first channel
+                // would map albedo samples onto the wind data and land
+                // every fragment in whatever atlas region (0, 70 mod 1)
+                // ends up at — typically the transparent corner.
+                let mut uv_candidates: Vec<Vec<[f32; 2]>> = Vec::new();
                 let mut material_indices_per_vert: Option<Vec<usize>> = None;
 
-                if let Some(layer) = geometry.layers().next() {
+                // Walk EVERY layer the geometry exposes. FBX commonly
+                // splits secondary UV sets, vertex-painted normals, and
+                // material assignments across distinct layers — the
+                // HDRP tree convention puts the wind / animation UV in
+                // layer 0 and the actual texture UV in layer 1. Picking
+                // only `layers().next()` strands the texture channel and
+                // every albedo sample lands at the wind coordinate
+                // (V ~ 70).
+                for layer in geometry.layers() {
                     for entry in layer.layer_element_entries() {
                         match entry.typed_layer_element() {
                             Ok(TypedLayerElementHandle::Normal(normal_handle)) => {
@@ -127,10 +146,18 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
                                 if let Ok(normals_data) = normal_handle.normals() {
                                     let mut normals = Vec::with_capacity(positions.len());
                                     let mut ok = true;
-                                    for triangle_vertex in triangle_vertices.triangle_vertex_indices() {
-                                        match normals_data.normal(&triangle_vertices, triangle_vertex) {
+                                    for triangle_vertex in
+                                        triangle_vertices.triangle_vertex_indices()
+                                    {
+                                        match normals_data
+                                            .normal(&triangle_vertices, triangle_vertex)
+                                        {
                                             Ok(normal) => {
-                                                normals.push([normal.x as f32, normal.y as f32, normal.z as f32]);
+                                                normals.push([
+                                                    normal.x as f32,
+                                                    normal.y as f32,
+                                                    normal.z as f32,
+                                                ]);
                                             }
                                             Err(_) => {
                                                 ok = false;
@@ -144,13 +171,12 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
                                 }
                             }
                             Ok(TypedLayerElementHandle::Uv(uv_handle)) => {
-                                if uvs_vec.is_some() {
-                                    continue;
-                                }
                                 if let Ok(uv_data) = uv_handle.uv() {
                                     let mut uvs = Vec::with_capacity(positions.len());
                                     let mut ok = true;
-                                    for triangle_vertex in triangle_vertices.triangle_vertex_indices() {
+                                    for triangle_vertex in
+                                        triangle_vertices.triangle_vertex_indices()
+                                    {
                                         match uv_data.uv(&triangle_vertices, triangle_vertex) {
                                             Ok(uv) => uvs.push([uv.x as f32, uv.y as f32]),
                                             Err(_) => {
@@ -160,7 +186,7 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
                                         }
                                     }
                                     if ok && uvs.len() == positions.len() {
-                                        uvs_vec = Some(uvs);
+                                        uv_candidates.push(uvs);
                                     }
                                 }
                             }
@@ -171,8 +197,12 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
                                 if let Ok(material_data) = material_handle.materials() {
                                     let mut material_ids = Vec::new();
                                     let mut ok = true;
-                                    for triangle_vertex in triangle_vertices.triangle_vertex_indices() {
-                                        match material_data.material_index(&triangle_vertices, triangle_vertex) {
+                                    for triangle_vertex in
+                                        triangle_vertices.triangle_vertex_indices()
+                                    {
+                                        match material_data
+                                            .material_index(&triangle_vertices, triangle_vertex)
+                                        {
                                             Ok(index) => material_ids.push(index.to_u32() as usize),
                                             Err(_) => {
                                                 ok = false;
@@ -201,56 +231,175 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
                     &axis_transform,
                     unit_scale,
                 );
-                let (skin_per_vertex, skeleton_index): (
-                    Option<SkinWeights>,
-                    Option<usize>,
-                ) = if let Some(skin) = extracted_skin {
-                    let mut ji: Vec<[u8; 4]> = Vec::with_capacity(positions.len());
-                    let mut jw: Vec<[f32; 4]> = Vec::with_capacity(positions.len());
-                    for &cp in &vertex_cp_index {
-                        let influences = skin
-                            .cp_influences
-                            .get(cp as usize)
-                            .map(|v| v.as_slice())
-                            .unwrap_or(&[]);
-                        let mut idx = [0u8; 4];
-                        let mut wt = [0f32; 4];
-                        for (k, (i, w)) in influences.iter().take(4).enumerate() {
-                            idx[k] = *i;
-                            wt[k] = *w;
+                let (skin_per_vertex, skeleton_index): (Option<SkinWeights>, Option<usize>) =
+                    if let Some(skin) = extracted_skin {
+                        let mut ji: Vec<[u8; 4]> = Vec::with_capacity(positions.len());
+                        let mut jw: Vec<[f32; 4]> = Vec::with_capacity(positions.len());
+                        for &cp in &vertex_cp_index {
+                            let influences = skin
+                                .cp_influences
+                                .get(cp as usize)
+                                .map(|v| v.as_slice())
+                                .unwrap_or(&[]);
+                            let mut idx = [0u8; 4];
+                            let mut wt = [0f32; 4];
+                            for (k, (i, w)) in influences.iter().take(4).enumerate() {
+                                idx[k] = *i;
+                                wt[k] = *w;
+                            }
+                            ji.push(idx);
+                            jw.push(wt);
                         }
-                        ji.push(idx);
-                        jw.push(wt);
+                        let sk_idx = skeletons.len();
+                        skeletons.push(skin.skeleton);
+                        (
+                            Some(SkinWeights {
+                                joint_indices: ji,
+                                joint_weights: jw,
+                            }),
+                            Some(sk_idx),
+                        )
+                    } else {
+                        (None, None)
+                    };
+
+                // Pick the UV channel most likely to be the albedo
+                // sampling channel.
+                //
+                // Heuristic, in order:
+                //   1. Reject channels whose absolute extents reach
+                //      `DATA_RANGE_LIMIT` (≈5). At that scale the
+                //      values are vertex-shader parameters (HDRP wind
+                //      drives V up to 70, etc.), not texture coords.
+                //   2. Among the survivors, prefer the channel covering
+                //      the **largest area** (du × dv). Albedo UVs
+                //      typically span almost the whole [0, 1] square;
+                //      secondary UVs (lightmaps, ID packs) sit inside
+                //      a smaller sub-region.
+                //   3. Tie-break by lowest absolute overshoot beyond
+                //      [0, 1] — prefer the cleaner texture coord.
+                //
+                // `VIEWPORT_FBX_LOG_UV=1` dumps every candidate's range,
+                // score, and the chosen index so callers can sanity-
+                // check the picker on packs with unusual UV layouts.
+                const DATA_RANGE_LIMIT: f32 = 5.0;
+                let log_uv = std::env::var_os("VIEWPORT_FBX_LOG_UV").is_some();
+                let summarise = |uvs: &[[f32; 2]]| -> (f32, f32, f32, f32) {
+                    let (mut umin, mut umax, mut vmin, mut vmax) = (
+                        f32::INFINITY,
+                        f32::NEG_INFINITY,
+                        f32::INFINITY,
+                        f32::NEG_INFINITY,
+                    );
+                    for uv in uvs {
+                        umin = umin.min(uv[0]);
+                        umax = umax.max(uv[0]);
+                        vmin = vmin.min(uv[1]);
+                        vmax = vmax.max(uv[1]);
                     }
-                    let sk_idx = skeletons.len();
-                    skeletons.push(skin.skeleton);
-                    (
-                        Some(SkinWeights {
-                            joint_indices: ji,
-                            joint_weights: jw,
-                        }),
-                        Some(sk_idx),
-                    )
+                    (umin, umax, vmin, vmax)
+                };
+                if log_uv && !uv_candidates.is_empty() {
+                    eprintln!(
+                        "VIEWPORT_FBX_LOG_UV: {} UV channel(s) found:",
+                        uv_candidates.len()
+                    );
+                    for (i, uvs) in uv_candidates.iter().enumerate() {
+                        let (umin, umax, vmin, vmax) = summarise(uvs);
+                        let max_abs = uvs.iter().fold(0.0_f32, |m, uv| {
+                            m.max(uv[0].abs()).max(uv[1].abs())
+                        });
+                        let area = (umax - umin).max(0.0) * (vmax - vmin).max(0.0);
+                        eprintln!(
+                            "  [{i}] uv=[{:.2},{:.2}]x[{:.2},{:.2}] area={:.2} max_abs={:.2} n={}",
+                            umin,
+                            umax,
+                            vmin,
+                            vmax,
+                            area,
+                            max_abs,
+                            uvs.len()
+                        );
+                    }
+                }
+                let uvs_vec: Option<Vec<[f32; 2]>> = if uv_candidates.len() <= 1 {
+                    uv_candidates.into_iter().next()
                 } else {
-                    (None, None)
+                    // Score: (area, -overshoot). Bigger area wins.
+                    // Channels whose values clearly aren't texture
+                    // coords are discarded so the area test only
+                    // chooses among plausible candidates.
+                    let mut best: Option<(usize, f32, f32, Vec<[f32; 2]>)> = None;
+                    let mut fallback: Option<(usize, f32, Vec<[f32; 2]>)> = None;
+                    for (idx, uvs) in uv_candidates.into_iter().enumerate() {
+                        let (umin, umax, vmin, vmax) = summarise(&uvs);
+                        let max_abs = uvs.iter().fold(0.0_f32, |m, uv| {
+                            m.max(uv[0].abs()).max(uv[1].abs())
+                        });
+                        let area = (umax - umin).max(0.0) * (vmax - vmin).max(0.0);
+                        let overshoot = (-umin).max(0.0)
+                            + (umax - 1.0).max(0.0)
+                            + (-vmin).max(0.0)
+                            + (vmax - 1.0).max(0.0);
+                        if max_abs > DATA_RANGE_LIMIT {
+                            // Keep around in case every channel is
+                            // wild — better than dropping UVs entirely.
+                            match &fallback {
+                                Some((_, fmax, _)) if max_abs >= *fmax => {}
+                                _ => fallback = Some((idx, max_abs, uvs)),
+                            }
+                            continue;
+                        }
+                        let better = match &best {
+                            None => true,
+                            Some((_, barea, bovershoot, _)) => {
+                                // Larger area wins; same area, lower
+                                // overshoot wins.
+                                area > *barea
+                                    || (area == *barea && overshoot < *bovershoot)
+                            }
+                        };
+                        if better {
+                            best = Some((idx, area, overshoot, uvs));
+                        }
+                    }
+                    let picked = best
+                        .map(|(idx, area, overshoot, uvs)| (idx, area, overshoot, uvs, "kept"))
+                        .or_else(|| {
+                            fallback.map(|(idx, mx, uvs)| {
+                                (idx, 0.0, mx, uvs, "fallback (all channels exceed data limit)")
+                            })
+                        });
+                    if log_uv {
+                        if let Some((idx, area, overshoot, _, note)) = &picked {
+                            eprintln!(
+                                "VIEWPORT_FBX_LOG_UV: picked channel {idx} ({note}; area={area:.2}, overshoot={overshoot:.2})"
+                            );
+                        }
+                    }
+                    picked.map(|(_, _, _, uvs, _)| uvs)
                 };
 
                 if let Some(ref material_per_vertex) = material_indices_per_vert {
                     if !model_materials.is_empty() && material_per_vertex.iter().any(|&m| m != 0) {
                         let num_local_materials = model_materials.len();
                         let mut groups: Vec<Vec<usize>> = vec![Vec::new(); num_local_materials];
-                        for (vertex_index, &local_material) in material_per_vertex.iter().enumerate() {
+                        for (vertex_index, &local_material) in
+                            material_per_vertex.iter().enumerate()
+                        {
                             let clamped = local_material.min(num_local_materials - 1);
                             groups[clamped].push(vertex_index);
                         }
 
                         let first_mesh_index = meshes.len();
-                        for (local_material_index, vertex_indices) in groups.into_iter().enumerate() {
+                        for (local_material_index, vertex_indices) in groups.into_iter().enumerate()
+                        {
                             if vertex_indices.is_empty() {
                                 continue;
                             }
 
-                            let sub_positions = vertex_indices.iter().map(|&i| positions[i]).collect();
+                            let sub_positions =
+                                vertex_indices.iter().map(|&i| positions[i]).collect();
                             let sub_normals = vertex_indices.iter().map(|&i| normals[i]).collect();
                             let sub_uvs = uvs_vec
                                 .as_ref()
@@ -356,9 +505,15 @@ fn fan_triangulator(
         4 => {
             let point = |i: usize| -> Option<glam::Vec3> {
                 let point = polygon_vertices.control_point(polygon_vertex_indices[i])?;
-                Some(glam::Vec3::new(point.x as f32, point.y as f32, point.z as f32))
+                Some(glam::Vec3::new(
+                    point.x as f32,
+                    point.y as f32,
+                    point.z as f32,
+                ))
             };
-            if let (Some(p0), Some(p1), Some(p2), Some(p3)) = (point(0), point(1), point(2), point(3)) {
+            if let (Some(p0), Some(p1), Some(p2), Some(p3)) =
+                (point(0), point(1), point(2), point(3))
+            {
                 let n1 = (p0 - p1).cross(p2 - p1);
                 let n3 = (p2 - p3).cross(p0 - p3);
                 if n1.dot(n3) >= 0.0 {
@@ -434,8 +589,10 @@ fn extract_local_components(
     let rotation_pivot = read_vec3_property(&props, "RotationPivot").unwrap_or(glam::Vec3::ZERO);
     let scaling_offset = read_vec3_property(&props, "ScalingOffset").unwrap_or(glam::Vec3::ZERO);
     let scaling_pivot = read_vec3_property(&props, "ScalingPivot").unwrap_or(glam::Vec3::ZERO);
-    let geo_translation = read_vec3_property(&props, "GeometricTranslation").unwrap_or(glam::Vec3::ZERO);
-    let geo_rotation_deg = read_vec3_property(&props, "GeometricRotation").unwrap_or(glam::Vec3::ZERO);
+    let geo_translation =
+        read_vec3_property(&props, "GeometricTranslation").unwrap_or(glam::Vec3::ZERO);
+    let geo_rotation_deg =
+        read_vec3_property(&props, "GeometricRotation").unwrap_or(glam::Vec3::ZERO);
     let geo_scaling = read_vec3_property(&props, "GeometricScaling").unwrap_or(glam::Vec3::ONE);
     let rotation_order = read_int_property(&props, "RotationOrder").unwrap_or(0);
 
@@ -456,7 +613,8 @@ fn extract_local_components(
     let geo_s = glam::Mat4::from_scale(geo_scaling);
     let geometric = geo_t * geo_r * geo_s;
 
-    let local = t * r_off * r_piv * pre_r * r * post_r_inv * r_piv_inv * s_off * s_piv * s * s_piv_inv;
+    let local =
+        t * r_off * r_piv * pre_r * r * post_r_inv * r_piv_inv * s_off * s_piv * s * s_piv_inv;
     (local, geometric)
 }
 
@@ -526,8 +684,7 @@ fn extract_node_transform(
     // leaves bake the convention via `Lcl Rotation = (90, 0, 0)` and
     // others rely on the importer to do it.
     let cumulative_y_in_world = cumulative.transform_vector3(glam::Vec3::Y);
-    let already_z_up = cumulative_y_in_world.z.abs() > 0.9
-        && cumulative_y_in_world.y.abs() < 0.5;
+    let already_z_up = cumulative_y_in_world.z.abs() > 0.9 && cumulative_y_in_world.y.abs() < 0.5;
     let effective_axis = if already_z_up {
         glam::Mat4::IDENTITY
     } else {
@@ -736,14 +893,18 @@ fn get_axis_transform(document: &Document) -> (glam::Mat4, f32) {
 }
 
 fn assign_hierarchy(document: &Document, meshes: &mut [IoMesh]) {
-    let mut id_to_mesh_index: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+    let mut id_to_mesh_index: std::collections::HashMap<i64, usize> =
+        std::collections::HashMap::new();
 
     let mut mesh_cursor = 0;
     let model_ids: Vec<(i64, String)> = document
         .objects()
         .filter_map(|object| {
             if let TypedObjectHandle::Model(TypedModelHandle::Mesh(mesh)) = object.get_typed() {
-                Some((object.object_id().raw(), mesh.name().unwrap_or("").to_string()))
+                Some((
+                    object.object_id().raw(),
+                    mesh.name().unwrap_or("").to_string(),
+                ))
             } else {
                 None
             }
@@ -785,7 +946,9 @@ fn assign_hierarchy(document: &Document, meshes: &mut [IoMesh]) {
             let model_name = mesh_model.name().unwrap_or("");
             let material_prefix = format!("{model_name}.mat");
             mesh_cursor += 1;
-            while mesh_cursor < meshes.len() && meshes[mesh_cursor].name.starts_with(&material_prefix) {
+            while mesh_cursor < meshes.len()
+                && meshes[mesh_cursor].name.starts_with(&material_prefix)
+            {
                 mesh_cursor += 1;
             }
         }
@@ -1042,10 +1205,7 @@ fn topo_sort(bones: &HashMap<i64, BoneInfo>) -> Vec<i64> {
 }
 
 #[cfg(feature = "fbx")]
-fn read_i32_array(
-    node: &fbxcel::tree::v7400::NodeHandle<'_>,
-    name: &str,
-) -> Option<Vec<i32>> {
+fn read_i32_array(node: &fbxcel::tree::v7400::NodeHandle<'_>, name: &str) -> Option<Vec<i32>> {
     let child = node.first_child_by_name(name)?;
     match child.attributes().first()? {
         fbxcel::low::v7400::AttributeValue::ArrI32(v) => Some(v.clone()),
@@ -1057,10 +1217,7 @@ fn read_i32_array(
 }
 
 #[cfg(feature = "fbx")]
-fn read_f64_array(
-    node: &fbxcel::tree::v7400::NodeHandle<'_>,
-    name: &str,
-) -> Option<Vec<f64>> {
+fn read_f64_array(node: &fbxcel::tree::v7400::NodeHandle<'_>, name: &str) -> Option<Vec<f64>> {
     let child = node.first_child_by_name(name)?;
     match child.attributes().first()? {
         fbxcel::low::v7400::AttributeValue::ArrF64(v) => Some(v.clone()),
@@ -1120,7 +1277,9 @@ fn extract_animations(document: &Document, skeletons: &mut Vec<Skeleton>) -> Vec
         if !model_id_to_joint.contains_key(&obj.object_id().raw()) {
             continue;
         }
-        let Some(props) = obj.direct_properties() else { continue };
+        let Some(props) = obj.direct_properties() else {
+            continue;
+        };
         let pre = read_vec3_property(&props, "PreRotation").unwrap_or(glam::Vec3::ZERO);
         let post = read_vec3_property(&props, "PostRotation").unwrap_or(glam::Vec3::ZERO);
         let order = read_int_property(&props, "RotationOrder").unwrap_or(0);
@@ -1139,7 +1298,10 @@ fn extract_animations(document: &Document, skeletons: &mut Vec<Skeleton>) -> Vec
         let layers: Vec<fbxcel_dom::v7400::object::ObjectHandle<'_>> = stack
             .source_objects()
             .filter_map(|c| c.object_handle())
-            .filter(|o| { let c = o.class(); c == "AnimLayer" || c == "AnimationLayer" })
+            .filter(|o| {
+                let c = o.class();
+                c == "AnimLayer" || c == "AnimationLayer"
+            })
             .collect();
 
         for layer in layers {
@@ -1147,21 +1309,22 @@ fn extract_animations(document: &Document, skeletons: &mut Vec<Skeleton>) -> Vec
             let curve_nodes: Vec<fbxcel_dom::v7400::object::ObjectHandle<'_>> = layer
                 .source_objects()
                 .filter_map(|c| c.object_handle())
-                .filter(|o| { let c = o.class(); c == "AnimCurveNode" || c == "AnimationCurveNode" })
+                .filter(|o| {
+                    let c = o.class();
+                    c == "AnimCurveNode" || c == "AnimationCurveNode"
+                })
                 .collect();
 
             for cn in curve_nodes {
                 // CurveNode -> Model with property label
-                let target = cn
-                    .destination_objects()
-                    .find_map(|c| {
-                        let label = c.label()?;
-                        let obj = c.object_handle()?;
-                        let model_id = obj.object_id().raw();
-                        let joint_idx = model_id_to_joint.get(&model_id)?;
-                        let bone_name = obj.name().unwrap_or("").to_string();
-                        Some((*joint_idx, bone_name, label.to_string(), model_id))
-                    });
+                let target = cn.destination_objects().find_map(|c| {
+                    let label = c.label()?;
+                    let obj = c.object_handle()?;
+                    let model_id = obj.object_id().raw();
+                    let joint_idx = model_id_to_joint.get(&model_id)?;
+                    let bone_name = obj.name().unwrap_or("").to_string();
+                    Some((*joint_idx, bone_name, label.to_string(), model_id))
+                });
                 let Some((local_joint_idx, bone_name, property, model_id)) = target else {
                     continue;
                 };
@@ -1188,14 +1351,20 @@ fn extract_animations(document: &Document, skeletons: &mut Vec<Skeleton>) -> Vec
                         "d|Z" | "d|Z|Z" => 2,
                         _ => continue,
                     };
-                    let Some(obj) = c.object_handle() else { continue };
+                    let Some(obj) = c.object_handle() else {
+                        continue;
+                    };
                     let cc = obj.class();
                     if cc != "AnimCurve" && cc != "AnimationCurve" {
                         continue;
                     }
                     let node = obj.node();
-                    let Some(times) = read_i64_array(&node, "KeyTime") else { continue };
-                    let Some(values) = read_f32_array(&node, "KeyValueFloat") else { continue };
+                    let Some(times) = read_i64_array(&node, "KeyTime") else {
+                        continue;
+                    };
+                    let Some(values) = read_f32_array(&node, "KeyValueFloat") else {
+                        continue;
+                    };
                     if times.is_empty() || times.len() != values.len() {
                         continue;
                     }
@@ -1385,7 +1554,9 @@ fn read_i64_array(node: &fbxcel::tree::v7400::NodeHandle<'_>, name: &str) -> Opt
     let child = node.first_child_by_name(name)?;
     match child.attributes().first()? {
         fbxcel::low::v7400::AttributeValue::ArrI64(v) => Some(v.clone()),
-        fbxcel::low::v7400::AttributeValue::ArrI32(v) => Some(v.iter().map(|&i| i as i64).collect()),
+        fbxcel::low::v7400::AttributeValue::ArrI32(v) => {
+            Some(v.iter().map(|&i| i as i64).collect())
+        }
         _ => None,
     }
 }
@@ -1395,7 +1566,9 @@ fn read_f32_array(node: &fbxcel::tree::v7400::NodeHandle<'_>, name: &str) -> Opt
     let child = node.first_child_by_name(name)?;
     match child.attributes().first()? {
         fbxcel::low::v7400::AttributeValue::ArrF32(v) => Some(v.clone()),
-        fbxcel::low::v7400::AttributeValue::ArrF64(v) => Some(v.iter().map(|&f| f as f32).collect()),
+        fbxcel::low::v7400::AttributeValue::ArrF64(v) => {
+            Some(v.iter().map(|&f| f as f32).collect())
+        }
         _ => None,
     }
 }
