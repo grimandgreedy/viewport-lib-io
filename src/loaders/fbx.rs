@@ -633,6 +633,7 @@ fn extract_local_components(
 /// output scene. This walk picks up every ancestor type, so the world
 /// position matches what a runtime engine using FBX cumulative
 /// transforms would produce.
+///
 fn extract_node_transform(
     mesh_model: &fbxcel_dom::v7400::object::model::MeshHandle<'_>,
     axis_transform: &glam::Mat4,
@@ -679,12 +680,24 @@ fn extract_node_transform(
 
     // Per-leaf axis-transform veto: if the cumulative chain (Lcl
     // Rotation on the mesh or any Null/LimbNode ancestor) already lands
-    // +Y on +Z, the scene-level Y→Z fix from `get_axis_transform` would
-    // double up. This happens in mixed Unity asset packs where some FBX
-    // leaves bake the convention via `Lcl Rotation = (90, 0, 0)` and
-    // others rely on the importer to do it.
+    // +Y on **+Z**, the scene-level Y→Z fix from `get_axis_transform`
+    // would double up. The check is **signed** intentionally:
+    //
+    // - `cumulative_y → +Z` means the artist correctly converted Y-up
+    //   raw vertices to Z-up. Apply identity (skip our own +90° X).
+    // - `cumulative_y → -Z` means the artist baked a rotation that
+    //   targets a Y-up consumer (e.g. a Z-up authored mesh wrapped in
+    //   a `-90° X` Null for Unity ingestion). Our +90° X composes with
+    //   their -90° X to identity, leaving raw vertices in their
+    //   authored Z-up form. Do **not** veto.
+    // - `cumulative_y` close to Y (no axis change): standard Y-up raw
+    //   content. Apply our +90° X.
+    //
+    // The Roman Street pack contains all three patterns; using
+    // `cumulative_y_in_world.z.abs() > 0.9` (unsigned) mis-applied the
+    // veto in the third case and produced 90°-rotated meshes.
     let cumulative_y_in_world = cumulative.transform_vector3(glam::Vec3::Y);
-    let already_z_up = cumulative_y_in_world.z.abs() > 0.9 && cumulative_y_in_world.y.abs() < 0.5;
+    let already_z_up = cumulative_y_in_world.z > 0.9 && cumulative_y_in_world.y.abs() < 0.5;
     let effective_axis = if already_z_up {
         glam::Mat4::IDENTITY
     } else {
