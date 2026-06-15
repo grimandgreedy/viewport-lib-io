@@ -18,8 +18,103 @@ use crate::types::{
     TextureData, TextureSource,
 };
 
-/// Decode an FBX file into a CPU-side scene.
+/// How the loader decides whether to apply the Y-up to Z-up axis transform.
+///
+/// FBX files don't carry enough metadata to reliably tell whether a given
+/// leaf's raw vertices are Y-up or Z-up: the `GlobalSettings.UpAxis` header
+/// is often inconsistent with the actual vertex orientation (Unity-exported
+/// packs frequently declare `UpAxis = Z` while shipping Y-up geometry), and
+/// `Lcl Rotation` bakes can mean either "axis conversion" or "placement".
+/// Callers with out-of-band knowledge of their asset pipeline can use this
+/// to override the default heuristic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AxisPolicy {
+    /// Apply `+90°` about X by default, with a per-leaf signed-veto check
+    /// in [`extract_node_transform`]: if the cumulative parent chain
+    /// already maps +Y to +Z, suppress the axis transform for that leaf.
+    /// Best for mixed asset packs where some meshes bake the conversion
+    /// and others don't. This is the default.
+    HeuristicVeto,
+    /// Honour `GlobalSettings.UpAxis` literally. `UpAxis = Y` applies
+    /// `+90°` about X; `UpAxis = Z` applies identity; no per-leaf veto.
+    /// Use for files you trust to declare their orientation correctly.
+    HonourHeader,
+    /// Always apply `+90°` about X regardless of header or chain. Use
+    /// when you know raw vertices are Y-up.
+    ForceYUpRaw,
+    /// Never apply any axis transform. Use when you know raw vertices
+    /// are already Z-up.
+    PassThrough,
+}
+
+impl Default for AxisPolicy {
+    fn default() -> Self {
+        Self::HeuristicVeto
+    }
+}
+
+/// Where the cumulative parent-chain transform sits relative to the
+/// axis transform when composing the per-leaf world matrix.
+///
+/// The right choice depends on what the artist's chain rotations *mean*:
+/// a coord-system bake belongs in the source frame ([`PreAxis`]), a
+/// display-orientation rotation belongs in the consumer's frame
+/// ([`PostAxis`]). FBX has no format-level marker distinguishing the two.
+///
+/// [`PreAxis`]: CumulativeOrder::PreAxis
+/// [`PostAxis`]: CumulativeOrder::PostAxis
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CumulativeOrder {
+    /// `effective_axis * scale * cumulative * geometric`. The cumulative
+    /// chain is composed in the source frame and the axis transform is
+    /// the final step. This is the default and matches the loader's
+    /// historical behaviour.
+    PreAxis,
+    /// `scale * cumulative * effective_axis * geometric`. The axis
+    /// transform runs first (per-vertex source → consumer conversion)
+    /// and the cumulative chain then places the result in the consumer
+    /// frame. Use when the artist authored the prop in a non-display
+    /// pose and uses metadata rotations to right it.
+    PostAxis,
+}
+
+impl Default for CumulativeOrder {
+    fn default() -> Self {
+        Self::PreAxis
+    }
+}
+
+/// Per-call overrides for [`scene_from_path_with_options`].
+///
+/// Defaults preserve the loader's historical behaviour. Callers only
+/// need to construct a non-default value when they have specific
+/// knowledge about how their asset pipeline emits FBX.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FbxLoadOptions {
+    /// Strategy for deciding whether to apply the Y-up to Z-up axis
+    /// transform per leaf.
+    pub axis_policy: AxisPolicy,
+    /// Ordering of the cumulative parent-chain transform relative to
+    /// the axis transform.
+    pub cumulative_order: CumulativeOrder,
+}
+
+/// Decode an FBX file into a CPU-side scene using default load options.
+///
+/// Equivalent to [`scene_from_path_with_options`] with
+/// `FbxLoadOptions::default()`.
 pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
+    scene_from_path_with_options(path, FbxLoadOptions::default())
+}
+
+/// Decode an FBX file into a CPU-side scene with caller-supplied options.
+///
+/// See [`FbxLoadOptions`] for what's tunable and why you might want to
+/// reach for it.
+pub fn scene_from_path_with_options(
+    path: &Path,
+    options: FbxLoadOptions,
+) -> Result<IoScene, IoError> {
     #[cfg(feature = "fbx")]
     {
         let file = std::fs::File::open(path)?;
@@ -37,7 +132,7 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
         };
 
         let parent_dir = path.parent().unwrap_or(Path::new("."));
-        let (axis_transform, unit_scale) = get_axis_transform(&document);
+        let (axis_transform, unit_scale) = get_axis_transform(&document, options.axis_policy);
 
         let mut meshes = Vec::new();
         let mut materials = Vec::new();
@@ -54,7 +149,7 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
                     .unwrap_or_else(|| format!("fbx_mesh_{}", meshes.len()));
 
                 let node_transform =
-                    extract_node_transform(&mesh_model, &axis_transform, unit_scale);
+                    extract_node_transform(&mesh_model, &axis_transform, unit_scale, &options);
 
                 let model_materials: Vec<usize> = mesh_model
                     .materials()
@@ -638,6 +733,7 @@ fn extract_node_transform(
     mesh_model: &fbxcel_dom::v7400::object::model::MeshHandle<'_>,
     axis_transform: &glam::Mat4,
     unit_scale: f32,
+    options: &FbxLoadOptions,
 ) -> glam::Mat4 {
     use fbxcel_dom::v7400::object::model::TypedModelHandle;
     use std::ops::Deref;
@@ -678,33 +774,49 @@ fn extract_node_transform(
         };
     }
 
-    // Per-leaf axis-transform veto: if the cumulative chain (Lcl
-    // Rotation on the mesh or any Null/LimbNode ancestor) already lands
-    // +Y on **+Z**, the scene-level Y→Z fix from `get_axis_transform`
-    // would double up. The check is **signed** intentionally:
-    //
-    // - `cumulative_y → +Z` means the artist correctly converted Y-up
-    //   raw vertices to Z-up. Apply identity (skip our own +90° X).
-    // - `cumulative_y → -Z` means the artist baked a rotation that
-    //   targets a Y-up consumer (e.g. a Z-up authored mesh wrapped in
-    //   a `-90° X` Null for Unity ingestion). Our +90° X composes with
-    //   their -90° X to identity, leaving raw vertices in their
-    //   authored Z-up form. Do **not** veto.
-    // - `cumulative_y` close to Y (no axis change): standard Y-up raw
-    //   content. Apply our +90° X.
-    //
-    // The Roman Street pack contains all three patterns; using
-    // `cumulative_y_in_world.z.abs() > 0.9` (unsigned) mis-applied the
-    // veto in the third case and produced 90°-rotated meshes.
-    let cumulative_y_in_world = cumulative.transform_vector3(glam::Vec3::Y);
-    let already_z_up = cumulative_y_in_world.z > 0.9 && cumulative_y_in_world.y.abs() < 0.5;
-    let effective_axis = if already_z_up {
-        glam::Mat4::IDENTITY
-    } else {
-        *axis_transform
+    // Decide the effective axis transform for this leaf. Only the
+    // signed-veto policy varies it per-leaf; the others apply
+    // `axis_transform` as-is (it was already computed for the file as
+    // a whole in `get_axis_transform`).
+    let effective_axis = match options.axis_policy {
+        AxisPolicy::HeuristicVeto => {
+            // Per-leaf axis-transform veto: if the cumulative chain
+            // (Lcl Rotation on the mesh or any Null/LimbNode ancestor)
+            // already lands +Y on **+Z**, the scene-level Y→Z fix from
+            // `get_axis_transform` would double up. The check is
+            // **signed** intentionally:
+            //
+            // - `cumulative_y → +Z`: artist already converted Y-up to
+            //   Z-up at the vertex level. Suppress our +90° X.
+            // - `cumulative_y → -Z`: artist baked a rotation targeting
+            //   a Y-up consumer (e.g. a Z-up authored mesh wrapped in
+            //   a `-90° X` Null for Unity ingestion). Don't veto; our
+            //   +90° X composes with their -90° X to identity.
+            // - `cumulative_y` close to Y: standard Y-up raw content.
+            //   Apply our +90° X.
+            let cumulative_y_in_world = cumulative.transform_vector3(glam::Vec3::Y);
+            let already_z_up =
+                cumulative_y_in_world.z > 0.9 && cumulative_y_in_world.y.abs() < 0.5;
+            if already_z_up {
+                glam::Mat4::IDENTITY
+            } else {
+                *axis_transform
+            }
+        }
+        AxisPolicy::HonourHeader | AxisPolicy::ForceYUpRaw | AxisPolicy::PassThrough => {
+            *axis_transform
+        }
     };
 
-    effective_axis * glam::Mat4::from_scale(glam::Vec3::splat(unit_scale)) * cumulative * geometric
+    let scale = glam::Mat4::from_scale(glam::Vec3::splat(unit_scale));
+    match options.cumulative_order {
+        // Source-frame interpretation of the chain: bake first, axis
+        // last. Matches the loader's historical behaviour.
+        CumulativeOrder::PreAxis => effective_axis * scale * cumulative * geometric,
+        // Consumer-frame interpretation of the chain: axis converts
+        // the leaf to the consumer frame, then the chain places it.
+        CumulativeOrder::PostAxis => scale * cumulative * effective_axis * geometric,
+    }
 }
 
 fn read_vec3_property(
@@ -857,7 +969,7 @@ fn extract_texture(
 /// covers the "exporter compensated via `Lcl Rotation`" case (tree
 /// foliage) without breaking the "exporter left raw Y-up" case (roofs,
 /// pots, arcs, walls).
-fn get_axis_transform(document: &Document) -> (glam::Mat4, f32) {
+fn get_axis_transform(document: &Document, policy: AxisPolicy) -> (glam::Mat4, f32) {
     let settings = match document.global_settings() {
         Some(settings) => settings,
         None => return (glam::Mat4::IDENTITY, 1.0),
@@ -890,16 +1002,30 @@ fn get_axis_transform(document: &Document) -> (glam::Mat4, f32) {
         .unwrap_or(1.0);
 
     let unit_scale = unit_scale_factor / 100.0;
-    // Treat all FBX content as Y-up at the raw-vertex level (see
-    // doc-comment): a +90° rotation about X maps `(x, y, z) → (x, -z, y)`.
-    // `extract_node_transform` undoes this where the leaf's own
-    // hierarchy already converts +Y to +Z.
-    let axis_transform = match up_axis {
-        // X-up sources are vanishingly rare; if we ever encounter one
-        // we'd rather pass through than guess a swap that breaks more
-        // than it fixes.
-        0 => glam::Mat4::IDENTITY,
-        _ => glam::Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2),
+    // `up_axis`: 0 = X, 1 = Y, 2 = Z. Per the policy:
+    //
+    // - `HeuristicVeto` / `ForceYUpRaw`: assume raw vertices are Y-up
+    //   (the loader's historical assumption — Unity exports lie about
+    //   this in the header). X-up sources are vanishingly rare and we
+    //   pass them through rather than guess.
+    // - `HonourHeader`: trust the header. Y-up gets +90° X; Z-up gets
+    //   identity; X-up passes through.
+    // - `PassThrough`: never apply axis correction.
+    //
+    // `extract_node_transform` may further suppress this per-leaf when
+    // the policy is `HeuristicVeto`.
+    let axis_transform = match policy {
+        AxisPolicy::HeuristicVeto | AxisPolicy::ForceYUpRaw => match up_axis {
+            0 => glam::Mat4::IDENTITY,
+            _ => glam::Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2),
+        },
+        AxisPolicy::HonourHeader => match up_axis {
+            1 => glam::Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2),
+            // X-up and Z-up both land as identity (Z-up is already in
+            // our canonical frame; X-up we pass through).
+            _ => glam::Mat4::IDENTITY,
+        },
+        AxisPolicy::PassThrough => glam::Mat4::IDENTITY,
     };
 
     (axis_transform, unit_scale)
