@@ -27,7 +27,9 @@ pub fn mesh_from_path(path: &Path) -> Result<SurfaceMesh, IoError> {
             }
 
             let base = (face_index * 3) as u32;
-            mesh_data.indices.extend_from_slice(&[base, base + 1, base + 2]);
+            mesh_data
+                .indices
+                .extend_from_slice(&[base, base + 1, base + 2]);
         }
 
         if mesh_data.positions.is_empty() {

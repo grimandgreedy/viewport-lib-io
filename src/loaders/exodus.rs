@@ -3,10 +3,10 @@ use std::path::Path;
 
 use hdf5::File as Hdf5File;
 
-use crate::{error::IoError, types::IoDataSet};
 use super::common::Dataset;
 use super::error::ReadError;
 use super::pvd::{PvdSeries, TimestepEntry};
+use crate::{error::IoError, types::IoDataSet};
 
 /// Decode an Exodus II file into one or more scientific datasets.
 pub fn datasets_from_path(path: &Path) -> Result<Vec<IoDataSet>, IoError> {

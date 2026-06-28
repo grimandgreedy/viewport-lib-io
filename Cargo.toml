@@ -15,9 +15,12 @@ publish = true
 exclude = ["examples/"]
 
 [features]
-default = ["png", "jpeg", "hdr", "exr", "stl", "obj", "msh", "gltf", "fbx", "ply", "csv", "numpy", "raw", "vtk", "xdmf", "exodus", "ensight", "tecplot", "cgns", "netcdf"]
+default = ["png", "jpeg", "tga", "bmp", "svg", "hdr", "exr", "stl", "obj", "msh", "gltf", "fbx", "ply", "csv", "numpy", "raw", "vtk", "xdmf", "exodus", "ensight", "tecplot", "cgns", "netcdf"]
 png = ["dep:image"]
 jpeg = ["dep:image"]
+tga = ["dep:image"]
+bmp = ["dep:image"]
+svg = ["dep:resvg"]
 hdr = ["dep:image"]
 exr = ["dep:image"]
 stl = ["dep:stl_io"]
@@ -36,7 +39,7 @@ ensight = []
 tecplot = []
 cgns = ["dep:hdf5", "dep:hdf5-sys"]
 netcdf = ["dep:netcdf-reader"]
-all-formats = ["png", "jpeg", "hdr", "exr", "stl", "obj", "msh", "gltf", "fbx", "ply", "csv", "numpy", "raw", "vtk", "xdmf", "exodus", "ensight", "tecplot", "cgns", "netcdf"]
+all-formats = ["png", "jpeg", "tga", "bmp", "svg", "hdr", "exr", "stl", "obj", "msh", "gltf", "fbx", "ply", "csv", "numpy", "raw", "vtk", "xdmf", "exodus", "ensight", "tecplot", "cgns", "netcdf"]
 
 [dependencies]
 anyhow = { version = "1", optional = true }
@@ -45,10 +48,11 @@ glam = { version = "=0.30.10", features = ["bytemuck"] }
 gltf = { version = "1", features = ["import"], optional = true }
 hdf5 = { version = "0.8", optional = true }
 hdf5-sys = { version = "0.8", features = ["static", "zlib"], optional = true }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "hdr", "exr"], optional = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "hdr", "exr", "tga", "bmp"], optional = true }
 flate2 = { version = "1", optional = true }
 netcdf-reader = { version = "0.4", default-features = false, features = ["netcdf4"], optional = true }
 quick-xml = { version = "0.36", optional = true }
+resvg = { version = "0.45", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 stl_io = { version = "0.7", optional = true }

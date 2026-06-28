@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::{error::IoError, types::IoDataSet};
 use super::common::Dataset;
 use super::error::ReadError;
 use super::pvd::{PvdSeries, TimestepEntry};
+use crate::{error::IoError, types::IoDataSet};
 
 /// Decode a Tecplot file into one or more scientific datasets.
 pub fn datasets_from_path(path: &Path) -> Result<Vec<IoDataSet>, IoError> {

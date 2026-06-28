@@ -7,15 +7,17 @@
 //
 // cargo run --example probe-fbx-orientation --features fbx -- <file.fbx> ...
 
-use std::path::Path;
 use glam::Vec3;
+use std::path::Path;
 
 use viewport_lib_io::loaders::fbx::scene_from_path;
 
 fn dominant_axis(ext: [f32; 3]) -> char {
     let mut best = 0usize;
     for i in 1..3 {
-        if ext[i] > ext[best] { best = i; }
+        if ext[i] > ext[best] {
+            best = i;
+        }
     }
     ['X', 'Y', 'Z'][best]
 }
@@ -24,7 +26,10 @@ fn probe(path: &Path) {
     println!("=== {} ===", path.display());
     let scene = match scene_from_path(path) {
         Ok(s) => s,
-        Err(e) => { println!("  load failed: {e:?}"); return; }
+        Err(e) => {
+            println!("  load failed: {e:?}");
+            return;
+        }
     };
     for io_mesh in &scene.meshes {
         let t = io_mesh.transform;
@@ -34,15 +39,27 @@ fn probe(path: &Path) {
             let w = t.transform_point3(Vec3::from(*p));
             let a = [w.x, w.y, w.z];
             for k in 0..3 {
-                if a[k] < min[k] { min[k] = a[k]; }
-                if a[k] > max[k] { max[k] = a[k]; }
+                if a[k] < min[k] {
+                    min[k] = a[k];
+                }
+                if a[k] > max[k] {
+                    max[k] = a[k];
+                }
             }
         }
-        let ext = [max[0]-min[0], max[1]-min[1], max[2]-min[2]];
+        let ext = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
         println!(
             "  '{}': bbox min=({:.3},{:.3},{:.3}) max=({:.3},{:.3},{:.3}) ext=({:.3},{:.3},{:.3}) dominant={}",
             io_mesh.name,
-            min[0],min[1],min[2], max[0],max[1],max[2], ext[0],ext[1],ext[2],
+            min[0],
+            min[1],
+            min[2],
+            max[0],
+            max[1],
+            max[2],
+            ext[0],
+            ext[1],
+            ext[2],
             dominant_axis(ext),
         );
     }
@@ -55,5 +72,7 @@ fn main() {
         eprintln!("usage: probe-fbx-orientation <file.fbx> [more.fbx ...]");
         std::process::exit(1);
     }
-    for a in args { probe(Path::new(&a)); }
+    for a in args {
+        probe(Path::new(&a));
+    }
 }

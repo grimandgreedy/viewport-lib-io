@@ -1,5 +1,9 @@
 //! Source-format loaders.
 
+/// BMP image decoding.
+#[cfg(feature = "bmp")]
+pub mod bmp;
+
 /// CGNS dataset decoding.
 pub mod cgns;
 mod common;
@@ -68,6 +72,14 @@ pub mod raw;
 /// STL surface mesh decoding.
 #[cfg(feature = "stl")]
 pub mod stl;
+
+/// SVG image decoding.
+#[cfg(feature = "svg")]
+pub mod svg;
+
+/// TGA image decoding.
+#[cfg(feature = "tga")]
+pub mod tga;
 
 /// Tecplot dataset decoding.
 pub mod tecplot;

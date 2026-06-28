@@ -9,8 +9,6 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
     load_ply(&bytes)
 }
 
-
-
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq)]
@@ -36,12 +34,12 @@ enum Ty {
 impl Ty {
     fn from_str(s: &str) -> Option<Self> {
         match s {
-            "char" | "int8"     => Some(Self::Int8),
-            "uchar" | "uint8"   => Some(Self::Uint8),
-            "short" | "int16"   => Some(Self::Int16),
+            "char" | "int8" => Some(Self::Int8),
+            "uchar" | "uint8" => Some(Self::Uint8),
+            "short" | "int16" => Some(Self::Int16),
             "ushort" | "uint16" => Some(Self::Uint16),
-            "int" | "int32"     => Some(Self::Int32),
-            "uint" | "uint32"   => Some(Self::Uint32),
+            "int" | "int32" => Some(Self::Int32),
+            "uint" | "uint32" => Some(Self::Uint32),
             "float" | "float32" => Some(Self::Float32),
             "double" | "float64" => Some(Self::Float64),
             _ => None,
@@ -73,53 +71,93 @@ fn read_f32(buf: &[u8], ty: Ty, fmt: Format) -> f32 {
     match ty {
         Ty::Float32 => {
             let b: [u8; 4] = buf[..4].try_into().unwrap_or_default();
-            if fmt == Format::LittleEndian { f32::from_le_bytes(b) } else { f32::from_be_bytes(b) }
+            if fmt == Format::LittleEndian {
+                f32::from_le_bytes(b)
+            } else {
+                f32::from_be_bytes(b)
+            }
         }
         Ty::Float64 => {
             let b: [u8; 8] = buf[..8].try_into().unwrap_or_default();
-            let v = if fmt == Format::LittleEndian { f64::from_le_bytes(b) } else { f64::from_be_bytes(b) };
+            let v = if fmt == Format::LittleEndian {
+                f64::from_le_bytes(b)
+            } else {
+                f64::from_be_bytes(b)
+            };
             v as f32
         }
-        Ty::Uint8  => buf[0] as f32,
-        Ty::Int8   => (buf[0] as i8) as f32,
+        Ty::Uint8 => buf[0] as f32,
+        Ty::Int8 => (buf[0] as i8) as f32,
         Ty::Uint16 => {
             let b: [u8; 2] = buf[..2].try_into().unwrap_or_default();
-            (if fmt == Format::LittleEndian { u16::from_le_bytes(b) } else { u16::from_be_bytes(b) }) as f32
+            (if fmt == Format::LittleEndian {
+                u16::from_le_bytes(b)
+            } else {
+                u16::from_be_bytes(b)
+            }) as f32
         }
         Ty::Int16 => {
             let b: [u8; 2] = buf[..2].try_into().unwrap_or_default();
-            (if fmt == Format::LittleEndian { i16::from_le_bytes(b) } else { i16::from_be_bytes(b) }) as f32
+            (if fmt == Format::LittleEndian {
+                i16::from_le_bytes(b)
+            } else {
+                i16::from_be_bytes(b)
+            }) as f32
         }
         Ty::Uint32 => {
             let b: [u8; 4] = buf[..4].try_into().unwrap_or_default();
-            (if fmt == Format::LittleEndian { u32::from_le_bytes(b) } else { u32::from_be_bytes(b) }) as f32
+            (if fmt == Format::LittleEndian {
+                u32::from_le_bytes(b)
+            } else {
+                u32::from_be_bytes(b)
+            }) as f32
         }
         Ty::Int32 => {
             let b: [u8; 4] = buf[..4].try_into().unwrap_or_default();
-            (if fmt == Format::LittleEndian { i32::from_le_bytes(b) } else { i32::from_be_bytes(b) }) as f32
+            (if fmt == Format::LittleEndian {
+                i32::from_le_bytes(b)
+            } else {
+                i32::from_be_bytes(b)
+            }) as f32
         }
     }
 }
 
 fn read_u32(buf: &[u8], ty: Ty, fmt: Format) -> u32 {
     match ty {
-        Ty::Uint8  => buf[0] as u32,
-        Ty::Int8   => (buf[0] as i8) as u32,
+        Ty::Uint8 => buf[0] as u32,
+        Ty::Int8 => (buf[0] as i8) as u32,
         Ty::Uint16 => {
             let b: [u8; 2] = buf[..2].try_into().unwrap_or_default();
-            (if fmt == Format::LittleEndian { u16::from_le_bytes(b) } else { u16::from_be_bytes(b) }) as u32
+            (if fmt == Format::LittleEndian {
+                u16::from_le_bytes(b)
+            } else {
+                u16::from_be_bytes(b)
+            }) as u32
         }
         Ty::Int16 => {
             let b: [u8; 2] = buf[..2].try_into().unwrap_or_default();
-            (if fmt == Format::LittleEndian { i16::from_le_bytes(b) } else { i16::from_be_bytes(b) }) as u32
+            (if fmt == Format::LittleEndian {
+                i16::from_le_bytes(b)
+            } else {
+                i16::from_be_bytes(b)
+            }) as u32
         }
         Ty::Uint32 => {
             let b: [u8; 4] = buf[..4].try_into().unwrap_or_default();
-            if fmt == Format::LittleEndian { u32::from_le_bytes(b) } else { u32::from_be_bytes(b) }
+            if fmt == Format::LittleEndian {
+                u32::from_le_bytes(b)
+            } else {
+                u32::from_be_bytes(b)
+            }
         }
         Ty::Int32 => {
             let b: [u8; 4] = buf[..4].try_into().unwrap_or_default();
-            (if fmt == Format::LittleEndian { i32::from_le_bytes(b) } else { i32::from_be_bytes(b) }) as u32
+            (if fmt == Format::LittleEndian {
+                i32::from_le_bytes(b)
+            } else {
+                i32::from_be_bytes(b)
+            }) as u32
         }
         _ => 0,
     }
@@ -132,7 +170,7 @@ fn load_ply(bytes: &[u8]) -> Result<IoScene, IoError> {
 
     // The header is always ASCII; find the "end_header\n" marker.
     // Accept both LF and CRLF line endings.
-    let end_marker_lf   = b"end_header\n";
+    let end_marker_lf = b"end_header\n";
     let end_marker_crlf = b"end_header\r\n";
 
     let (header_bytes, data_offset) = if let Some(pos) = find_subsequence(bytes, end_marker_crlf) {
@@ -163,9 +201,7 @@ fn load_ply(bytes: &[u8]) -> Result<IoScene, IoError> {
     } else if fmt_line.starts_with("format binary_big_endian") {
         Format::BigEndian
     } else {
-        return Err(IoError::Parse(format!(
-            "Unknown PLY format: {fmt_line}"
-        )));
+        return Err(IoError::Parse(format!("Unknown PLY format: {fmt_line}")));
     };
 
     let mut vertex_count = 0usize;
@@ -174,7 +210,7 @@ fn load_ply(bytes: &[u8]) -> Result<IoScene, IoError> {
     // Face list property types (count_type, index_type).
     let mut face_list: Option<(Ty, Ty)> = None;
     let mut in_vertex = false;
-    let mut in_face   = false;
+    let mut in_face = false;
 
     for line in lines {
         let line = line.trim();
@@ -183,20 +219,23 @@ fn load_ply(bytes: &[u8]) -> Result<IoScene, IoError> {
             ["element", "vertex", n] => {
                 vertex_count = n.parse().unwrap_or(0);
                 in_vertex = true;
-                in_face   = false;
+                in_face = false;
             }
             ["element", "face", n] => {
                 face_count = n.parse().unwrap_or(0);
                 in_vertex = false;
-                in_face   = true;
+                in_face = true;
             }
             ["element", _, _] => {
                 in_vertex = false;
-                in_face   = false;
+                in_face = false;
             }
             ["property", typ, name] if in_vertex => {
                 if let Some(ty) = Ty::from_str(typ) {
-                    vertex_props.push(PropSpec { name: name.to_string(), ty });
+                    vertex_props.push(PropSpec {
+                        name: name.to_string(),
+                        ty,
+                    });
                 }
             }
             ["property", "list", count_typ, idx_typ, _name] if in_face => {
@@ -211,66 +250,124 @@ fn load_ply(bytes: &[u8]) -> Result<IoScene, IoError> {
     // ── Property index lookup ─────────────────────────────────────────────────
 
     let find = |n: &str| vertex_props.iter().position(|p| p.name == n);
-    let x_idx   = find("x").unwrap_or(0);
-    let y_idx   = find("y").unwrap_or(1);
-    let z_idx   = find("z").unwrap_or(2);
-    let nx_idx  = find("nx");
-    let ny_idx  = find("ny");
-    let nz_idx  = find("nz");
-    let r_idx   = find("red");
-    let g_idx   = find("green");
-    let b_idx   = find("blue");
-    let a_idx   = find("alpha");
+    let x_idx = find("x").unwrap_or(0);
+    let y_idx = find("y").unwrap_or(1);
+    let z_idx = find("z").unwrap_or(2);
+    let nx_idx = find("nx");
+    let ny_idx = find("ny");
+    let nz_idx = find("nz");
+    let r_idx = find("red");
+    let g_idx = find("green");
+    let b_idx = find("blue");
+    let a_idx = find("alpha");
 
-    let has_color   = r_idx.is_some() && g_idx.is_some() && b_idx.is_some();
+    let has_color = r_idx.is_some() && g_idx.is_some() && b_idx.is_some();
     let has_normals = nx_idx.is_some() && ny_idx.is_some() && nz_idx.is_some();
 
     // Collect "extra" scalar property indices (not geometric or color props).
     let standard = {
         let mut s = std::collections::HashSet::new();
-        s.insert(x_idx); s.insert(y_idx); s.insert(z_idx);
-        if let Some(i) = nx_idx { s.insert(i); }
-        if let Some(i) = ny_idx { s.insert(i); }
-        if let Some(i) = nz_idx { s.insert(i); }
-        if let Some(i) = r_idx  { s.insert(i); }
-        if let Some(i) = g_idx  { s.insert(i); }
-        if let Some(i) = b_idx  { s.insert(i); }
-        if let Some(i) = a_idx  { s.insert(i); }
+        s.insert(x_idx);
+        s.insert(y_idx);
+        s.insert(z_idx);
+        if let Some(i) = nx_idx {
+            s.insert(i);
+        }
+        if let Some(i) = ny_idx {
+            s.insert(i);
+        }
+        if let Some(i) = nz_idx {
+            s.insert(i);
+        }
+        if let Some(i) = r_idx {
+            s.insert(i);
+        }
+        if let Some(i) = g_idx {
+            s.insert(i);
+        }
+        if let Some(i) = b_idx {
+            s.insert(i);
+        }
+        if let Some(i) = a_idx {
+            s.insert(i);
+        }
         s
     };
-    let extra_props: Vec<(usize, &PropSpec)> = vertex_props.iter().enumerate()
+    let extra_props: Vec<(usize, &PropSpec)> = vertex_props
+        .iter()
+        .enumerate()
         .filter(|(i, _)| !standard.contains(i))
         .collect();
 
     // ── Vertex data ───────────────────────────────────────────────────────────
 
     let mut positions: Vec<[f32; 3]> = Vec::with_capacity(vertex_count);
-    let mut stored_normals: Vec<[f32; 3]> =
-        if has_normals { Vec::with_capacity(vertex_count) } else { Vec::new() };
-    let mut colors: Vec<[f32; 4]> =
-        if has_color { Vec::with_capacity(vertex_count) } else { Vec::new() };
+    let mut stored_normals: Vec<[f32; 3]> = if has_normals {
+        Vec::with_capacity(vertex_count)
+    } else {
+        Vec::new()
+    };
+    let mut colors: Vec<[f32; 4]> = if has_color {
+        Vec::with_capacity(vertex_count)
+    } else {
+        Vec::new()
+    };
     // Per-extra-prop scalar buffers, one Vec<f32> per extra property.
-    let mut scalar_bufs: Vec<Vec<f32>> = extra_props.iter().map(|_| Vec::with_capacity(vertex_count)).collect();
+    let mut scalar_bufs: Vec<Vec<f32>> = extra_props
+        .iter()
+        .map(|_| Vec::with_capacity(vertex_count))
+        .collect();
 
     match format {
         Format::Ascii => {
             parse_vertices_ascii(
-                bytes, data_offset, vertex_count, &vertex_props,
-                x_idx, y_idx, z_idx,
-                nx_idx, ny_idx, nz_idx, has_normals,
-                r_idx, g_idx, b_idx, a_idx, has_color,
+                bytes,
+                data_offset,
+                vertex_count,
+                &vertex_props,
+                x_idx,
+                y_idx,
+                z_idx,
+                nx_idx,
+                ny_idx,
+                nz_idx,
+                has_normals,
+                r_idx,
+                g_idx,
+                b_idx,
+                a_idx,
+                has_color,
                 &extra_props,
-                &mut positions, &mut stored_normals, &mut colors, &mut scalar_bufs,
+                &mut positions,
+                &mut stored_normals,
+                &mut colors,
+                &mut scalar_bufs,
             )?;
         }
         le_or_be => {
             parse_vertices_binary(
-                bytes, data_offset, vertex_count, &vertex_props, le_or_be,
-                x_idx, y_idx, z_idx,
-                nx_idx, ny_idx, nz_idx, has_normals,
-                r_idx, g_idx, b_idx, a_idx, has_color,
+                bytes,
+                data_offset,
+                vertex_count,
+                &vertex_props,
+                le_or_be,
+                x_idx,
+                y_idx,
+                z_idx,
+                nx_idx,
+                ny_idx,
+                nz_idx,
+                has_normals,
+                r_idx,
+                g_idx,
+                b_idx,
+                a_idx,
+                has_color,
                 &extra_props,
-                &mut positions, &mut stored_normals, &mut colors, &mut scalar_bufs,
+                &mut positions,
+                &mut stored_normals,
+                &mut colors,
+                &mut scalar_bufs,
             )?;
         }
     }
@@ -311,7 +408,15 @@ fn load_ply(bytes: &[u8]) -> Result<IoScene, IoError> {
         }
         le_or_be => {
             let (count_ty, idx_ty) = face_list.unwrap_or((Ty::Uint8, Ty::Int32));
-            parse_faces_binary(bytes, face_data_offset, face_count, count_ty, idx_ty, le_or_be, &mut indices)?;
+            parse_faces_binary(
+                bytes,
+                face_data_offset,
+                face_count,
+                count_ty,
+                idx_ty,
+                le_or_be,
+                &mut indices,
+            )?;
         }
     }
 
@@ -335,7 +440,8 @@ fn load_ply(bytes: &[u8]) -> Result<IoScene, IoError> {
         }
     }
 
-    let vertex_attribute_names: Vec<String> = extra_props.iter().map(|(_, p)| p.name.clone()).collect();
+    let vertex_attribute_names: Vec<String> =
+        extra_props.iter().map(|(_, p)| p.name.clone()).collect();
 
     Ok(IoScene {
         meshes: vec![IoMesh {
@@ -356,9 +462,18 @@ fn parse_vertices_ascii(
     data_offset: usize,
     vertex_count: usize,
     vertex_props: &[PropSpec],
-    x_idx: usize, y_idx: usize, z_idx: usize,
-    nx_idx: Option<usize>, ny_idx: Option<usize>, nz_idx: Option<usize>, has_normals: bool,
-    r_idx: Option<usize>, g_idx: Option<usize>, b_idx: Option<usize>, a_idx: Option<usize>, has_color: bool,
+    x_idx: usize,
+    y_idx: usize,
+    z_idx: usize,
+    nx_idx: Option<usize>,
+    ny_idx: Option<usize>,
+    nz_idx: Option<usize>,
+    has_normals: bool,
+    r_idx: Option<usize>,
+    g_idx: Option<usize>,
+    b_idx: Option<usize>,
+    a_idx: Option<usize>,
+    has_color: bool,
     extra_props: &[(usize, &PropSpec)],
     positions: &mut Vec<[f32; 3]>,
     stored_normals: &mut Vec<[f32; 3]>,
@@ -370,7 +485,8 @@ fn parse_vertices_ascii(
     let mut lines = text.lines();
 
     for _ in 0..vertex_count {
-        let line = lines.next()
+        let line = lines
+            .next()
             .ok_or_else(|| IoError::Parse("Unexpected EOF in vertex data".into()))?;
         let parts: Vec<&str> = line.trim().split_whitespace().collect();
 
@@ -396,7 +512,8 @@ fn parse_vertices_ascii(
                 parse_color_chan_ascii(&parts, ri, vertex_props[ri].ty.is_uchar()),
                 parse_color_chan_ascii(&parts, gi, vertex_props[gi].ty.is_uchar()),
                 parse_color_chan_ascii(&parts, bi, vertex_props[bi].ty.is_uchar()),
-                a_idx.map(|ai| parse_color_chan_ascii(&parts, ai, vertex_props[ai].ty.is_uchar()))
+                a_idx
+                    .map(|ai| parse_color_chan_ascii(&parts, ai, vertex_props[ai].ty.is_uchar()))
                     .unwrap_or(1.0),
             ]);
         }
@@ -410,7 +527,10 @@ fn parse_vertices_ascii(
 }
 
 fn parse_ascii_f32(parts: &[&str], idx: usize) -> f32 {
-    parts.get(idx).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0)
+    parts
+        .get(idx)
+        .and_then(|s| s.parse::<f32>().ok())
+        .unwrap_or(0.0)
 }
 
 fn parse_color_chan_ascii(parts: &[&str], idx: usize, is_uchar: bool) -> f32 {
@@ -427,9 +547,18 @@ fn parse_vertices_binary(
     vertex_count: usize,
     vertex_props: &[PropSpec],
     fmt: Format,
-    x_idx: usize, y_idx: usize, z_idx: usize,
-    nx_idx: Option<usize>, ny_idx: Option<usize>, nz_idx: Option<usize>, has_normals: bool,
-    r_idx: Option<usize>, g_idx: Option<usize>, b_idx: Option<usize>, a_idx: Option<usize>, has_color: bool,
+    x_idx: usize,
+    y_idx: usize,
+    z_idx: usize,
+    nx_idx: Option<usize>,
+    ny_idx: Option<usize>,
+    nz_idx: Option<usize>,
+    has_normals: bool,
+    r_idx: Option<usize>,
+    g_idx: Option<usize>,
+    b_idx: Option<usize>,
+    a_idx: Option<usize>,
+    has_color: bool,
     extra_props: &[(usize, &PropSpec)],
     positions: &mut Vec<[f32; 3]>,
     stored_normals: &mut Vec<[f32; 3]>,
@@ -475,7 +604,11 @@ fn parse_vertices_binary(
             let bi = b_idx.unwrap();
             let to_linear = |idx: usize| -> f32 {
                 let v = read_prop(idx);
-                if vertex_props[idx].ty.is_uchar() { v / 255.0 } else { v }
+                if vertex_props[idx].ty.is_uchar() {
+                    v / 255.0
+                } else {
+                    v
+                }
             };
             colors.push([
                 to_linear(ri),
@@ -506,15 +639,13 @@ fn parse_faces_ascii(
     let mut lines = text.lines();
 
     for _ in 0..face_count {
-        let line = lines.next()
+        let line = lines
+            .next()
             .ok_or_else(|| IoError::Parse("Unexpected EOF in face data".into()))?;
         let parts: Vec<&str> = line.trim().split_whitespace().collect();
         let n: usize = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
         if n >= 3 {
-            let verts: Vec<u32> = parts[1..=n]
-                .iter()
-                .filter_map(|s| s.parse().ok())
-                .collect();
+            let verts: Vec<u32> = parts[1..=n].iter().filter_map(|s| s.parse().ok()).collect();
             for i in 1..(n - 1) {
                 indices.push(verts[0]);
                 indices.push(verts[i]);
@@ -548,7 +679,9 @@ fn parse_faces_binary(
         cursor += count_ty.byte_size();
 
         if cursor + n * idx_ty.byte_size() > data.len() {
-            return Err(IoError::Parse("PLY binary face index data truncated".into()));
+            return Err(IoError::Parse(
+                "PLY binary face index data truncated".into(),
+            ));
         }
         let mut verts: Vec<u32> = Vec::with_capacity(n);
         for _ in 0..n {
@@ -581,7 +714,9 @@ fn skip_ascii_lines(bytes: &[u8], mut offset: usize, n: usize) -> usize {
         while offset < bytes.len() && bytes[offset] != b'\n' {
             offset += 1;
         }
-        if offset < bytes.len() { offset += 1; } // skip the '\n'
+        if offset < bytes.len() {
+            offset += 1;
+        } // skip the '\n'
     }
     offset
 }
@@ -604,7 +739,9 @@ fn compute_smooth_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 
     normals.iter_mut().for_each(|n| {
         let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
         if len > 1e-6 {
-            n[0] /= len; n[1] /= len; n[2] /= len;
+            n[0] /= len;
+            n[1] /= len;
+            n[2] /= len;
         } else {
             *n = [0.0, 1.0, 0.0];
         }

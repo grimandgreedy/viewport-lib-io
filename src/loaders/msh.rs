@@ -131,9 +131,7 @@ fn parse_nodes_v2(text: &str) -> Result<NodeMap, IoError> {
     Ok(nodes)
 }
 
-fn parse_elements_v2(
-    text: &str,
-) -> Result<(Vec<[u64; 3]>, Vec<[u64; 4]>, Vec<[u64; 4]>), IoError> {
+fn parse_elements_v2(text: &str) -> Result<(Vec<[u64; 3]>, Vec<[u64; 4]>, Vec<[u64; 4]>), IoError> {
     let mut triangles = Vec::new();
     let mut quads = Vec::new();
     let mut tets = Vec::new();
@@ -246,9 +244,7 @@ fn parse_nodes_v4(text: &str) -> Result<NodeMap, IoError> {
     Ok(nodes)
 }
 
-fn parse_elements_v4(
-    text: &str,
-) -> Result<(Vec<[u64; 3]>, Vec<[u64; 4]>, Vec<[u64; 4]>), IoError> {
+fn parse_elements_v4(text: &str) -> Result<(Vec<[u64; 3]>, Vec<[u64; 4]>, Vec<[u64; 4]>), IoError> {
     let mut triangles = Vec::new();
     let mut quads = Vec::new();
     let mut tets = Vec::new();

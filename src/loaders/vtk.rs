@@ -3,8 +3,8 @@ use std::path::Path;
 
 use crate::error::IoError;
 use crate::types::{
-    AttributeData, AttributeDomain, IoDataSet, IoPointCloud, IoSparseVolume, IoVolume,
-    IoVolumeGeometry, IoVolumeMesh, SurfaceMesh, CELL_SENTINEL,
+    AttributeData, AttributeDomain, CELL_SENTINEL, IoDataSet, IoPointCloud, IoSparseVolume,
+    IoVolume, IoVolumeGeometry, IoVolumeMesh, SurfaceMesh,
 };
 
 /// Decode a VTK-family file into one scientific dataset per piece.
@@ -131,14 +131,16 @@ mod imp {
                 .into_iter()
                 .enumerate()
                 .map(|(index, piece)| {
-                    let piece = piece.load_piece_data(Some(source)).map_err(|error| {
-                        IoError::Parse(format!("vtk image piece: {error}"))
-                    })?;
+                    let piece = piece
+                        .load_piece_data(Some(source))
+                        .map_err(|error| IoError::Parse(format!("vtk image piece: {error}")))?;
                     let [ni, nj, nk] = vtk_extent_to_dims(piece.extent);
                     let num_points = ni
                         .checked_mul(nj)
                         .and_then(|value| value.checked_mul(nk))
-                        .ok_or_else(|| IoError::Parse("vtk: ImageData point count overflow".into()))?;
+                        .ok_or_else(|| {
+                            IoError::Parse("vtk: ImageData point count overflow".into())
+                        })?;
                     let num_cells = ni
                         .saturating_sub(1)
                         .checked_mul(nj.saturating_sub(1))
@@ -160,8 +162,15 @@ mod imp {
                         });
                     }
 
-                    let volume_mesh =
-                        build_image_data_volume_mesh(ni, nj, nk, origin, spacing, &point_data, &cell_data);
+                    let volume_mesh = build_image_data_volume_mesh(
+                        ni,
+                        nj,
+                        nk,
+                        origin,
+                        spacing,
+                        &point_data,
+                        &cell_data,
+                    );
                     Ok(IoDataSet {
                         name: format!("image_data_piece_{index}"),
                         volume: Some(IoVolume {
@@ -202,7 +211,11 @@ mod imp {
         if indices.is_empty() {
             return Ok(IoDataSet {
                 name,
-                point_set: Some(build_point_cloud("VTK Point Cloud".into(), positions, point_data)),
+                point_set: Some(build_point_cloud(
+                    "VTK Point Cloud".into(),
+                    positions,
+                    point_data,
+                )),
                 ..IoDataSet::default()
             });
         }
@@ -223,11 +236,13 @@ mod imp {
     fn from_unstructured(piece: UnstructuredGridPiece, name: String) -> Result<IoDataSet, IoError> {
         let positions = iobuf_to_positions(piece.points)?;
         if positions.is_empty() {
-            return Err(IoError::Parse("vtk: unstructured grid has no points".into()));
+            return Err(IoError::Parse(
+                "vtk: unstructured grid has no points".into(),
+            ));
         }
 
-        let all_voxel =
-            !piece.cells.types.is_empty() && piece.cells.types.iter().all(|&t| t == CellType::Voxel);
+        let all_voxel = !piece.cells.types.is_empty()
+            && piece.cells.types.iter().all(|&t| t == CellType::Voxel);
         if all_voxel {
             let num_vox = piece.cells.types.len();
             let (point_data, cell_data, _) =
@@ -235,7 +250,11 @@ mod imp {
             if let Some(sparse) = try_sparse_voxel_grid(&positions, &piece.cells, &cell_data) {
                 return Ok(IoDataSet {
                     name,
-                    point_set: Some(build_point_cloud("VTK Voxel Points".into(), positions, point_data)),
+                    point_set: Some(build_point_cloud(
+                        "VTK Voxel Points".into(),
+                        positions,
+                        point_data,
+                    )),
                     sparse_grid: Some(Box::new(sparse)),
                     ..IoDataSet::default()
                 });
@@ -247,7 +266,11 @@ mod imp {
             let point_data = extract_attributes(&piece.data, positions.len(), 0, false).0;
             return Ok(IoDataSet {
                 name,
-                point_set: Some(build_point_cloud("VTK Points".into(), positions, point_data)),
+                point_set: Some(build_point_cloud(
+                    "VTK Points".into(),
+                    positions,
+                    point_data,
+                )),
                 ..IoDataSet::default()
             });
         }
@@ -293,8 +316,10 @@ mod imp {
                 .insert(name, AttributeData::scalars(AttributeDomain::Cell, values));
         }
         for (name, values) in edge_data {
-            mesh.attributes
-                .insert(name, AttributeData::scalars(AttributeDomain::Halfedge, values));
+            mesh.attributes.insert(
+                name,
+                AttributeData::scalars(AttributeDomain::Halfedge, values),
+            );
         }
         mesh
     }
@@ -409,7 +434,8 @@ mod imp {
         let mut vm_cells = Vec::new();
         let mut original_indices = Vec::new();
 
-        for (cell_index, (cell_type, verts)) in cells.types.iter().zip(cell_verts.iter()).enumerate()
+        for (cell_index, (cell_type, verts)) in
+            cells.types.iter().zip(cell_verts.iter()).enumerate()
         {
             let entry = match cell_type {
                 CellType::Hexahedron
@@ -591,7 +617,11 @@ mod imp {
         }
 
         let max_idx = active_cells.iter().fold([0u32; 3], |acc, &cell| {
-            [acc[0].max(cell[0]), acc[1].max(cell[1]), acc[2].max(cell[2])]
+            [
+                acc[0].max(cell[0]),
+                acc[1].max(cell[1]),
+                acc[2].max(cell[2]),
+            ]
         });
         let grid_volume =
             (max_idx[0] + 1) as u64 * (max_idx[1] + 1) as u64 * (max_idx[2] + 1) as u64;
@@ -637,14 +667,21 @@ mod imp {
     fn cell_faces(cell_type: CellType, verts: &[u32]) -> Vec<[u32; 3]> {
         match cell_type {
             CellType::Triangle | CellType::QuadraticTriangle | CellType::BiquadraticTriangle => {
-                if verts.len() >= 3 { vec![[verts[0], verts[1], verts[2]]] } else { vec![] }
+                if verts.len() >= 3 {
+                    vec![[verts[0], verts[1], verts[2]]]
+                } else {
+                    vec![]
+                }
             }
             CellType::Quad
             | CellType::QuadraticQuad
             | CellType::BiquadraticQuad
             | CellType::QuadraticLinearQuad => {
                 if verts.len() >= 4 {
-                    vec![[verts[0], verts[1], verts[2]], [verts[0], verts[2], verts[3]]]
+                    vec![
+                        [verts[0], verts[1], verts[2]],
+                        [verts[0], verts[2], verts[3]],
+                    ]
                 } else {
                     vec![]
                 }
@@ -796,9 +833,15 @@ mod imp {
                 for i in 0..ni {
                     let x = origin[0] + i as f32 * spacing[0];
                     let (y, z) = if flat_z {
-                        (origin[2] + k as f32 * spacing[2], origin[1] + j as f32 * spacing[1])
+                        (
+                            origin[2] + k as f32 * spacing[2],
+                            origin[1] + j as f32 * spacing[1],
+                        )
                     } else {
-                        (origin[1] + j as f32 * spacing[1], origin[2] + k as f32 * spacing[2])
+                        (
+                            origin[1] + j as f32 * spacing[1],
+                            origin[2] + k as f32 * spacing[2],
+                        )
                     };
                     positions.push([x, y, z]);
                 }
@@ -837,10 +880,22 @@ mod imp {
         let halfedge_len = if detect_halfedges { 3 * num_cells } else { 0 };
 
         for attr in &attrs.point {
-            extract_attribute_into(attr, num_points, halfedge_len, &mut point_data, &mut edge_data);
+            extract_attribute_into(
+                attr,
+                num_points,
+                halfedge_len,
+                &mut point_data,
+                &mut edge_data,
+            );
         }
         for attr in &attrs.cell {
-            extract_attribute_into(attr, num_cells, halfedge_len, &mut cell_data, &mut edge_data);
+            extract_attribute_into(
+                attr,
+                num_cells,
+                halfedge_len,
+                &mut cell_data,
+                &mut edge_data,
+            );
         }
 
         (point_data, cell_data, edge_data)
@@ -856,8 +911,14 @@ mod imp {
         match attr {
             Attribute::DataArray(arr) => {
                 let num_comp = arr.elem.num_comp() as usize;
-                let Some(floats) = arr.data.clone().cast_into::<f32>() else { return };
-                let n_tuples = if num_comp > 0 { floats.len() / num_comp } else { 0 };
+                let Some(floats) = arr.data.clone().cast_into::<f32>() else {
+                    return;
+                };
+                let n_tuples = if num_comp > 0 {
+                    floats.len() / num_comp
+                } else {
+                    0
+                };
                 if n_tuples == expected_len {
                     emit_scalar_arrays(&arr.name, num_comp, floats, expected_len, out);
                 } else if halfedge_len > 0 && num_comp == 1 && floats.len() == halfedge_len {
@@ -867,8 +928,14 @@ mod imp {
             Attribute::Field { data_array, .. } => {
                 for field in data_array {
                     let num_comp = field.elem as usize;
-                    let Some(floats) = field.data.clone().cast_into::<f32>() else { continue };
-                    let n_tuples = if num_comp > 0 { floats.len() / num_comp } else { 0 };
+                    let Some(floats) = field.data.clone().cast_into::<f32>() else {
+                        continue;
+                    };
+                    let n_tuples = if num_comp > 0 {
+                        floats.len() / num_comp
+                    } else {
+                        0
+                    };
                     if n_tuples == expected_len {
                         emit_scalar_arrays(&field.name, num_comp, floats, expected_len, out);
                     } else if halfedge_len > 0 && num_comp == 1 && floats.len() == halfedge_len {
@@ -942,7 +1009,10 @@ mod imp {
         let floats = buf.cast_into::<f32>().ok_or_else(|| {
             IoError::UnsupportedFormat("vtk: could not cast point coordinates to f32".into())
         })?;
-        Ok(floats.chunks_exact(3).map(|chunk| [chunk[0], chunk[1], chunk[2]]).collect())
+        Ok(floats
+            .chunks_exact(3)
+            .map(|chunk| [chunk[0], chunk[1], chunk[2]])
+            .collect())
     }
 
     fn iobuf_to_f32_vec(buf: vtkio::model::IOBuffer) -> Result<Vec<f32>, IoError> {
@@ -953,12 +1023,20 @@ mod imp {
 
     fn collect_cells(vn: &VertexNumbers) -> Vec<Vec<u32>> {
         match vn {
-            VertexNumbers::XML { connectivity, offsets } => {
+            VertexNumbers::XML {
+                connectivity,
+                offsets,
+            } => {
                 let mut cells = Vec::with_capacity(offsets.len());
                 let mut prev = 0usize;
                 for &end in offsets {
                     let end = end as usize;
-                    cells.push(connectivity[prev..end].iter().map(|&value| value as u32).collect());
+                    cells.push(
+                        connectivity[prev..end]
+                            .iter()
+                            .map(|&value| value as u32)
+                            .collect(),
+                    );
                     prev = end;
                 }
                 cells

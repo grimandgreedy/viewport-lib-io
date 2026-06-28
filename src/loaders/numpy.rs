@@ -280,8 +280,11 @@ fn parse_npz_entries(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, IoError> {
             return Err(IoError::Parse("numpy: truncated NPZ local header".into()));
         }
 
-        let compression =
-            u16::from_le_bytes(bytes[offset + 8..offset + 10].try_into().unwrap_or_default());
+        let compression = u16::from_le_bytes(
+            bytes[offset + 8..offset + 10]
+                .try_into()
+                .unwrap_or_default(),
+        );
         let compressed_size = u32::from_le_bytes(
             bytes[offset + 18..offset + 22]
                 .try_into()
@@ -318,9 +321,9 @@ fn parse_npz_entries(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, IoError> {
             8 => {
                 let mut decoder = DeflateDecoder::new(Cursor::new(&bytes[data_start..data_end]));
                 let mut buffer = Vec::with_capacity(uncompressed_size);
-                decoder
-                    .read_to_end(&mut buffer)
-                    .map_err(|error| IoError::Parse(format!("numpy: NPZ inflate failed: {error}")))?;
+                decoder.read_to_end(&mut buffer).map_err(|error| {
+                    IoError::Parse(format!("numpy: NPZ inflate failed: {error}"))
+                })?;
                 buffer
             }
             other => {

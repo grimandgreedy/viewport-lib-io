@@ -6,10 +6,10 @@ use hdf5::File as Hdf5File;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 
-use crate::{error::IoError, types::IoDataSet};
 use super::common::{Dataset, VolumeGeometry, VolumeGrid};
 use super::error::ReadError;
 use super::pvd::{PvdSeries, TimestepEntry};
+use crate::{error::IoError, types::IoDataSet};
 
 /// Decode an XDMF file into one or more scientific datasets.
 pub fn datasets_from_path(path: &Path) -> Result<Vec<IoDataSet>, IoError> {
@@ -614,9 +614,15 @@ fn image_data_positions(
             for ix in 0..ni.max(1) {
                 let x = origin[0] + spacing[0] * ix as f32;
                 let (y, z) = if flat_z {
-                    (origin[2] + spacing[2] * iz as f32, origin[1] + spacing[1] * iy as f32)
+                    (
+                        origin[2] + spacing[2] * iz as f32,
+                        origin[1] + spacing[1] * iy as f32,
+                    )
                 } else {
-                    (origin[1] + spacing[1] * iy as f32, origin[2] + spacing[2] * iz as f32)
+                    (
+                        origin[1] + spacing[1] * iy as f32,
+                        origin[2] + spacing[2] * iz as f32,
+                    )
                 };
                 positions.push([x, y, z]);
             }

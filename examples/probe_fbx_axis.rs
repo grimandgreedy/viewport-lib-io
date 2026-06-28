@@ -9,9 +9,9 @@ use std::path::Path;
 
 use fbxcel_dom::any::AnyDocument;
 use fbxcel_dom::fbxcel;
-use fbxcel_dom::v7400::object::model::{ModelHandle, TypedModelHandle};
-use fbxcel_dom::v7400::object::TypedObjectHandle;
 use fbxcel_dom::v7400::data::mesh::{PolygonVertexIndex, PolygonVertices};
+use fbxcel_dom::v7400::object::TypedObjectHandle;
+use fbxcel_dom::v7400::object::model::{ModelHandle, TypedModelHandle};
 
 fn fan_tri(
     pvs: &PolygonVertices<'_>,
@@ -19,7 +19,9 @@ fn fan_tri(
     out: &mut Vec<[PolygonVertexIndex; 3]>,
 ) -> Result<(), anyhow::Error> {
     let _ = pvs;
-    if indices.len() < 3 { return Ok(()); }
+    if indices.len() < 3 {
+        return Ok(());
+    }
     for i in 1..indices.len() - 1 {
         out.push([indices[0], indices[i], indices[i + 1]]);
     }
@@ -51,11 +53,18 @@ fn props_str(model: &ModelHandle<'_>) -> String {
     };
     let mut row = String::new();
     let triplets = [
-        "Lcl Translation", "Lcl Rotation", "Lcl Scaling",
-        "PreRotation", "PostRotation",
-        "RotationOffset", "RotationPivot",
-        "ScalingOffset", "ScalingPivot",
-        "GeometricTranslation", "GeometricRotation", "GeometricScaling",
+        "Lcl Translation",
+        "Lcl Rotation",
+        "Lcl Scaling",
+        "PreRotation",
+        "PostRotation",
+        "RotationOffset",
+        "RotationPivot",
+        "ScalingOffset",
+        "ScalingPivot",
+        "GeometricTranslation",
+        "GeometricRotation",
+        "GeometricScaling",
     ];
     for n in triplets {
         if let Some(p) = props.get_property(n) {
@@ -64,14 +73,14 @@ fn props_str(model: &ModelHandle<'_>) -> String {
                 let x = attr_f64(&vals[0]).unwrap_or(0.0);
                 let y = attr_f64(&vals[1]).unwrap_or(0.0);
                 let z = attr_f64(&vals[2]).unwrap_or(0.0);
-                if x != 0.0 || y != 0.0 || z != 0.0
-                    || n == "Lcl Scaling"
-                    || n == "GeometricScaling"
+                if x != 0.0 || y != 0.0 || z != 0.0 || n == "Lcl Scaling" || n == "GeometricScaling"
                 {
                     // only print non-identity (interesting) properties; scaling
                     // is shown even if 1,1,1 only when explicitly set
                     if (n == "Lcl Scaling" || n == "GeometricScaling")
-                        && (x - 1.0).abs() < 1e-6 && (y - 1.0).abs() < 1e-6 && (z - 1.0).abs() < 1e-6
+                        && (x - 1.0).abs() < 1e-6
+                        && (y - 1.0).abs() < 1e-6
+                        && (z - 1.0).abs() < 1e-6
                     {
                         continue;
                     }
@@ -99,7 +108,9 @@ fn print_parent_chain(label: &str, mesh: &ModelHandle<'_>) {
     let mut guard = 0;
     while let Some(parent) = current {
         guard += 1;
-        if guard > 64 { break; }
+        if guard > 64 {
+            break;
+        }
         let (kind, p) = match &parent {
             TypedModelHandle::Mesh(m) => ("Mesh", (**m).clone()),
             TypedModelHandle::Null(n) => ("Null", (**n).clone()),
@@ -121,7 +132,14 @@ fn print_parent_chain(label: &str, mesh: &ModelHandle<'_>) {
     }
     println!("  {label} chain (leaf -> root, depth {}):", chain.len());
     for (i, (k, n, r)) in chain.iter().enumerate() {
-        println!("    [{i}] {k} '{n}'{}", if r.is_empty() { String::new() } else { r.clone() });
+        println!(
+            "    [{i}] {k} '{n}'{}",
+            if r.is_empty() {
+                String::new()
+            } else {
+                r.clone()
+            }
+        );
     }
 }
 
@@ -129,27 +147,44 @@ fn probe(path: &Path) {
     println!("=== {} ===", path.display());
     let file = match std::fs::File::open(path) {
         Ok(f) => f,
-        Err(e) => { println!("  open failed: {e}"); return; }
+        Err(e) => {
+            println!("  open failed: {e}");
+            return;
+        }
     };
     let reader = BufReader::new(file);
     let doc = match AnyDocument::from_seekable_reader(reader) {
         Ok(AnyDocument::V7400(_, d)) => d,
-        Ok(_) => { println!("  unsupported FBX version"); return; }
-        Err(e) => { println!("  parse failed: {e:?}"); return; }
+        Ok(_) => {
+            println!("  unsupported FBX version");
+            return;
+        }
+        Err(e) => {
+            println!("  parse failed: {e:?}");
+            return;
+        }
     };
 
     // GlobalSettings
     if let Some(settings) = doc.global_settings() {
         let props = settings.raw_properties();
         for n in [
-            "UpAxis", "UpAxisSign",
-            "FrontAxis", "FrontAxisSign",
-            "CoordAxis", "CoordAxisSign",
-            "OriginalUpAxis", "OriginalUpAxisSign",
-            "UnitScaleFactor", "OriginalUnitScaleFactor",
+            "UpAxis",
+            "UpAxisSign",
+            "FrontAxis",
+            "FrontAxisSign",
+            "CoordAxis",
+            "CoordAxisSign",
+            "OriginalUpAxis",
+            "OriginalUpAxisSign",
+            "UnitScaleFactor",
+            "OriginalUnitScaleFactor",
         ] {
             let v = props.get_property(n).and_then(|p| {
-                p.value_part().first().and_then(attr_f64).map(|f| format!("{f}"))
+                p.value_part()
+                    .first()
+                    .and_then(attr_f64)
+                    .map(|f| format!("{f}"))
             });
             println!("  GS {n}: {}", v.unwrap_or_else(|| "<absent>".into()));
         }
@@ -173,16 +208,30 @@ fn probe(path: &Path) {
                             if let Some(p) = tri.control_point(ti) {
                                 for k in 0..3 {
                                     let v = [p.x, p.y, p.z][k];
-                                    if v < min[k] { min[k] = v; }
-                                    if v > max[k] { max[k] = v; }
+                                    if v < min[k] {
+                                        min[k] = v;
+                                    }
+                                    if v > max[k] {
+                                        max[k] = v;
+                                    }
                                 }
                                 count += 1;
                             }
                         }
                         if count > 0 {
-                            let ext = [max[0]-min[0], max[1]-min[1], max[2]-min[2]];
-                            println!("    raw cp bbox: min=({:.3},{:.3},{:.3}) max=({:.3},{:.3},{:.3}) ext=({:.3},{:.3},{:.3}) n={count}",
-                                min[0],min[1],min[2], max[0],max[1],max[2], ext[0],ext[1],ext[2]);
+                            let ext = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
+                            println!(
+                                "    raw cp bbox: min=({:.3},{:.3},{:.3}) max=({:.3},{:.3},{:.3}) ext=({:.3},{:.3},{:.3}) n={count}",
+                                min[0],
+                                min[1],
+                                min[2],
+                                max[0],
+                                max[1],
+                                max[2],
+                                ext[0],
+                                ext[1],
+                                ext[2]
+                            );
                         }
                     }
                 }
@@ -198,5 +247,7 @@ fn main() {
         eprintln!("usage: probe-fbx-axis <file.fbx> [more.fbx ...]");
         std::process::exit(1);
     }
-    for a in args { probe(Path::new(&a)); }
+    for a in args {
+        probe(Path::new(&a));
+    }
 }

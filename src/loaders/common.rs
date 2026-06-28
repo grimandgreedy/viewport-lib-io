@@ -280,8 +280,9 @@ fn cell_to_point_structured(dims: [u32; 3], cell_values: &[f32]) -> Option<Vec<f
     let mut sums = vec![0.0f32; point_count];
     let mut counts = vec![0u32; point_count];
 
-    let point_index =
-        |ix: usize, iy: usize, iz: usize| -> usize { ix + iy * nx as usize + iz * nx as usize * ny as usize };
+    let point_index = |ix: usize, iy: usize, iz: usize| -> usize {
+        ix + iy * nx as usize + iz * nx as usize * ny as usize
+    };
     let cell_index = |ix: usize, iy: usize, iz: usize| -> usize { ix + iy * cx + iz * cx * cy };
 
     for iz in 0..cz {

@@ -16,10 +16,10 @@
 
 /// Error types for `viewport-lib-io`.
 pub mod error;
-/// Source-agnostic decoded data types.
-pub mod types;
 /// Source-format loaders.
 pub mod loaders;
+/// Source-agnostic decoded data types.
+pub mod types;
 
 pub use error::IoError;
 pub use types::{

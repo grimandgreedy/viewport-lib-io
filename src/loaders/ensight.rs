@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::io::Read as IoRead;
 use std::path::{Path, PathBuf};
 
-use crate::{error::IoError, types::IoDataSet};
 use super::common::Dataset;
 use super::error::ReadError;
 use super::pvd::{PvdSeries, TimestepEntry};
+use crate::{error::IoError, types::IoDataSet};
 
 /// Decode an EnSight Gold case file into one or more scientific datasets.
 pub fn datasets_from_path(path: &Path) -> Result<Vec<IoDataSet>, IoError> {

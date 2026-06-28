@@ -82,14 +82,14 @@ fn point_cloud_from_bytes(bytes: &[u8]) -> Result<IoPointCloud, IoError> {
     let end_marker_lf = b"end_header\n";
     let end_marker_crlf = b"end_header\r\n";
 
-    let (header_bytes, data_offset) = if let Some(position) = find_subsequence(bytes, end_marker_crlf)
-    {
-        (&bytes[..position], position + end_marker_crlf.len())
-    } else if let Some(position) = find_subsequence(bytes, end_marker_lf) {
-        (&bytes[..position], position + end_marker_lf.len())
-    } else {
-        return Err(IoError::Parse("ply: missing end_header".into()));
-    };
+    let (header_bytes, data_offset) =
+        if let Some(position) = find_subsequence(bytes, end_marker_crlf) {
+            (&bytes[..position], position + end_marker_crlf.len())
+        } else if let Some(position) = find_subsequence(bytes, end_marker_lf) {
+            (&bytes[..position], position + end_marker_lf.len())
+        } else {
+            return Err(IoError::Parse("ply: missing end_header".into()));
+        };
 
     let header = std::str::from_utf8(header_bytes)
         .map_err(|_| IoError::Parse("ply: header is not valid UTF-8".into()))?;
@@ -250,7 +250,9 @@ fn point_cloud_from_bytes(bytes: &[u8]) -> Result<IoPointCloud, IoError> {
         }
     } else {
         for (values, (_, prop)) in scalar_bufs.into_iter().zip(extra_props.iter()) {
-            point_cloud.scalar_attributes.insert(prop.name.clone(), values);
+            point_cloud
+                .scalar_attributes
+                .insert(prop.name.clone(), values);
         }
     }
 
@@ -298,14 +300,12 @@ fn parse_vertices_ascii(
             let blue_index = b_index.unwrap_or_default();
             colors.push([
                 parse_color_ascii(&parts, red_index, vertex_props[red_index].ty.is_uchar()),
-                parse_color_ascii(
-                    &parts,
-                    green_index,
-                    vertex_props[green_index].ty.is_uchar(),
-                ),
+                parse_color_ascii(&parts, green_index, vertex_props[green_index].ty.is_uchar()),
                 parse_color_ascii(&parts, blue_index, vertex_props[blue_index].ty.is_uchar()),
                 a_index
-                    .map(|index| parse_color_ascii(&parts, index, vertex_props[index].ty.is_uchar()))
+                    .map(|index| {
+                        parse_color_ascii(&parts, index, vertex_props[index].ty.is_uchar())
+                    })
                     .unwrap_or(1.0),
             ]);
         }
@@ -327,11 +327,7 @@ fn parse_ascii_f32(parts: &[&str], index: usize) -> f32 {
 
 fn parse_color_ascii(parts: &[&str], index: usize, is_uchar: bool) -> f32 {
     let value = parse_ascii_f32(parts, index);
-    if is_uchar {
-        value / 255.0
-    } else {
-        value
-    }
+    if is_uchar { value / 255.0 } else { value }
 }
 
 #[allow(clippy::too_many_arguments)]

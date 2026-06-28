@@ -3,10 +3,10 @@ use std::path::Path;
 
 use netcdf_reader::{NcFile, NcType, NcVariable};
 
-use crate::{error::IoError, types::IoDataSet};
 use super::common::{Dataset, VolumeGeometry, VolumeGrid};
 use super::error::ReadError;
 use super::pvd::{PvdSeries, TimestepEntry};
+use crate::{error::IoError, types::IoDataSet};
 
 /// Decode a NetCDF file into one or more scientific datasets.
 pub fn datasets_from_path(path: &Path) -> Result<Vec<IoDataSet>, IoError> {

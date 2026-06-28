@@ -83,9 +83,7 @@ fn main() {
             skel,
         );
     }
-    println!(
-        "  totals: skinned={skinned}, static={static_meshes}, anomalous={bone_parented_only}",
-    );
+    println!("  totals: skinned={skinned}, static={static_meshes}, anomalous={bone_parented_only}",);
 
     println!("\nskeletons:");
     for (i, sk) in scene.skeletons.iter().enumerate() {

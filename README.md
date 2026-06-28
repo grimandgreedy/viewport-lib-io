@@ -36,6 +36,7 @@ Image:
 
 ```rust
 let image = viewport_lib_io::loaders::png::texture_from_path("albedo.png".as_ref())?;
+let icon = viewport_lib_io::loaders::svg::texture_from_path("icon.svg".as_ref())?;
 ```
 
 Scene (glTF, OBJ, FBX, PLY):

@@ -165,12 +165,11 @@ mod tests {
         std::fs::write(&bin_path, bin).unwrap();
 
         let png_bytes: &[u8] = &[
-            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49,
-            0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06,
-            0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44,
-            0x41, 0x54, 0x78, 0x9C, 0x63, 0xF8, 0xCF, 0xC0, 0xF0, 0x1F, 0x00, 0x05, 0x00,
-            0x01, 0xFF, 0x89, 0x99, 0x3D, 0x1D, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E,
-            0x44, 0xAE, 0x42, 0x60, 0x82,
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9C, 0x63, 0xF8, 0xCF, 0xC0, 0xF0, 0x1F, 0x00, 0x05, 0x00, 0x01, 0xFF, 0x89, 0x99,
+            0x3D, 0x1D, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
         ];
         std::fs::write(&png_path, png_bytes).unwrap();
 
@@ -422,7 +421,11 @@ mod tests {
         // Skin weights round-tripped onto the mesh.
         let mesh = scene.meshes.first().expect("mesh missing");
         assert_eq!(mesh.skeleton_index, Some(0));
-        let sw = mesh.mesh.skin_weights.as_ref().expect("skin weights missing");
+        let sw = mesh
+            .mesh
+            .skin_weights
+            .as_ref()
+            .expect("skin weights missing");
         assert_eq!(sw.joint_indices.len(), 3);
         assert_eq!(sw.joint_weights.len(), 3);
         for ji in &sw.joint_indices {
@@ -853,7 +856,9 @@ fn collect_node(
         let explicit_skeleton = node.skin().map(|s| s.index());
 
         for (primitive_index, primitive) in mesh.primitives().enumerate() {
-            if let Some(mut imported) = convert_primitive(&primitive, buffers, &mesh, primitive_index) {
+            if let Some(mut imported) =
+                convert_primitive(&primitive, buffers, &mesh, primitive_index)
+            {
                 if explicit_skeleton.is_some() {
                     // Real glTF skinning: JOINTS_0 / WEIGHTS_0 already
                     // populated on the primitive. Keep the mesh transform as
@@ -889,7 +894,15 @@ fn collect_node(
     };
 
     for child in node.children() {
-        collect_node(&child, buffers, world, child_parent, joint_lookup, my_joint, out);
+        collect_node(
+            &child,
+            buffers,
+            world,
+            child_parent,
+            joint_lookup,
+            my_joint,
+            out,
+        );
     }
 }
 
@@ -970,12 +983,10 @@ fn convert_primitive(
     // Skin attributes. glTF stores joint indices as either u8 or u16; we
     // normalise to u8 because the runtime substrate uses [u8; 4] today. Joint
     // indices above 255 are clamped with a warning.
-    let joint_indices_u16: Option<Vec<[u16; 4]>> = reader
-        .read_joints(0)
-        .map(|iter| iter.into_u16().collect());
-    let joint_weights: Option<Vec<[f32; 4]>> = reader
-        .read_weights(0)
-        .map(|iter| iter.into_f32().collect());
+    let joint_indices_u16: Option<Vec<[u16; 4]>> =
+        reader.read_joints(0).map(|iter| iter.into_u16().collect());
+    let joint_weights: Option<Vec<[f32; 4]>> =
+        reader.read_weights(0).map(|iter| iter.into_f32().collect());
     let skin_weights = match (joint_indices_u16, joint_weights) {
         (Some(ji), Some(jw)) => Some(SkinWeights {
             joint_indices: ji
@@ -1025,7 +1036,11 @@ fn convert_material(
 ) -> IoMaterial {
     let pbr = material.pbr_metallic_roughness();
     let base_color_factor = pbr.base_color_factor();
-    let base_color = [base_color_factor[0], base_color_factor[1], base_color_factor[2]];
+    let base_color = [
+        base_color_factor[0],
+        base_color_factor[1],
+        base_color_factor[2],
+    ];
 
     let base_color_texture = pbr
         .base_color_texture()
@@ -1305,9 +1320,7 @@ fn convert_skeletons(
         let reader = skin.reader(|buffer| Some(&buffers[buffer.index()]));
         let inverse_binds: Vec<glam::Mat4> = reader
             .read_inverse_bind_matrices()
-            .map(|iter| {
-                iter.map(|m| glam::Mat4::from_cols_array_2d(&m)).collect()
-            })
+            .map(|iter| iter.map(|m| glam::Mat4::from_cols_array_2d(&m)).collect())
             .unwrap_or_else(|| vec![glam::Mat4::IDENTITY; joints_in_skin.len()]);
 
         // Map glTF skin-joint index -> parent's glTF skin-joint index (or
@@ -1320,15 +1333,13 @@ fn convert_skeletons(
         let parent_in_skin: Vec<Option<usize>> = joints_in_skin
             .iter()
             .map(|node| {
-                node_parent
-                    .get(&node.index())
-                    .and_then(|p| {
-                        if skin_member.contains(p) {
-                            gltf_idx_to_skin_pos.get(p).copied()
-                        } else {
-                            None
-                        }
-                    })
+                node_parent.get(&node.index()).and_then(|p| {
+                    if skin_member.contains(p) {
+                        gltf_idx_to_skin_pos.get(p).copied()
+                    } else {
+                        None
+                    }
+                })
             })
             .collect();
 
@@ -1366,8 +1377,7 @@ fn convert_skeletons(
         let mut joints = Vec::with_capacity(n);
         for &skin_pos in &order {
             let node = &joints_in_skin[skin_pos];
-            let parent = parent_in_skin[skin_pos]
-                .map(|p| skin_pos_to_joint[p] as u8);
+            let parent = parent_in_skin[skin_pos].map(|p| skin_pos_to_joint[p] as u8);
             let inverse_bind_y_up = inverse_binds
                 .get(skin_pos)
                 .copied()
@@ -1473,7 +1483,8 @@ fn convert_animations(
                 }
                 Some(gltf::animation::util::ReadOutputs::Scales(iter)) => {
                     AnimationTrackValues::Vec3(
-                        iter.map(|v| reorient_scale(glam::Vec3::from_array(v))).collect(),
+                        iter.map(|v| reorient_scale(glam::Vec3::from_array(v)))
+                            .collect(),
                     )
                 }
                 Some(gltf::animation::util::ReadOutputs::Rotations(iter)) => {
@@ -1486,7 +1497,9 @@ fn convert_animations(
                 _ => continue,
             };
 
-            let entry = per_skeleton.entry(skeleton_idx).or_insert_with(|| (Vec::new(), 0.0));
+            let entry = per_skeleton
+                .entry(skeleton_idx)
+                .or_insert_with(|| (Vec::new(), 0.0));
             entry.0.push(AnimationTrack {
                 joint: joint_idx,
                 channel: gltf_channel,
