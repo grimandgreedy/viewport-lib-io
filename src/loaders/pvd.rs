@@ -29,7 +29,6 @@ pub struct PvdSeries {
 ///
 /// File paths inside the PVD are resolved relative to the PVD file's parent directory.
 /// The returned `timesteps` are sorted ascending by `time`.
-#[allow(dead_code)]
 pub fn read_pvd(path: &Path) -> Result<PvdSeries, ReadError> {
     let parent = path.parent().unwrap_or(Path::new("."));
     let file = std::fs::File::open(path)?;
