@@ -644,7 +644,8 @@ pub fn scene_from_path_with_options(
                 };
                 if log_uv && !uv_candidates.is_empty() {
                     eprintln!(
-                        "VIEWPORT_FBX_LOG_UV: {} UV channel(s) found:",
+                        "VIEWPORT_FBX_LOG_UV: model '{model_name}' ({} fbx material(s)): {} UV channel(s) found:",
+                        model_materials.len(),
                         uv_candidates.len()
                     );
                     for (i, uvs) in uv_candidates.iter().enumerate() {
@@ -665,7 +666,19 @@ pub fn scene_from_path_with_options(
                         );
                     }
                 }
-                let uvs_vec: Option<Vec<[f32; 2]>> = if uv_candidates.len() <= 1 {
+                // Diagnostic override: force a specific UV channel index for
+                // every mesh, to A/B which channel carries the correct albedo
+                // atlas mapping on foliage with several 0..1 UV sets.
+                let uv_override = std::env::var("VIEWPORT_FBX_UV_CHANNEL")
+                    .ok()
+                    .and_then(|s| s.trim().parse::<usize>().ok())
+                    .filter(|&i| i < uv_candidates.len());
+                let uvs_vec: Option<Vec<[f32; 2]>> = if let Some(idx) = uv_override {
+                    if log_uv {
+                        eprintln!("VIEWPORT_FBX_LOG_UV: override forcing channel {idx}");
+                    }
+                    uv_candidates.into_iter().nth(idx)
+                } else if uv_candidates.len() <= 1 {
                     uv_candidates.into_iter().next()
                 } else {
                     // Score: (area, -overshoot). Bigger area wins.
@@ -749,9 +762,26 @@ pub fn scene_from_path_with_options(
                             let sub_positions =
                                 vertex_indices.iter().map(|&i| positions[i]).collect();
                             let sub_normals = vertex_indices.iter().map(|&i| normals[i]).collect();
-                            let sub_uvs = uvs_vec
+                            let sub_uvs: Option<Vec<[f32; 2]>> = uvs_vec
                                 .as_ref()
                                 .map(|uvs| vertex_indices.iter().map(|&i| uvs[i]).collect());
+                            // Per-submesh UV extent: reveals whether a submesh
+                            // (e.g. a tree's leaf cards) samples a different
+                            // atlas region than the rest, or collapses onto it.
+                            if log_uv {
+                                if let Some(ref su) = sub_uvs {
+                                    let (umin, umax, vmin, vmax) = summarise(su);
+                                    eprintln!(
+                                        "VIEWPORT_FBX_LOG_UV:   submesh '{model_name}.mat{local_material_index}' (fbx material {:?}) uv=[{:.2},{:.2}]x[{:.2},{:.2}] verts={}",
+                                        model_materials.get(local_material_index),
+                                        umin,
+                                        umax,
+                                        vmin,
+                                        vmax,
+                                        su.len()
+                                    );
+                                }
+                            }
                             let sub_indices: Vec<u32> = (0..vertex_indices.len() as u32).collect();
 
                             let sub_skin = skin_per_vertex.as_ref().map(|sw| SkinWeights {
@@ -800,6 +830,24 @@ pub fn scene_from_path_with_options(
                 mesh_data.uvs = uvs_vec;
                 mesh_data.skin_weights = skin_per_vertex;
 
+                // Single-submesh path: log the whole mesh's UV extent so a
+                // single-material atlas mesh (trunk + leaves in one material)
+                // can be inspected alongside the multi-submesh case above.
+                if log_uv {
+                    if let Some(ref u) = mesh_data.uvs {
+                        let (umin, umax, vmin, vmax) = summarise(u);
+                        eprintln!(
+                            "VIEWPORT_FBX_LOG_UV:   submesh '{model_name}' (single, fbx material {:?}) uv=[{:.2},{:.2}]x[{:.2},{:.2}] verts={}",
+                            model_materials.first(),
+                            umin,
+                            umax,
+                            vmin,
+                            vmax,
+                            u.len()
+                        );
+                    }
+                }
+
                 meshes.push(IoMesh {
                     name: model_name,
                     mesh: mesh_data,
@@ -815,7 +863,7 @@ pub fn scene_from_path_with_options(
 
         assign_hierarchy(&document, &mut meshes);
 
-        let animations = extract_animations(&document, &mut skeletons);
+        let animations = extract_animations(&document, &mut skeletons, &axis_transform, unit_scale);
 
         Ok(IoScene {
             meshes,
@@ -1483,7 +1531,14 @@ fn extract_skin(
     let unit_scale_mat = glam::Mat4::from_scale(glam::Vec3::splat(unit_scale));
     // `axis_transform` already lands vertices in Z-up via `get_axis_transform`.
     // Joint inverse-binds compose with the same chain so they end up in the
-    // same scene space as the skinned vertices.
+    // same scene space as the skinned vertices: with `C = axis * unit_scale`,
+    // `world' = C * TransformLink` and `inverse_bind' = TransformLink^-1 * C^-1`.
+    //
+    // NOTE: this is keyed to the FILE-level transform. Under
+    // `AxisPolicy::HeuristicVeto` a mesh leaf can individually veto the axis
+    // transform in `extract_node_transform`; a vetoed skinned leaf paired
+    // with this converted skeleton is a pre-existing inconsistency that is
+    // not addressed here.
     let joints: Vec<Joint> = id_order
         .iter()
         .map(|id| {
@@ -1628,7 +1683,12 @@ fn read_f64_array(node: &fbxcel::tree::v7400::NodeHandle<'_>, name: &str) -> Opt
 const FBX_KTIME_PER_SECOND: f64 = 46_186_158_000.0;
 
 #[cfg(feature = "fbx")]
-fn extract_animations(document: &Document, skeletons: &mut Vec<Skeleton>) -> Vec<AnimationClip> {
+fn extract_animations(
+    document: &Document,
+    skeletons: &mut Vec<Skeleton>,
+    axis_transform: &glam::Mat4,
+    unit_scale: f32,
+) -> Vec<AnimationClip> {
     let mut anim_stacks: Vec<fbxcel_dom::v7400::object::ObjectHandle<'_>> = Vec::new();
     for obj in document.objects() {
         let c = obj.class();
@@ -1640,10 +1700,28 @@ fn extract_animations(document: &Document, skeletons: &mut Vec<Skeleton>) -> Vec
         return Vec::new();
     }
 
+    // File-level conversion `C = axis_transform * unit_scale` — the same
+    // matrix the mesh leaves and the skin inverse-binds compose with. Joint
+    // WORLD transforms must become `W' = C * W`; premultiplying every ROOT
+    // joint's local by C achieves that for the whole chain, so only
+    // root-joint tracks are converted below. When the file-level transform
+    // is identity and the unit scale is 1, all of this is a no-op.
+    //
+    // NOTE: skeletons and animations are file-scoped, so this is keyed to
+    // the FILE-level transform from `get_axis_transform`. Under
+    // `AxisPolicy::HeuristicVeto` a mesh leaf may individually veto the
+    // axis transform (see `extract_node_transform`); a vetoed skinned leaf
+    // paired with a converted skeleton is a pre-existing inconsistency that
+    // is not addressed here.
+    let conv = *axis_transform * glam::Mat4::from_scale(glam::Vec3::splat(unit_scale));
+    // `axis_transform` is a pure rotation (unit scale is carried separately),
+    // so its quaternion is exactly the rotation part of C.
+    let conv_rot = glam::Quat::from_mat4(axis_transform).normalize();
+
     // Build a rig skeleton from every LimbNode/Null model in the document so
     // animation tracks have a stable joint indexing. If a skin already produced
     // a skeleton whose bone set matches, reuse it; otherwise append a new one.
-    let (rig_skeleton, model_id_to_joint) = build_rig_from_limbs(document);
+    let (rig_skeleton, model_id_to_joint) = build_rig_from_limbs(document, &conv);
     if model_id_to_joint.is_empty() {
         return Vec::new();
     }
@@ -1656,6 +1734,13 @@ fn extract_animations(document: &Document, skeletons: &mut Vec<Skeleton>) -> Vec
         .iter()
         .enumerate()
         .map(|(i, j)| (j.name.clone(), i))
+        .collect();
+    // Roots of the final rig skeleton: only their local transforms need the
+    // file-level conversion applied (every descendant world inherits it).
+    let joint_is_root: Vec<bool> = skeletons[rig_skel_idx]
+        .joints
+        .iter()
+        .map(|j| j.parent.is_none())
         .collect();
 
     // Cache per-bone PreRotation / PostRotation / RotationOrder so each
@@ -1800,16 +1885,44 @@ fn extract_animations(document: &Document, skeletons: &mut Vec<Skeleton>) -> Vec
                     }
                 }
 
+                // Root joints carry the file-level conversion: with
+                // `C = s * A` (uniform scale s, rotation A), converting the
+                // root local `L0' = C * L0 = T'R'S'` decomposes per channel
+                // as `t' = s * (A * t)`, `q' = q_A * q`, `s' = s * scale`
+                // (scale axes stay in the joint's local frame). Non-root
+                // tracks are unchanged — their worlds inherit C via the root.
+                let is_root = joint_is_root.get(rig_joint).copied().unwrap_or(false);
                 let values = match channel {
-                    AnimationChannel::Translation | AnimationChannel::Scale => {
+                    AnimationChannel::Translation => {
                         let v: Vec<glam::Vec3> = union_times
                             .iter()
                             .map(|t| {
-                                glam::Vec3::new(
+                                let raw = glam::Vec3::new(
                                     sample_axis(0, *t),
                                     sample_axis(1, *t),
                                     sample_axis(2, *t),
-                                )
+                                );
+                                if is_root {
+                                    // C has no translation part, so this is
+                                    // exactly `s * (A * raw)`.
+                                    conv.transform_point3(raw)
+                                } else {
+                                    raw
+                                }
+                            })
+                            .collect();
+                        AnimationTrackValues::Vec3(v)
+                    }
+                    AnimationChannel::Scale => {
+                        let v: Vec<glam::Vec3> = union_times
+                            .iter()
+                            .map(|t| {
+                                let raw = glam::Vec3::new(
+                                    sample_axis(0, *t),
+                                    sample_axis(1, *t),
+                                    sample_axis(2, *t),
+                                );
+                                if is_root { unit_scale * raw } else { raw }
                             })
                             .collect();
                         AnimationTrackValues::Vec3(v)
@@ -1832,8 +1945,17 @@ fn extract_animations(document: &Document, skeletons: &mut Vec<Skeleton>) -> Vec
                                     sample_axis(2, *t),
                                 );
                                 let r_anim = euler_to_mat4(deg, order);
+                                // Compose PreR * R_anim * PostR^-1 FIRST —
+                                // the composed value is the joint's full
+                                // local rotation, which is what the root
+                                // conversion `L0' = C * L0` transforms.
                                 let m = pre_m * r_anim * post_inv_m;
-                                glam::Quat::from_mat4(&m).normalize()
+                                let q = glam::Quat::from_mat4(&m).normalize();
+                                if is_root {
+                                    (conv_rot * q).normalize()
+                                } else {
+                                    q
+                                }
                             })
                             .collect();
                         AnimationTrackValues::Quat(v)
@@ -1884,8 +2006,15 @@ fn find_or_insert_rig(skeletons: &mut Vec<Skeleton>, rig: Skeleton) -> usize {
 
 /// Build a Skeleton from every LimbNode/Null model in the document, returning
 /// the skeleton and a model-id -> joint-index map.
+///
+/// `conv` is the file-level conversion `C = axis_transform * unit_scale`.
+/// This rig has no cluster `TransformLink` data, so each joint's FBX-space
+/// bind world is taken as identity; converting all joint worlds to
+/// `W' = C * W` therefore gives `inverse_bind' = (C * I)^-1 = C^-1`. This
+/// keeps the fallback rig consistent with animation curves whose root-joint
+/// locals are premultiplied by C in `extract_animations`.
 #[cfg(feature = "fbx")]
-fn build_rig_from_limbs(document: &Document) -> (Skeleton, HashMap<i64, u8>) {
+fn build_rig_from_limbs(document: &Document, conv: &glam::Mat4) -> (Skeleton, HashMap<i64, u8>) {
     use fbxcel_dom::v7400::object::model::TypedModelHandle as M;
 
     let mut bones: HashMap<i64, BoneInfo> = HashMap::new();
@@ -1920,6 +2049,7 @@ fn build_rig_from_limbs(document: &Document) -> (Skeleton, HashMap<i64, u8>) {
         .map(|(i, id)| (*id, i as u8))
         .collect();
 
+    let conv_inv = conv.inverse();
     let joints: Vec<Joint> = id_order
         .iter()
         .map(|id| {
@@ -1927,7 +2057,8 @@ fn build_rig_from_limbs(document: &Document) -> (Skeleton, HashMap<i64, u8>) {
             Joint {
                 name: info.name.clone(),
                 parent: info.parent_id.and_then(|pid| id_to_idx.get(&pid).copied()),
-                inverse_bind: glam::Mat4::IDENTITY,
+                // Identity FBX bind world, converted: `inverse_bind * C^-1`.
+                inverse_bind: conv_inv,
             }
         })
         .collect();
