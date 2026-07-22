@@ -1131,11 +1131,17 @@ fn convert_material(
     let base_color_texture = pbr
         .base_color_texture()
         .and_then(|info| image_to_texture_source(&info.texture(), images, parent_dir));
-    let normal_map_texture = material
-        .normal_texture()
-        .and_then(|info| image_to_texture_source(&info.texture(), images, parent_dir));
-    let ao_texture = material
-        .occlusion_texture()
+
+    // Read the strength scalars before consuming the texture references. Absent
+    // textures leave the scalars at the glTF defaults of 1.0.
+    let normal_texture = material.normal_texture();
+    let normal_scale = normal_texture.as_ref().map_or(1.0, |t| t.scale());
+    let normal_map_texture =
+        normal_texture.and_then(|info| image_to_texture_source(&info.texture(), images, parent_dir));
+
+    let occlusion_texture = material.occlusion_texture();
+    let occlusion_strength = occlusion_texture.as_ref().map_or(1.0, |t| t.strength());
+    let ao_texture = occlusion_texture
         .and_then(|info| image_to_texture_source(&info.texture(), images, parent_dir));
 
     IoMaterial {
@@ -1149,7 +1155,9 @@ fn convert_material(
         opacity: base_color_factor[3],
         base_color_texture,
         normal_map_texture,
+        normal_scale,
         ao_texture,
+        occlusion_strength,
     }
 }
 

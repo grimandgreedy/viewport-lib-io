@@ -41,7 +41,9 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
                         Some(TextureSource::File(base_dir.join(texture)))
                     }
                 }),
+                normal_scale: 1.0,
                 ao_texture: None,
+                occlusion_strength: 1.0,
             })
             .collect();
 

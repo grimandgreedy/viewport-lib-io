@@ -1211,7 +1211,9 @@ fn convert_material(
         normal_map_texture: material
             .normal_map_texture()
             .and_then(|texture| extract_texture(&texture, parent_dir)),
+        normal_scale: 1.0,
         ao_texture: None,
+        occlusion_strength: 1.0,
     }
 }
 

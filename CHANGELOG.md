@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `MaterialData::normal_scale` and `MaterialData::occlusion_strength`, matching
+  glTF `normalScale` and `occlusionStrength`. The glTF loader now reads both
+  (they were previously dropped); OBJ and FBX leave them at 1.0. Apply them to a
+  viewport-lib `Material` as `normal_strength = normal_scale` and
+  `ao_range = [1.0 - occlusion_strength, 1.0]`.
+
+### Changed
+- `MaterialData` is now `#[non_exhaustive]`. Build it via `Default` and
+  struct-update syntax; later field additions will not be breaking. Code that
+  reads `MaterialData` is unaffected.
+
 ## [0.2.0] - 2026-06-07
 
 ### Added

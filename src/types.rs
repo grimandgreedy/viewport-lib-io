@@ -45,7 +45,13 @@ pub enum TextureSource {
 }
 
 /// Material data extracted from a scene file.
+///
+/// `normal_scale` and `occlusion_strength` map directly onto a viewport-lib
+/// `Material`: set `normal_strength = normal_scale`, and set
+/// `ao_range = [1.0 - occlusion_strength, 1.0]` (which reproduces glTF
+/// `occlusionStrength`, since `mix(1.0, sample, s) == mix(1 - s, 1, sample)`).
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct MaterialData {
     /// Material name from the source scene.
     pub name: String,
@@ -61,8 +67,16 @@ pub struct MaterialData {
     pub base_color_texture: Option<TextureSource>,
     /// Normal map, if present.
     pub normal_map_texture: Option<TextureSource>,
+    /// Scales the tangent-space normal read from `normal_map_texture`, matching
+    /// glTF `normalScale`. 1.0 leaves the map at authored strength. Files with no
+    /// equivalent (OBJ, FBX) leave this at 1.0.
+    pub normal_scale: f32,
     /// Ambient-occlusion texture, if present.
     pub ao_texture: Option<TextureSource>,
+    /// Strength of the ambient-occlusion contribution, matching glTF
+    /// `occlusionStrength`. 1.0 applies the map fully, 0.0 disables it. Files with
+    /// no equivalent leave this at 1.0.
+    pub occlusion_strength: f32,
 }
 
 impl Default for MaterialData {
@@ -75,7 +89,9 @@ impl Default for MaterialData {
             opacity: 1.0,
             base_color_texture: None,
             normal_map_texture: None,
+            normal_scale: 1.0,
             ao_texture: None,
+            occlusion_strength: 1.0,
         }
     }
 }
