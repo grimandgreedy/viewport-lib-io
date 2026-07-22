@@ -198,6 +198,7 @@ impl Dataset {
             indices: self.indices.clone(),
             uvs: None,
             tangents: None,
+            colours: None,
             attributes,
             skin_weights: None,
         }

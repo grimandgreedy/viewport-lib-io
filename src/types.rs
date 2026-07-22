@@ -257,6 +257,10 @@ pub struct SurfaceMesh {
     pub uvs: Option<Vec<[f32; 2]>>,
     /// Optional per-vertex tangents.
     pub tangents: Option<Vec<[f32; 4]>>,
+    /// Optional per-vertex RGBA colours (linear 0..1), from a format's
+    /// per-vertex colour channel such as glTF `COLOR_0` or PLY vertex colours.
+    /// Maps to `viewport_lib::MeshData::vertex_colours`.
+    pub colours: Option<Vec<[f32; 4]>>,
     /// Named attributes on this mesh.
     pub attributes: HashMap<String, AttributeData>,
     /// Optional skinning weights.

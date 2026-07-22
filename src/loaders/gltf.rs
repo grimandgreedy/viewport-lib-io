@@ -477,6 +477,84 @@ mod tests {
         let _ = std::fs::remove_dir(dir);
     }
 
+    #[cfg(feature = "gltf")]
+    #[test]
+    fn loads_vertex_colours_from_color_0() {
+        // Minimal triangle carrying a COLOR_0 (VEC4 f32) attribute.
+        let dir = temp_dir("gltf_colour");
+        let gltf_path = dir.join("tri.gltf");
+        let bin_path = dir.join("tri.bin");
+
+        // Binary layout (little-endian):
+        //   positions: 3 vec3  (36 bytes) offset 0
+        //   indices:   3 u32   (12 bytes) offset 36
+        //   colours:   3 vec4  (48 bytes) offset 48
+        // Total: 96 bytes.
+        let mut bin = Vec::new();
+        for v in [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in [0u32, 1, 2] {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        let colours = [
+            [1.0f32, 0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 0.5],
+        ];
+        for c in colours {
+            for v in c {
+                bin.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        assert_eq!(bin.len(), 96);
+        std::fs::write(&bin_path, &bin).unwrap();
+
+        let json = r#"{
+  "asset": { "version": "2.0" },
+  "scene": 0,
+  "scenes": [{ "nodes": [0] }],
+  "nodes": [{ "mesh": 0, "name": "coloured_tri" }],
+  "meshes": [{
+    "primitives": [{
+      "attributes": { "POSITION": 0, "COLOR_0": 2 },
+      "indices": 1
+    }]
+  }],
+  "buffers": [{ "uri": "tri.bin", "byteLength": 96 }],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0,  "byteLength": 36 },
+    { "buffer": 0, "byteOffset": 36, "byteLength": 12, "target": 34963 },
+    { "buffer": 0, "byteOffset": 48, "byteLength": 48 }
+  ],
+  "accessors": [
+    { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0,0,0], "max": [1,1,0] },
+    { "bufferView": 1, "componentType": 5125, "count": 3, "type": "SCALAR" },
+    { "bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC4" }
+  ]
+}"#;
+        std::fs::write(&gltf_path, json).unwrap();
+
+        let scene = scene_from_path(&gltf_path).unwrap();
+        let mesh = scene.meshes.first().expect("mesh missing");
+        let got = mesh.mesh.colours.as_ref().expect("colours missing");
+        assert_eq!(got.len(), 3);
+        // Colours are direction-independent, so the Z-up reorientation leaves
+        // them exactly as authored.
+        for (g, e) in got.iter().zip(colours.iter()) {
+            for k in 0..4 {
+                assert!(
+                    (g[k] - e[k]).abs() < 1e-5,
+                    "colour mismatch: {g:?} vs {e:?}"
+                );
+            }
+        }
+
+        let _ = std::fs::remove_file(gltf_path);
+        let _ = std::fs::remove_file(bin_path);
+        let _ = std::fs::remove_dir(dir);
+    }
+
     // --- Z-up reorientation helpers ---
 
     #[test]
@@ -980,6 +1058,13 @@ fn convert_primitive(
 
     let tangents = reader.read_tangents().map(|iter| iter.collect());
 
+    // COLOR_0: per-vertex colour. glTF stores it as vec3 or vec4 in u8, u16, or
+    // f32; `into_rgba_f32` normalises all of them to `[f32; 4]` (expanding vec3
+    // with alpha 1.0).
+    let colours: Option<Vec<[f32; 4]>> = reader
+        .read_colors(0)
+        .map(|iter| iter.into_rgba_f32().collect());
+
     // Skin attributes. glTF stores joint indices as either u8 or u16; we
     // normalise to u8 because the runtime substrate uses [u8; 4] today. Joint
     // indices above 255 are clamped with a warning.
@@ -1016,6 +1101,7 @@ fn convert_primitive(
     mesh_data.indices = indices;
     mesh_data.uvs = uvs;
     mesh_data.tangents = tangents;
+    mesh_data.colours = colours;
     mesh_data.skin_weights = skin_weights;
 
     Some(IoMesh {
