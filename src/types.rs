@@ -50,6 +50,13 @@ pub enum TextureSource {
 /// `Material`: set `normal_strength = normal_scale`, and set
 /// `ao_range = [1.0 - occlusion_strength, 1.0]` (which reproduces glTF
 /// `occlusionStrength`, since `mix(1.0, sample, s) == mix(1 - s, 1, sample)`).
+///
+/// Materials are always metallic-roughness. glTF assets using
+/// `KHR_materials_pbrSpecularGlossiness` are converted at import with the
+/// reference lossy conversion (metallic solved from specular brightness,
+/// `roughness = 1 - glossiness`, diffuse texture reused as the base colour
+/// texture); the specular-glossiness texture itself is not converted, so
+/// per-texel specular variation is dropped.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct MaterialData {

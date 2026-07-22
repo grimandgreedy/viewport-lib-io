@@ -3,8 +3,8 @@ use std::path::Path;
 use crate::error::IoError;
 use crate::types::{
     AnimationChannel, AnimationClip, AnimationInterpolation, AnimationSampler, AnimationTrack,
-    AnimationTrackValues, IoMaterial, IoMesh, IoScene, Joint, MAX_JOINTS, Skeleton, SkinWeights,
-    SurfaceMesh, TextureData, TextureSource,
+    AnimationTrackValues, IoMaterial, IoMesh, IoScene, Joint, Skeleton, SkinWeights, SurfaceMesh,
+    TextureData, TextureSource, MAX_JOINTS,
 };
 
 /// Decode a glTF or GLB file into a CPU-side scene.
@@ -295,6 +295,124 @@ mod tests {
 
         let scene = scene_from_path(&gltf_path).unwrap();
         assert_eq!(scene.meshes.len(), 1);
+
+        let _ = std::fs::remove_file(gltf_path);
+        let _ = std::fs::remove_file(bin_path);
+        let _ = std::fs::remove_dir(dir);
+    }
+
+    #[cfg(feature = "gltf")]
+    #[test]
+    fn converts_spec_gloss_materials_to_metal_rough() {
+        let dir = temp_dir("gltf_spec_gloss");
+        let gltf_path = dir.join("scene.gltf");
+        let bin_path = dir.join("mesh.bin");
+
+        let mut bin = Vec::new();
+        for value in [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+            bin.extend_from_slice(&value.to_le_bytes());
+        }
+        for value in [0u32, 1, 2] {
+            bin.extend_from_slice(&value.to_le_bytes());
+        }
+        std::fs::write(&bin_path, bin).unwrap();
+
+        let json = r#"{
+  "asset": { "version": "2.0" },
+  "extensionsUsed": ["KHR_materials_pbrSpecularGlossiness"],
+  "scene": 0,
+  "scenes": [{ "nodes": [0] }],
+  "nodes": [{ "mesh": 0 }],
+  "meshes": [{
+    "primitives": [{
+      "attributes": { "POSITION": 0 },
+      "indices": 1,
+      "material": 0
+    }]
+  }],
+  "materials": [
+    {
+      "name": "dielectric_sg",
+      "extensions": {
+        "KHR_materials_pbrSpecularGlossiness": {
+          "diffuseFactor": [0.8, 0.2, 0.2, 0.75],
+          "specularFactor": [0.0, 0.0, 0.0],
+          "glossinessFactor": 0.3
+        }
+      }
+    },
+    {
+      "name": "metal_sg",
+      "extensions": {
+        "KHR_materials_pbrSpecularGlossiness": {
+          "diffuseFactor": [0.0, 0.0, 0.0, 1.0],
+          "specularFactor": [1.0, 1.0, 1.0],
+          "glossinessFactor": 0.9
+        }
+      }
+    },
+    {
+      "name": "plain_mr",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [0.1, 0.2, 0.3, 1.0],
+        "metallicFactor": 0.5,
+        "roughnessFactor": 0.25
+      }
+    }
+  ],
+  "buffers": [{ "uri": "mesh.bin", "byteLength": 48 }],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+    { "buffer": 0, "byteOffset": 36, "byteLength": 12, "target": 34963 }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC3",
+      "min": [0, 0, 0],
+      "max": [1, 1, 0]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5125,
+      "count": 3,
+      "type": "SCALAR"
+    }
+  ]
+}"#;
+        std::fs::write(&gltf_path, json).unwrap();
+
+        let scene = scene_from_path(&gltf_path).unwrap();
+        assert_eq!(scene.materials.len(), 3);
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-3;
+
+        // Zero specular: metallic 0, roughness = 1 - glossiness, base colour
+        // is diffuse / (1 - 0.04), opacity from the diffuse alpha.
+        let d = &scene.materials[0];
+        assert!(close(d.metallic, 0.0), "dielectric metallic {}", d.metallic);
+        assert!(
+            close(d.roughness, 0.7),
+            "dielectric roughness {}",
+            d.roughness
+        );
+        assert!(close(d.base_color[0], 0.8 / 0.96));
+        assert!(close(d.base_color[1], 0.2 / 0.96));
+        assert!(close(d.opacity, 0.75));
+
+        // Full white specular, black diffuse: solves to metallic 1 with the
+        // specular colour as base.
+        let m = &scene.materials[1];
+        assert!(close(m.metallic, 1.0), "metal metallic {}", m.metallic);
+        assert!(close(m.roughness, 0.1), "metal roughness {}", m.roughness);
+        assert!(close(m.base_color[0], 1.0));
+
+        // The plain metallic-roughness material is untouched by the branch.
+        let p = &scene.materials[2];
+        assert!(close(p.metallic, 0.5));
+        assert!(close(p.roughness, 0.25));
+        assert!(close(p.base_color[2], 0.3));
 
         let _ = std::fs::remove_file(gltf_path);
         let _ = std::fs::remove_file(bin_path);
@@ -1120,24 +1238,55 @@ fn convert_material(
     images: &[gltf::image::Data],
     parent_dir: &Path,
 ) -> IoMaterial {
-    let pbr = material.pbr_metallic_roughness();
-    let base_color_factor = pbr.base_color_factor();
-    let base_color = [
-        base_color_factor[0],
-        base_color_factor[1],
-        base_color_factor[2],
-    ];
-
-    let base_color_texture = pbr
-        .base_color_texture()
-        .and_then(|info| image_to_texture_source(&info.texture(), images, parent_dir));
+    // KHR_materials_pbrSpecularGlossiness assets get the reference lossy
+    // conversion to metallic-roughness; everything else reads the standard
+    // metallic-roughness properties.
+    let (base_color, metallic, roughness, opacity, base_color_texture) = if let Some(sg) =
+        material.pbr_specular_glossiness()
+    {
+        let diffuse = sg.diffuse_factor();
+        let (rgb, metallic) =
+            spec_gloss_to_metal_rough([diffuse[0], diffuse[1], diffuse[2]], sg.specular_factor());
+        // The diffuse texture stands in for the base colour texture. This
+        // is part of the lossy factor-level conversion: the specular-
+        // glossiness texture is not converted, so per-texel specular
+        // variation is dropped and only the factors steer metallic and
+        // roughness.
+        let texture = sg
+            .diffuse_texture()
+            .and_then(|info| image_to_texture_source(&info.texture(), images, parent_dir));
+        (
+            rgb,
+            metallic,
+            1.0 - sg.glossiness_factor(),
+            diffuse[3],
+            texture,
+        )
+    } else {
+        let pbr = material.pbr_metallic_roughness();
+        let base_color_factor = pbr.base_color_factor();
+        let texture = pbr
+            .base_color_texture()
+            .and_then(|info| image_to_texture_source(&info.texture(), images, parent_dir));
+        (
+            [
+                base_color_factor[0],
+                base_color_factor[1],
+                base_color_factor[2],
+            ],
+            pbr.metallic_factor(),
+            pbr.roughness_factor(),
+            base_color_factor[3],
+            texture,
+        )
+    };
 
     // Read the strength scalars before consuming the texture references. Absent
     // textures leave the scalars at the glTF defaults of 1.0.
     let normal_texture = material.normal_texture();
     let normal_scale = normal_texture.as_ref().map_or(1.0, |t| t.scale());
-    let normal_map_texture =
-        normal_texture.and_then(|info| image_to_texture_source(&info.texture(), images, parent_dir));
+    let normal_map_texture = normal_texture
+        .and_then(|info| image_to_texture_source(&info.texture(), images, parent_dir));
 
     let occlusion_texture = material.occlusion_texture();
     let occlusion_strength = occlusion_texture.as_ref().map_or(1.0, |t| t.strength());
@@ -1150,15 +1299,59 @@ fn convert_material(
             .map(std::borrow::ToOwned::to_owned)
             .unwrap_or_else(|| format!("material_{}", material.index().unwrap_or(0))),
         base_color,
-        metallic: pbr.metallic_factor(),
-        roughness: pbr.roughness_factor(),
-        opacity: base_color_factor[3],
+        metallic,
+        roughness,
+        opacity,
         base_color_texture,
         normal_map_texture,
         normal_scale,
         ao_texture,
         occlusion_strength,
     }
+}
+
+/// Reference lossy conversion of specular-glossiness factors to
+/// metallic-roughness, following the KHR_materials_pbrSpecularGlossiness
+/// conversion published with the glTF spec: solve metallic from the specular
+/// brightness (a dielectric F0 of 0.04), then reconstruct the base colour by
+/// blending the diffuse- and specular-derived candidates by metallic^2.
+fn spec_gloss_to_metal_rough(diffuse: [f32; 3], specular: [f32; 3]) -> ([f32; 3], f32) {
+    const DIELECTRIC_SPECULAR: f32 = 0.04;
+    const EPS: f32 = 1e-4;
+
+    // Perceived brightness per the reference implementation.
+    let brightness = |c: [f32; 3]| -> f32 {
+        (0.299 * c[0] * c[0] + 0.587 * c[1] * c[1] + 0.114 * c[2] * c[2]).sqrt()
+    };
+    let max_component = |c: [f32; 3]| -> f32 { c[0].max(c[1]).max(c[2]) };
+
+    let one_minus_specular_strength = 1.0 - max_component(specular);
+    let diffuse_brightness = brightness(diffuse);
+    let specular_brightness = brightness(specular);
+
+    let metallic = if specular_brightness < DIELECTRIC_SPECULAR {
+        0.0
+    } else {
+        let a = DIELECTRIC_SPECULAR;
+        let b = diffuse_brightness * one_minus_specular_strength / (1.0 - DIELECTRIC_SPECULAR)
+            + specular_brightness
+            - 2.0 * DIELECTRIC_SPECULAR;
+        let c = DIELECTRIC_SPECULAR - specular_brightness;
+        let d = (b * b - 4.0 * a * c).max(0.0);
+        ((-b + d.sqrt()) / (2.0 * a)).clamp(0.0, 1.0)
+    };
+
+    let mut base = [0.0f32; 3];
+    for i in 0..3 {
+        let from_diffuse = diffuse[i] * one_minus_specular_strength
+            / (1.0 - DIELECTRIC_SPECULAR)
+            / (1.0 - metallic).max(EPS);
+        let from_specular =
+            (specular[i] - DIELECTRIC_SPECULAR * (1.0 - metallic)) / metallic.max(EPS);
+        base[i] =
+            (from_diffuse + (from_specular - from_diffuse) * metallic * metallic).clamp(0.0, 1.0);
+    }
+    (base, metallic)
 }
 
 fn image_to_texture_source(
