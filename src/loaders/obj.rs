@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::error::IoError;
-use crate::types::{IoMaterial, IoMesh, IoScene, SurfaceMesh, TextureSource};
+use crate::types::{AlphaMode, IoMaterial, IoMesh, IoScene, SurfaceMesh, TextureSource};
 
 /// Decode an OBJ file into a CPU-side scene.
 pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
@@ -26,7 +26,14 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
                 base_color: material.diffuse.unwrap_or([0.7, 0.7, 0.7]),
                 metallic: material.shininess.unwrap_or(0.0).clamp(0.0, 1.0),
                 roughness: 0.5,
+                emissive: [0.0, 0.0, 0.0],
                 opacity: material.dissolve.unwrap_or(1.0),
+                alpha_mode: if material.dissolve.unwrap_or(1.0) < 1.0 {
+                    AlphaMode::Blend
+                } else {
+                    AlphaMode::Opaque
+                },
+                double_sided: false,
                 base_color_texture: material.diffuse_texture.and_then(|texture| {
                     if texture.is_empty() {
                         None
@@ -34,6 +41,7 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
                         Some(TextureSource::File(base_dir.join(texture)))
                     }
                 }),
+                metallic_roughness_texture: None,
                 normal_map_texture: material.normal_texture.and_then(|texture| {
                     if texture.is_empty() {
                         None
@@ -44,6 +52,7 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
                 normal_scale: 1.0,
                 ao_texture: None,
                 occlusion_strength: 1.0,
+                emissive_texture: None,
             })
             .collect();
 

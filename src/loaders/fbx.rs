@@ -13,9 +13,9 @@ use fbxcel_dom::v7400::object::model::TypedModelHandle;
 
 use crate::error::IoError;
 use crate::types::{
-    AnimationChannel, AnimationClip, AnimationInterpolation, AnimationSampler, AnimationTrack,
-    AnimationTrackValues, IoMaterial, IoMesh, IoScene, Joint, Skeleton, SkinWeights, SurfaceMesh,
-    TextureData, TextureSource,
+    AlphaMode, AnimationChannel, AnimationClip, AnimationInterpolation, AnimationSampler,
+    AnimationTrack, AnimationTrackValues, IoMaterial, IoMesh, IoScene, Joint, Skeleton, SkinWeights,
+    SurfaceMesh, TextureData, TextureSource,
 };
 
 /// How the loader decides whether to apply the Y-up to Z-up axis transform.
@@ -1204,16 +1204,25 @@ fn convert_material(
         base_color,
         metallic: 0.0,
         roughness,
+        emissive: [0.0, 0.0, 0.0],
         opacity: 1.0 - transparency,
+        alpha_mode: if transparency > 0.0 {
+            AlphaMode::Blend
+        } else {
+            AlphaMode::Opaque
+        },
+        double_sided: false,
         base_color_texture: material
             .diffuse_texture()
             .and_then(|texture| extract_texture(&texture, parent_dir)),
+        metallic_roughness_texture: None,
         normal_map_texture: material
             .normal_map_texture()
             .and_then(|texture| extract_texture(&texture, parent_dir)),
         normal_scale: 1.0,
         ao_texture: None,
         occlusion_strength: 1.0,
+        emissive_texture: None,
     }
 }
 

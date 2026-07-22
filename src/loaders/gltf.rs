@@ -3,8 +3,8 @@ use std::path::Path;
 use crate::error::IoError;
 use crate::types::{
     AnimationChannel, AnimationClip, AnimationInterpolation, AnimationSampler, AnimationTrack,
-    AnimationTrackValues, IoMaterial, IoMesh, IoScene, Joint, Skeleton, SkinWeights, SurfaceMesh,
-    TextureData, TextureSource, MAX_JOINTS,
+    AlphaMode, AnimationTrackValues, IoMaterial, IoMesh, IoScene, Joint, Skeleton, SkinWeights,
+    SurfaceMesh, TextureData, TextureSource, MAX_JOINTS,
 };
 
 /// Decode a glTF or GLB file into a CPU-side scene.
@@ -295,6 +295,92 @@ mod tests {
 
         let scene = scene_from_path(&gltf_path).unwrap();
         assert_eq!(scene.meshes.len(), 1);
+
+        let _ = std::fs::remove_file(gltf_path);
+        let _ = std::fs::remove_file(bin_path);
+        let _ = std::fs::remove_dir(dir);
+    }
+
+    #[cfg(feature = "gltf")]
+    #[test]
+    fn reads_emissive_alpha_mode_and_double_sided() {
+        let dir = temp_dir("gltf_material_render_state");
+        let gltf_path = dir.join("scene.gltf");
+        let bin_path = dir.join("mesh.bin");
+
+        let mut bin = Vec::new();
+        for value in [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+            bin.extend_from_slice(&value.to_le_bytes());
+        }
+        for value in [0u32, 1, 2] {
+            bin.extend_from_slice(&value.to_le_bytes());
+        }
+        std::fs::write(&bin_path, bin).unwrap();
+
+        let json = r#"{
+  "asset": { "version": "2.0" },
+  "scene": 0,
+  "scenes": [{ "nodes": [0] }],
+  "nodes": [{ "mesh": 0 }],
+  "meshes": [{
+    "primitives": [{
+      "attributes": { "POSITION": 0 },
+      "indices": 1,
+      "material": 0
+    }]
+  }],
+  "materials": [
+    {
+      "name": "emissive_cutout",
+      "pbrMetallicRoughness": { "baseColorFactor": [1.0, 1.0, 1.0, 1.0] },
+      "emissiveFactor": [0.1, 0.2, 0.3],
+      "alphaMode": "MASK",
+      "alphaCutoff": 0.7,
+      "doubleSided": true
+    },
+    {
+      "name": "plain_opaque",
+      "pbrMetallicRoughness": { "baseColorFactor": [0.5, 0.5, 0.5, 1.0] }
+    }
+  ],
+  "buffers": [{ "uri": "mesh.bin", "byteLength": 48 }],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+    { "buffer": 0, "byteOffset": 36, "byteLength": 12, "target": 34963 }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC3",
+      "min": [0, 0, 0],
+      "max": [1, 1, 0]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5125,
+      "count": 3,
+      "type": "SCALAR"
+    }
+  ]
+}"#;
+        std::fs::write(&gltf_path, json).unwrap();
+
+        let scene = scene_from_path(&gltf_path).unwrap();
+        assert_eq!(scene.materials.len(), 2);
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-3;
+
+        let m = &scene.materials[0];
+        assert!(close(m.emissive[0], 0.1) && close(m.emissive[1], 0.2) && close(m.emissive[2], 0.3));
+        assert_eq!(m.alpha_mode, crate::types::AlphaMode::Mask(0.7));
+        assert!(m.double_sided);
+
+        // A plain material keeps the neutral defaults.
+        let p = &scene.materials[1];
+        assert_eq!(p.emissive, [0.0, 0.0, 0.0]);
+        assert_eq!(p.alpha_mode, crate::types::AlphaMode::Opaque);
+        assert!(!p.double_sided);
 
         let _ = std::fs::remove_file(gltf_path);
         let _ = std::fs::remove_file(bin_path);
@@ -1241,45 +1327,63 @@ fn convert_material(
     // KHR_materials_pbrSpecularGlossiness assets get the reference lossy
     // conversion to metallic-roughness; everything else reads the standard
     // metallic-roughness properties.
-    let (base_color, metallic, roughness, opacity, base_color_texture) = if let Some(sg) =
-        material.pbr_specular_glossiness()
-    {
-        let diffuse = sg.diffuse_factor();
-        let (rgb, metallic) =
-            spec_gloss_to_metal_rough([diffuse[0], diffuse[1], diffuse[2]], sg.specular_factor());
-        // The diffuse texture stands in for the base colour texture. This
-        // is part of the lossy factor-level conversion: the specular-
-        // glossiness texture is not converted, so per-texel specular
-        // variation is dropped and only the factors steer metallic and
-        // roughness.
-        let texture = sg
-            .diffuse_texture()
-            .and_then(|info| image_to_texture_source(&info.texture(), images, parent_dir));
-        (
-            rgb,
-            metallic,
-            1.0 - sg.glossiness_factor(),
-            diffuse[3],
-            texture,
-        )
-    } else {
-        let pbr = material.pbr_metallic_roughness();
-        let base_color_factor = pbr.base_color_factor();
-        let texture = pbr
-            .base_color_texture()
-            .and_then(|info| image_to_texture_source(&info.texture(), images, parent_dir));
-        (
-            [
-                base_color_factor[0],
-                base_color_factor[1],
-                base_color_factor[2],
-            ],
-            pbr.metallic_factor(),
-            pbr.roughness_factor(),
-            base_color_factor[3],
-            texture,
-        )
+    let (base_color, metallic, roughness, opacity, base_color_texture, metallic_roughness_texture) =
+        if let Some(sg) = material.pbr_specular_glossiness() {
+            let diffuse = sg.diffuse_factor();
+            let (rgb, metallic) = spec_gloss_to_metal_rough(
+                [diffuse[0], diffuse[1], diffuse[2]],
+                sg.specular_factor(),
+            );
+            // The diffuse texture stands in for the base colour texture. This
+            // is part of the lossy factor-level conversion: the specular-
+            // glossiness texture is not converted, so per-texel specular
+            // variation is dropped and only the factors steer metallic and
+            // roughness. There is no metallic-roughness texture on this path.
+            let texture = sg
+                .diffuse_texture()
+                .and_then(|info| image_to_texture_source(&info.texture(), images, parent_dir));
+            (
+                rgb,
+                metallic,
+                1.0 - sg.glossiness_factor(),
+                diffuse[3],
+                texture,
+                None,
+            )
+        } else {
+            let pbr = material.pbr_metallic_roughness();
+            let base_color_factor = pbr.base_color_factor();
+            let texture = pbr
+                .base_color_texture()
+                .and_then(|info| image_to_texture_source(&info.texture(), images, parent_dir));
+            let mr_texture = pbr
+                .metallic_roughness_texture()
+                .and_then(|info| image_to_texture_source(&info.texture(), images, parent_dir));
+            (
+                [
+                    base_color_factor[0],
+                    base_color_factor[1],
+                    base_color_factor[2],
+                ],
+                pbr.metallic_factor(),
+                pbr.roughness_factor(),
+                base_color_factor[3],
+                texture,
+                mr_texture,
+            )
+        };
+
+    let emissive = material.emissive_factor();
+    let emissive_texture = material
+        .emissive_texture()
+        .and_then(|info| image_to_texture_source(&info.texture(), images, parent_dir));
+
+    let alpha_mode = match material.alpha_mode() {
+        gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
+        gltf::material::AlphaMode::Mask => AlphaMode::Mask(material.alpha_cutoff().unwrap_or(0.5)),
+        gltf::material::AlphaMode::Blend => AlphaMode::Blend,
     };
+    let double_sided = material.double_sided();
 
     // Read the strength scalars before consuming the texture references. Absent
     // textures leave the scalars at the glTF defaults of 1.0.
@@ -1301,12 +1405,17 @@ fn convert_material(
         base_color,
         metallic,
         roughness,
+        emissive,
         opacity,
+        alpha_mode,
+        double_sided,
         base_color_texture,
+        metallic_roughness_texture,
         normal_map_texture,
         normal_scale,
         ao_texture,
         occlusion_strength,
+        emissive_texture,
     }
 }
 

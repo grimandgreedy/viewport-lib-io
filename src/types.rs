@@ -44,6 +44,23 @@ pub enum TextureSource {
     Decoded(RasterImageData),
 }
 
+/// How a material's alpha channel is interpreted, matching glTF `alphaMode`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AlphaMode {
+    /// Fully opaque; the alpha channel is ignored.
+    Opaque,
+    /// Alpha-tested: fragments with alpha below the cutoff are discarded.
+    Mask(f32),
+    /// Alpha-blended over the background.
+    Blend,
+}
+
+impl Default for AlphaMode {
+    fn default() -> Self {
+        Self::Opaque
+    }
+}
+
 /// Material data extracted from a scene file.
 ///
 /// `normal_scale` and `occlusion_strength` map directly onto a viewport-lib
@@ -68,10 +85,23 @@ pub struct MaterialData {
     pub metallic: f32,
     /// Roughness factor.
     pub roughness: f32,
+    /// Emissive colour in linear space, matching glTF `emissiveFactor`. Black
+    /// `[0.0, 0.0, 0.0]` when the source declares no emission.
+    pub emissive: [f32; 3],
     /// Opacity factor from the source file.
     pub opacity: f32,
+    /// How the alpha channel is interpreted, matching glTF `alphaMode` +
+    /// `alphaCutoff`. Defaults to [`AlphaMode::Opaque`] for formats without the
+    /// concept.
+    pub alpha_mode: AlphaMode,
+    /// Whether back faces are drawn, matching glTF `doubleSided`. `false` for
+    /// formats without the concept.
+    pub double_sided: bool,
     /// Base colour texture, if present.
     pub base_color_texture: Option<TextureSource>,
+    /// Combined metallic-roughness (ORM) texture, if present. Matches the glTF
+    /// `metallicRoughnessTexture`: G channel is roughness, B channel is metallic.
+    pub metallic_roughness_texture: Option<TextureSource>,
     /// Normal map, if present.
     pub normal_map_texture: Option<TextureSource>,
     /// Scales the tangent-space normal read from `normal_map_texture`, matching
@@ -84,6 +114,8 @@ pub struct MaterialData {
     /// `occlusionStrength`. 1.0 applies the map fully, 0.0 disables it. Files with
     /// no equivalent leave this at 1.0.
     pub occlusion_strength: f32,
+    /// Emissive texture, multiplied by `emissive`. Matches glTF `emissiveTexture`.
+    pub emissive_texture: Option<TextureSource>,
 }
 
 impl Default for MaterialData {
@@ -93,12 +125,17 @@ impl Default for MaterialData {
             base_color: [0.7, 0.7, 0.7],
             metallic: 0.0,
             roughness: 0.5,
+            emissive: [0.0, 0.0, 0.0],
             opacity: 1.0,
+            alpha_mode: AlphaMode::Opaque,
+            double_sided: false,
             base_color_texture: None,
+            metallic_roughness_texture: None,
             normal_map_texture: None,
             normal_scale: 1.0,
             ao_texture: None,
             occlusion_strength: 1.0,
+            emissive_texture: None,
         }
     }
 }
