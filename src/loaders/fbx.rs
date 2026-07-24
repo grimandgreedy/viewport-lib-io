@@ -2002,11 +2002,26 @@ fn extract_animations(
 fn find_or_insert_rig(skeletons: &mut Vec<Skeleton>, rig: Skeleton) -> usize {
     let rig_names: std::collections::HashSet<&str> =
         rig.joints.iter().map(|j| j.name.as_str()).collect();
+    let rig_root = rig.joints.iter().find(|j| j.parent.is_none()).map(|j| j.name.as_str());
     for (i, sk) in skeletons.iter().enumerate() {
         let sk_names: std::collections::HashSet<&str> =
             sk.joints.iter().map(|j| j.name.as_str()).collect();
-        // Reuse an existing skeleton iff it covers the rig fully (bone names).
-        if rig_names.iter().all(|n| sk_names.contains(n)) {
+        // Reuse an existing skeleton when it and this rig are the same armature,
+        // i.e. one bone-name set nests inside the other and they share a root.
+        //
+        // The animation rig is built from *every* limb node, but a skinned mesh
+        // usually binds only a SUBSET of those bones (no twist / finger / helper
+        // bones), so the rig is a superset of the skin's skeleton. The rig
+        // carries only placeholder identity binds, whereas the skin skeleton
+        // carries the real cluster inverse-binds — so reusing the skin skeleton
+        // (and retargeting the clip's name-keyed tracks onto it) is what lets a
+        // clip actually drive the skinned mesh, instead of stranding the
+        // animation on a second, meshless skeleton. `rig ⊆ skin` is the original
+        // fully-covered case; `skin ⊆ rig` is the common subset case.
+        let sk_root = sk.joints.iter().find(|j| j.parent.is_none()).map(|j| j.name.as_str());
+        let nested = rig_names.iter().all(|n| sk_names.contains(n))
+            || sk_names.iter().all(|n| rig_names.contains(n));
+        if nested && rig_root == sk_root && rig_root.is_some() {
             return i;
         }
     }
@@ -2139,4 +2154,69 @@ fn read_mat4(node: &fbxcel::tree::v7400::NodeHandle<'_>, name: &str) -> Option<g
     // FBX stores matrices column-major.
     let m: [f32; 16] = std::array::from_fn(|i| values[i] as f32);
     Some(glam::Mat4::from_cols_array(&m))
+}
+
+#[cfg(all(test, feature = "fbx"))]
+mod rig_reconcile_tests {
+    use super::*;
+
+    fn skel(bones: &[(&str, Option<u8>)]) -> Skeleton {
+        Skeleton {
+            name: String::new(),
+            joints: bones
+                .iter()
+                .map(|(n, p)| Joint {
+                    name: n.to_string(),
+                    parent: *p,
+                    inverse_bind: glam::Mat4::IDENTITY,
+                })
+                .collect(),
+        }
+    }
+
+    /// A skinned mesh usually binds only a subset of the rig's bones. The rig
+    /// (superset, same root) must reuse the skin's skeleton so the clip lands on
+    /// the skeleton that actually skins the mesh — not a second, meshless one.
+    #[test]
+    fn rig_reuses_skin_skeleton_when_skin_is_a_subset() {
+        // Skin skeleton: root + 2 bones (no finger/twist bones).
+        let mut skeletons = vec![skel(&[
+            ("Armature", None),
+            ("Hips", Some(0)),
+            ("Spine", Some(1)),
+        ])];
+        // Rig from all limbs: same root, plus extra helper bones.
+        let rig = skel(&[
+            ("Armature", None),
+            ("Hips", Some(0)),
+            ("Spine", Some(1)),
+            ("Finger", Some(2)),
+            ("Twist", Some(1)),
+        ]);
+        let idx = find_or_insert_rig(&mut skeletons, rig);
+        assert_eq!(idx, 0, "should reuse the skin skeleton");
+        assert_eq!(skeletons.len(), 1, "no second skeleton appended");
+    }
+
+    /// The original fully-covered case (skin ⊇ rig) still reuses.
+    #[test]
+    fn rig_reuses_when_skin_covers_rig() {
+        let mut skeletons = vec![skel(&[
+            ("Armature", None),
+            ("Hips", Some(0)),
+            ("Spine", Some(1)),
+        ])];
+        let rig = skel(&[("Armature", None), ("Hips", Some(0))]);
+        assert_eq!(find_or_insert_rig(&mut skeletons, rig), 0);
+        assert_eq!(skeletons.len(), 1);
+    }
+
+    /// A genuinely different armature (different root) is appended, not merged.
+    #[test]
+    fn unrelated_rig_is_appended() {
+        let mut skeletons = vec![skel(&[("RigA", None), ("Bone", Some(0))])];
+        let rig = skel(&[("RigB", None), ("Other", Some(0))]);
+        assert_eq!(find_or_insert_rig(&mut skeletons, rig), 1);
+        assert_eq!(skeletons.len(), 2);
+    }
 }
