@@ -22,6 +22,7 @@ pub struct TimestepEntry {
 /// A parsed PVD series containing all timestep entries, sorted by time.
 #[derive(Clone, Debug)]
 pub struct PvdSeries {
+    /// Timestep entries in the series, sorted by time.
     pub timesteps: Vec<TimestepEntry>,
 }
 
