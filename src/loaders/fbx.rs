@@ -14,8 +14,8 @@ use fbxcel_dom::v7400::object::model::TypedModelHandle;
 use crate::error::IoError;
 use crate::types::{
     AlphaMode, AnimationChannel, AnimationClip, AnimationInterpolation, AnimationSampler,
-    AnimationTrack, AnimationTrackValues, IoMaterial, IoMesh, IoScene, Joint, Skeleton, SkinWeights,
-    SurfaceMesh, TextureData, TextureSource,
+    AnimationTrack, AnimationTrackValues, IoMaterial, IoMesh, IoScene, Joint, Skeleton,
+    SkinWeights, SurfaceMesh, TextureData, TextureSource,
 };
 
 /// How the loader decides whether to apply the Y-up to Z-up axis transform.
@@ -365,21 +365,76 @@ pub fn scene_from_path_with_options(
 ) -> Result<IoScene, IoError> {
     #[cfg(feature = "fbx")]
     {
-        let file = std::fs::File::open(path)?;
-        let reader = BufReader::new(file);
+        let bytes = std::fs::read(path)?;
+        build_fbx_scene(&bytes, path.parent(), options)
+    }
 
-        let document = match AnyDocument::from_seekable_reader(reader).map_err(|error| {
-            IoError::Parse(format!("FBX load failed ({}): {error:?}", path.display()))
-        })? {
-            AnyDocument::V7400(_, document) => document,
-            _ => {
-                return Err(IoError::Parse(
-                    "unsupported FBX version (only binary FBX 7.4/7.5 supported)".into(),
-                ));
-            }
-        };
+    #[cfg(not(feature = "fbx"))]
+    {
+        let _ = (path, options);
+        Err(IoError::MissingFeature {
+            feature: "fbx",
+            context: "FBX scene decoding",
+        })
+    }
+}
 
-        let parent_dir = path.parent().unwrap_or(Path::new("."));
+/// Decode a binary FBX (7.4/7.5) scene from in-memory bytes. The in-memory sibling of
+/// [`scene_from_path`], for a mesh served from a cooked bundle (or fetched over the
+/// network for a `wasm32` target) rather than read from a file. Self-contained meshes
+/// decode with no base directory; see [`scene_from_bytes_with_options`] to resolve
+/// external texture references.
+pub fn scene_from_bytes(bytes: &[u8]) -> Result<IoScene, IoError> {
+    scene_from_bytes_with_options(bytes, None, FbxLoadOptions::default())
+}
+
+/// Decode a binary FBX scene from in-memory bytes with per-call overrides. `base`
+/// resolves any external texture paths the FBX references; pass `None` when textures are
+/// supplied out of band (as DRAKE does, keying them as separate assets). The in-memory
+/// sibling of [`scene_from_path_with_options`].
+pub fn scene_from_bytes_with_options(
+    bytes: &[u8],
+    base: Option<&Path>,
+    options: FbxLoadOptions,
+) -> Result<IoScene, IoError> {
+    #[cfg(feature = "fbx")]
+    {
+        build_fbx_scene(bytes, base, options)
+    }
+
+    #[cfg(not(feature = "fbx"))]
+    {
+        let _ = (bytes, base, options);
+        Err(IoError::MissingFeature {
+            feature: "fbx",
+            context: "FBX scene decoding",
+        })
+    }
+}
+
+/// The shared FBX decode both entry points funnel through: parse the document from a
+/// seekable byte reader, then convert its meshes / materials / skeletons / animations, so
+/// the path and bytes paths never diverge.
+#[cfg(feature = "fbx")]
+fn build_fbx_scene(
+    bytes: &[u8],
+    base: Option<&Path>,
+    options: FbxLoadOptions,
+) -> Result<IoScene, IoError> {
+    let reader = std::io::Cursor::new(bytes);
+
+    let document = match AnyDocument::from_seekable_reader(reader)
+        .map_err(|error| IoError::Parse(format!("FBX load failed: {error:?}")))?
+    {
+        AnyDocument::V7400(_, document) => document,
+        _ => {
+            return Err(IoError::Parse(
+                "unsupported FBX version (only binary FBX 7.4/7.5 supported)".into(),
+            ));
+        }
+    };
+
+    let parent_dir = base.unwrap_or(Path::new("."));
         let (axis_transform, unit_scale) = get_axis_transform(&document, options.axis_policy);
 
         let mut meshes = Vec::new();
@@ -872,16 +927,6 @@ pub fn scene_from_path_with_options(
             animations,
             ..IoScene::default()
         })
-    }
-
-    #[cfg(not(feature = "fbx"))]
-    {
-        let _ = path;
-        Err(IoError::MissingFeature {
-            feature: "fbx",
-            context: "FBX scene decoding",
-        })
-    }
 }
 
 fn fan_triangulator(
@@ -2002,7 +2047,11 @@ fn extract_animations(
 fn find_or_insert_rig(skeletons: &mut Vec<Skeleton>, rig: Skeleton) -> usize {
     let rig_names: std::collections::HashSet<&str> =
         rig.joints.iter().map(|j| j.name.as_str()).collect();
-    let rig_root = rig.joints.iter().find(|j| j.parent.is_none()).map(|j| j.name.as_str());
+    let rig_root = rig
+        .joints
+        .iter()
+        .find(|j| j.parent.is_none())
+        .map(|j| j.name.as_str());
     for (i, sk) in skeletons.iter().enumerate() {
         let sk_names: std::collections::HashSet<&str> =
             sk.joints.iter().map(|j| j.name.as_str()).collect();
@@ -2018,7 +2067,11 @@ fn find_or_insert_rig(skeletons: &mut Vec<Skeleton>, rig: Skeleton) -> usize {
         // clip actually drive the skinned mesh, instead of stranding the
         // animation on a second, meshless skeleton. `rig ⊆ skin` is the original
         // fully-covered case; `skin ⊆ rig` is the common subset case.
-        let sk_root = sk.joints.iter().find(|j| j.parent.is_none()).map(|j| j.name.as_str());
+        let sk_root = sk
+            .joints
+            .iter()
+            .find(|j| j.parent.is_none())
+            .map(|j| j.name.as_str());
         let nested = rig_names.iter().all(|n| sk_names.contains(n))
             || sk_names.iter().all(|n| rig_names.contains(n));
         if nested && rig_root == sk_root && rig_root.is_some() {

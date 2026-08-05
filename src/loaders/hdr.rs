@@ -108,3 +108,63 @@ pub fn texture_from_path_with_limits(
         })
     }
 }
+
+/// Decode a Radiance HDR from in-memory bytes into RGBA32F pixels. The in-memory
+/// sibling of [`texture_from_path`], for an environment served from a cooked bundle
+/// or fetched over the network rather than read from a file.
+pub fn texture_from_bytes(bytes: &[u8]) -> Result<HdrTextureData, IoError> {
+    texture_from_bytes_with_limits(bytes, DecodeLimits::unlimited())
+}
+
+/// Decode a Radiance HDR from in-memory bytes with explicit decoder caps. The
+/// in-memory sibling of [`texture_from_path_with_limits`].
+pub fn texture_from_bytes_with_limits(
+    bytes: &[u8],
+    limits: DecodeLimits,
+) -> Result<HdrTextureData, IoError> {
+    #[cfg(feature = "hdr")]
+    {
+        use image::ImageReader;
+
+        let mut reader = ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .map_err(|error| {
+                IoError::Parse(format!("failed to probe HDR image format: {error}"))
+            })?;
+
+        let mut image_limits = image::Limits::default();
+        image_limits.max_alloc = limits.max_alloc_bytes;
+        image_limits.max_image_width = limits.max_image_dimension;
+        image_limits.max_image_height = limits.max_image_dimension;
+        reader.limits(image_limits);
+
+        let image = reader
+            .decode()
+            .map_err(|error| IoError::Parse(format!("failed to decode HDR image: {error}")))?;
+        let image = image.to_rgb32f();
+        let (width, height) = image.dimensions();
+
+        let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+        for pixel in image.pixels() {
+            rgba.push(pixel.0[0]);
+            rgba.push(pixel.0[1]);
+            rgba.push(pixel.0[2]);
+            rgba.push(1.0);
+        }
+
+        Ok(HdrTextureData {
+            width,
+            height,
+            rgba,
+        })
+    }
+
+    #[cfg(not(feature = "hdr"))]
+    {
+        let _ = (bytes, limits);
+        Err(IoError::MissingFeature {
+            feature: "hdr",
+            context: "HDR environment decoding",
+        })
+    }
+}
