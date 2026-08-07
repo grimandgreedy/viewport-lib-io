@@ -2,9 +2,9 @@ use std::path::Path;
 
 use crate::error::IoError;
 use crate::types::{
-    AnimationChannel, AnimationClip, AnimationInterpolation, AnimationSampler, AnimationTrack,
-    AlphaMode, AnimationTrackValues, IoMaterial, IoMesh, IoScene, Joint, Skeleton, SkinWeights,
-    SurfaceMesh, TextureData, TextureSource, MAX_JOINTS,
+    AlphaMode, AnimationChannel, AnimationClip, AnimationInterpolation, AnimationSampler,
+    AnimationTrack, AnimationTrackValues, IoMaterial, IoMesh, IoScene, Joint, MAX_JOINTS, Skeleton,
+    SkinWeights, SurfaceMesh, TextureData, TextureSource,
 };
 
 /// Decode a glTF or GLB file into a CPU-side scene.
@@ -372,7 +372,9 @@ mod tests {
         let close = |a: f32, b: f32| (a - b).abs() < 1e-3;
 
         let m = &scene.materials[0];
-        assert!(close(m.emissive[0], 0.1) && close(m.emissive[1], 0.2) && close(m.emissive[2], 0.3));
+        assert!(
+            close(m.emissive[0], 0.1) && close(m.emissive[1], 0.2) && close(m.emissive[2], 0.3)
+        );
         assert_eq!(m.alpha_mode, crate::types::AlphaMode::Mask(0.7));
         assert!(m.double_sided);
 

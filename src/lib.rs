@@ -16,17 +16,19 @@
 
 /// Error types for `viewport-lib-io`.
 pub mod error;
+/// Neutral baked-lightmap data.
+pub mod lightmap;
 /// Source-format loaders.
 pub mod loaders;
 /// Source-agnostic decoded data types.
 pub mod types;
 
 pub use error::IoError;
+pub use lightmap::{LightmapData, LightmapEncoding};
 pub use types::{
     AlphaMode, AnimationChannel, AnimationClip, AnimationInterpolation, AnimationSampler,
     AnimationTrack, AnimationTrackValues, AttributeData, AttributeDomain, AttributeValues,
-    CELL_SENTINEL,
-    DecodedDataSet, GaussianSplatSet, HdrImageData, Joint, MAX_JOINTS, MaterialData, PointSet,
-    RasterImageData, SceneData, SceneMesh, ShDegree, Skeleton, SkinWeights, SparseGrid,
+    CELL_SENTINEL, DecodedDataSet, GaussianSplatSet, HdrImageData, Joint, MAX_JOINTS, MaterialData,
+    PointSet, RasterImageData, SceneData, SceneMesh, ShDegree, Skeleton, SkinWeights, SparseGrid,
     StructuredVolume, SurfaceMesh, TextureSource, VolumeGridGeometry, VolumeMesh,
 };
