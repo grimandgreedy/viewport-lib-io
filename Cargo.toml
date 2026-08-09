@@ -1,6 +1,6 @@
 [package]
 name = "viewport-lib-io"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "File format loaders and exporters for viewport-lib"
 readme = "README.md"

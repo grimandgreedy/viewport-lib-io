@@ -7,17 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-10
+
 ### Added
+- Lightmap loader (new `lightmap` module): `LightmapData` and
+  `LightmapEncoding`, with `radiance()`, `direction()` (present for directional
+  lightmaps), `texel_count()`, and `is_well_formed()`. The glTF loader reads
+  baked lightmap data where present.
+- OpenEXR image loader (`loaders::exr::texture_from_path`), decoding EXR into
+  `TextureData`.
+- In-memory bytes loaders alongside the path-based ones: `texture_from_bytes`
+  for PNG, JPEG, BMP, HDR, and EXR (`hdr::texture_from_bytes_with_limits` for
+  the decode-limit override), and `fbx::scene_from_bytes` /
+  `scene_from_bytes_with_options`. These load assets from a byte buffer with no
+  filesystem path.
+- glTF specular-glossiness materials (`KHR_materials_pbrSpecularGlossiness`) are
+  converted to metallic-roughness at import.
+- glTF `COLOR_0` vertex colours are decoded into `MeshData::colours`
+  (`Option<Vec<[f32; 4]>>`).
+- `MaterialData` reaches full glTF material parity: new `emissive`,
+  `alpha_mode` (`AlphaMode`), `double_sided`, `metallic_roughness_texture`, and
+  `emissive_texture` fields.
 - `MaterialData::normal_scale` and `MaterialData::occlusion_strength`, matching
   glTF `normalScale` and `occlusionStrength`. The glTF loader now reads both
   (they were previously dropped); OBJ and FBX leave them at 1.0. Apply them to a
   viewport-lib `Material` as `normal_strength = normal_scale` and
   `ao_range = [1.0 - occlusion_strength, 1.0]`.
+- FBX load options: `FbxLoadOptions` with `AxisPolicy` and `CumulativeOrder`
+  overrides, applied through `fbx::scene_from_path_with_options`.
+- The `pvd` loader is now public (`loaders::pvd`), and `PvdSeries::timesteps` is
+  documented.
 
 ### Changed
 - `MaterialData` is now `#[non_exhaustive]`. Build it via `Default` and
   struct-update syntax; later field additions will not be breaking. Code that
   reads `MaterialData` is unaffected.
+- A skinned mesh reuses its existing skeleton for animation instead of appending
+  a duplicate.
+
+### Fixed
+- FBX Y-up to Z-up axis conversion for Unity asset packs: the axis conversion
+  now walks Unity `Null` wrappers correctly (signed cumulative-Y veto check) and
+  applies to FBX animation tracks, not just mesh transforms.
+- FBX multi-layer iteration and texture-coordinate UV selection, so meshes with
+  several UV layers pick the right set.
 
 ## [0.2.0] - 2026-06-07
 
