@@ -1219,6 +1219,22 @@ fn euler_to_mat4(degrees: glam::Vec3, order: i32) -> glam::Mat4 {
     }
 }
 
+/// Interpret an FBX `TransparencyFactor` into an opacity and alpha mode.
+///
+/// FBX transparency is exporter-ambiguous: the spec treats the factor as transparency (0 = opaque),
+/// but many common writers (Unity's FBX export, Blender) store it as an *opacity* (1.0 = fully
+/// opaque), and a value of exactly 1.0 is never a deliberately fully-transparent base material. So
+/// both extremes map to opaque and only a strict in-between is real blending. Without this guard an
+/// ordinary opaque material comes back at opacity 0 and renders invisible while still casting a
+/// shadow (the shadow pass ignores alpha) — the tell-tale symptom.
+fn opacity_from_transparency(transparency: f32) -> (f32, AlphaMode) {
+    if transparency > 0.0 && transparency < 1.0 {
+        (1.0 - transparency, AlphaMode::Blend)
+    } else {
+        (1.0, AlphaMode::Opaque)
+    }
+}
+
 fn convert_material(
     material: &fbxcel_dom::v7400::object::material::MaterialHandle<'_>,
     parent_dir: &Path,
@@ -1237,7 +1253,14 @@ fn convert_material(
         diffuse_color[2] * diffuse_factor,
     ];
 
+    // FBX `TransparencyFactor` is exporter-ambiguous. The spec treats it as transparency (0 =
+    // opaque), but many common writers (Unity's FBX export, Blender) store it as an *opacity*
+    // (1.0 = fully opaque), and a value of exactly 1.0 is never a deliberately fully-transparent
+    // base material. So treat both extremes as opaque and only a strict in-between as real blending;
+    // otherwise an ordinary opaque material comes back at opacity 0 and renders invisible (it still
+    // casts a shadow, since the shadow pass ignores alpha, which is the tell-tale symptom).
     let transparency = props.transparency_factor_or_default().ok().unwrap_or(0.0) as f32;
+    let (opacity, alpha_mode) = opacity_from_transparency(transparency);
     let shininess = props.shininess_or_default().ok().unwrap_or(20.0) as f32;
     let roughness = (1.0 - (shininess / 100.0).sqrt()).clamp(0.1, 1.0);
 
@@ -1250,12 +1273,8 @@ fn convert_material(
         metallic: 0.0,
         roughness,
         emissive: [0.0, 0.0, 0.0],
-        opacity: 1.0 - transparency,
-        alpha_mode: if transparency > 0.0 {
-            AlphaMode::Blend
-        } else {
-            AlphaMode::Opaque
-        },
+        opacity,
+        alpha_mode,
         double_sided: false,
         base_color_texture: material
             .diffuse_texture()
@@ -2311,6 +2330,18 @@ mod rig_reconcile_tests {
                 assert!(pos[&p] < pos[&id], "parent {p} ordered after child {id}");
             }
         }
+    }
+
+    /// FBX `TransparencyFactor` is exporter-ambiguous; a plain opaque material (factor 0.0 *or* the
+    /// opacity-convention 1.0) must come back opaque, and only a strict in-between blends. Guards the
+    /// regression where opaque characters rendered invisible (opacity 0) but still cast shadows.
+    #[test]
+    fn opacity_from_transparency_treats_both_extremes_as_opaque() {
+        assert_eq!(opacity_from_transparency(0.0), (1.0, AlphaMode::Opaque));
+        assert_eq!(opacity_from_transparency(1.0), (1.0, AlphaMode::Opaque));
+        let (o, mode) = opacity_from_transparency(0.25);
+        assert!((o - 0.75).abs() < 1e-6);
+        assert_eq!(mode, AlphaMode::Blend);
     }
 
     /// A genuinely different armature (different root) is appended, not merged.
