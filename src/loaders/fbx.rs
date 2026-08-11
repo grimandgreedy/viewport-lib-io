@@ -1682,7 +1682,12 @@ fn parent_model_id(obj: &fbxcel_dom::v7400::object::ObjectHandle<'_>) -> Option<
 fn topo_sort(bones: &HashMap<i64, BoneInfo>) -> Vec<i64> {
     let mut visited: std::collections::HashSet<i64> = std::collections::HashSet::new();
     let mut out: Vec<i64> = Vec::new();
-    let all_ids: Vec<i64> = bones.keys().copied().collect();
+    // Seed the traversal in a stable order: `bones` is a `HashMap`, so iterating its keys directly
+    // would make the joint order (and thus every joint index the skin weights reference) vary run
+    // to run. Sorting the seeds by FBX object id makes the output deterministic while the DFS still
+    // emits each parent before its children.
+    let mut all_ids: Vec<i64> = bones.keys().copied().collect();
+    all_ids.sort_unstable();
 
     fn visit(
         id: i64,
@@ -2262,6 +2267,50 @@ mod rig_reconcile_tests {
         let rig = skel(&[("Armature", None), ("Hips", Some(0))]);
         assert_eq!(find_or_insert_rig(&mut skeletons, rig), 0);
         assert_eq!(skeletons.len(), 1);
+    }
+
+    /// The joint order must not depend on `HashMap` iteration order: the skin weights reference
+    /// joints by index, so a run-to-run reshuffle would silently mis-bind vertices (and, in a
+    /// multi-submesh rig, non-deterministically pick which bones collapse). `topo_sort` must return
+    /// the same order every time, with every parent still preceding its children.
+    #[test]
+    fn topo_sort_is_deterministic_and_orders_parents_first() {
+        let make = || {
+            let mut m: HashMap<i64, BoneInfo> = HashMap::new();
+            // Ids deliberately unrelated to hierarchy depth, to expose any key-order dependence.
+            for (id, parent) in [
+                (50, None),
+                (10, Some(50)),
+                (30, Some(10)),
+                (20, Some(50)),
+                (40, Some(30)),
+            ] {
+                m.insert(
+                    id,
+                    BoneInfo {
+                        name: format!("b{id}"),
+                        parent_id: parent,
+                        transform_link: glam::Mat4::IDENTITY,
+                    },
+                );
+            }
+            m
+        };
+
+        let first = topo_sort(&make());
+        for _ in 0..32 {
+            assert_eq!(topo_sort(&make()), first, "topo_sort order is not stable");
+        }
+        // Sorted-by-id seeding gives a fixed, reproducible order (root pulled ahead of its children
+        // as each seed resolves its parent chain first).
+        assert_eq!(first, vec![50, 10, 20, 30, 40]);
+
+        let pos: HashMap<i64, usize> = first.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+        for (&id, info) in &make() {
+            if let Some(p) = info.parent_id {
+                assert!(pos[&p] < pos[&id], "parent {p} ordered after child {id}");
+            }
+        }
     }
 
     /// A genuinely different armature (different root) is appended, not merged.
