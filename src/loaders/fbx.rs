@@ -667,26 +667,32 @@ fn build_fbx_scene(
                         (None, None)
                     };
 
-                // Pick the UV channel most likely to be the albedo
-                // sampling channel.
+                // Pick the UV channel the material's base map samples.
                 //
-                // Heuristic, in order:
-                //   1. Reject channels whose absolute extents reach
-                //      `DATA_RANGE_LIMIT` (≈5). At that scale the
-                //      values are vertex-shader parameters (HDRP wind
-                //      drives V up to 70, etc.), not texture coords.
-                //   2. Among the survivors, prefer the channel covering
-                //      the **largest area** (du × dv). Albedo UVs
-                //      typically span almost the whole [0, 1] square;
-                //      secondary UVs (lightmaps, ID packs) sit inside
-                //      a smaller sub-region.
-                //   3. Tie-break by lowest absolute overshoot beyond
-                //      [0, 1] — prefer the cleaner texture coord.
+                // The rule is Unity's, and it is deliberately not a
+                // value heuristic: the base map samples the **first
+                // authored UV layer** (UV0). UV1 is the lightmap set;
+                // wind / vertex-animation data lives in later layers and
+                // the shader reads it explicitly. Value ranges are never
+                // consulted, so an atlas channel that bakes an integer
+                // per-card offset into V (a foliage-wind convention: the
+                // integer part is the card index / wind phase, the
+                // fraction the real texture coordinate, recovered by
+                // repeat-wrap sampling) still reads as the albedo channel
+                // it is.
                 //
-                // `VIEWPORT_FBX_LOG_UV=1` dumps every candidate's range,
-                // score, and the chosen index so callers can sanity-
-                // check the picker on packs with unusual UV layouts.
-                const DATA_RANGE_LIMIT: f32 = 5.0;
+                // So: take the first layer that is a genuine 2D texture
+                // coordinate. The only disqualifier is a channel that is
+                // not a texture coordinate at all — one axis held constant
+                // across the mesh, the signature of a packed per-vertex
+                // scalar — in which case advance to the next layer. This
+                // preserves UV0-by-order (why an asset "just works" the way
+                // it does in Unity) while stepping over a genuine data
+                // channel that happens to sit in layer 0.
+                //
+                // `VIEWPORT_FBX_LOG_UV=1` dumps every candidate's range
+                // and the chosen index so callers can sanity-check the
+                // pick on packs with unusual UV layouts.
                 let log_uv = std::env::var_os("VIEWPORT_FBX_LOG_UV").is_some();
                 let summarise = |uvs: &[[f32; 2]]| -> (f32, f32, f32, f32) {
                     let (mut umin, mut umax, mut vmin, mut vmax) = (
@@ -742,64 +748,13 @@ fn build_fbx_scene(
                 } else if uv_candidates.len() <= 1 {
                     uv_candidates.into_iter().next()
                 } else {
-                    // Score: (area, -overshoot). Bigger area wins.
-                    // Channels whose values clearly aren't texture
-                    // coords are discarded so the area test only
-                    // chooses among plausible candidates.
-                    let mut best: Option<(usize, f32, f32, Vec<[f32; 2]>)> = None;
-                    let mut fallback: Option<(usize, f32, Vec<[f32; 2]>)> = None;
-                    for (idx, uvs) in uv_candidates.into_iter().enumerate() {
-                        let (umin, umax, vmin, vmax) = summarise(&uvs);
-                        let max_abs = uvs
-                            .iter()
-                            .fold(0.0_f32, |m, uv| m.max(uv[0].abs()).max(uv[1].abs()));
-                        let area = (umax - umin).max(0.0) * (vmax - vmin).max(0.0);
-                        let overshoot = (-umin).max(0.0)
-                            + (umax - 1.0).max(0.0)
-                            + (-vmin).max(0.0)
-                            + (vmax - 1.0).max(0.0);
-                        if max_abs > DATA_RANGE_LIMIT {
-                            // Keep around in case every channel is
-                            // wild — better than dropping UVs entirely.
-                            match &fallback {
-                                Some((_, fmax, _)) if max_abs >= *fmax => {}
-                                _ => fallback = Some((idx, max_abs, uvs)),
-                            }
-                            continue;
-                        }
-                        let better = match &best {
-                            None => true,
-                            Some((_, barea, bovershoot, _)) => {
-                                // Larger area wins; same area, lower
-                                // overshoot wins.
-                                area > *barea || (area == *barea && overshoot < *bovershoot)
-                            }
-                        };
-                        if better {
-                            best = Some((idx, area, overshoot, uvs));
-                        }
-                    }
-                    let picked = best
-                        .map(|(idx, area, overshoot, uvs)| (idx, area, overshoot, uvs, "kept"))
-                        .or_else(|| {
-                            fallback.map(|(idx, mx, uvs)| {
-                                (
-                                    idx,
-                                    0.0,
-                                    mx,
-                                    uvs,
-                                    "fallback (all channels exceed data limit)",
-                                )
-                            })
-                        });
+                    let idx = pick_uv_channel(&uv_candidates);
                     if log_uv {
-                        if let Some((idx, area, overshoot, _, note)) = &picked {
-                            eprintln!(
-                                "VIEWPORT_FBX_LOG_UV: picked channel {idx} ({note}; area={area:.2}, overshoot={overshoot:.2})"
-                            );
-                        }
+                        eprintln!(
+                            "VIEWPORT_FBX_LOG_UV: picked channel {idx} (first non-degenerate UV set; UV0-preferred)"
+                        );
                     }
-                    picked.map(|(_, _, _, uvs, _)| uvs)
+                    uv_candidates.into_iter().nth(idx)
                 };
 
                 if let Some(ref material_per_vertex) = material_indices_per_vert {
@@ -933,6 +888,52 @@ fn build_fbx_scene(
             animations,
             ..IoScene::default()
         })
+}
+
+/// Choose which of a mesh's several UV layers the base map samples, given the
+/// per-vertex UVs of each (in authored order, so index 0 is UV0).
+///
+/// The rule is Unity's: the base map samples the **first authored layer** (UV0);
+/// UV value ranges are never a selection signal. The one case that departs from
+/// "just take UV0" is a layer that is not a texture coordinate at all — a packed
+/// per-vertex scalar (a wind phase in V with U held constant), whose value on
+/// one axis does not vary across the mesh. Such a layer is stepped over in
+/// favour of the next. An atlas layer that bakes an integer per-card offset into
+/// V (foliage wind) still varies on both axes: its raw range is large but real,
+/// and repeat-wrap sampling resolves the offset, so it reads as the texture
+/// coordinate it is and, being UV0, is chosen. Magnitude is deliberately not
+/// consulted, only whether each axis varies at all.
+///
+/// Returns the chosen index; `0` when every layer is degenerate (better to keep
+/// UV0's coordinates than to drop UVs). `candidates` must be non-empty.
+#[cfg(feature = "fbx")]
+fn pick_uv_channel(candidates: &[Vec<[f32; 2]>]) -> usize {
+    // Raw span of a layer's coordinates on each axis. A genuine 2D texture
+    // coordinate varies on both; a packed per-vertex scalar holds one axis
+    // constant (span ~0). Wrapping is intentionally NOT applied: a value at
+    // exactly 1.0 would fold onto 0.0 and make a clean [0,1] square look
+    // constant, and magnitude is not a signal anyway.
+    let axis_spans = |uvs: &[[f32; 2]]| -> (f32, f32) {
+        let (mut umin, mut umax, mut vmin, mut vmax) =
+            (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY);
+        for uv in uvs {
+            umin = umin.min(uv[0]);
+            umax = umax.max(uv[0]);
+            vmin = vmin.min(uv[1]);
+            vmax = vmax.max(uv[1]);
+        }
+        ((umax - umin).max(0.0), (vmax - vmin).max(0.0))
+    };
+    // An axis that varies less than this across the whole mesh is a constant,
+    // not a texture coordinate.
+    const CONSTANT: f32 = 1e-4;
+    candidates
+        .iter()
+        .position(|uvs| {
+            let (uspan, vspan) = axis_spans(uvs);
+            uspan > CONSTANT && vspan > CONSTANT
+        })
+        .unwrap_or(0)
 }
 
 fn fan_triangulator(
@@ -2357,5 +2358,53 @@ mod rig_reconcile_tests {
         let rig = skel(&[("RigB", None), ("Other", Some(0))]);
         assert_eq!(find_or_insert_rig(&mut skeletons, rig), 1);
         assert_eq!(skeletons.len(), 2);
+    }
+
+    /// A single square patch of texture coordinates on both layers: the base map
+    /// samples UV0, the first authored layer, the way Unity binds it.
+    #[test]
+    fn uv_pick_prefers_first_layer() {
+        let square = || vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        assert_eq!(pick_uv_channel(&[square(), square()]), 0);
+    }
+
+    /// A foliage atlas that bakes an integer per-card offset into V (V running to
+    /// tens) is still a texture coordinate once wrapped, so UV0 is chosen — not
+    /// rejected as a data channel. This is the RomanStreet tree's dark-branches
+    /// case: the offset channel is the correct albedo.
+    #[test]
+    fn uv_pick_keeps_offset_atlas_on_uv0() {
+        // UV0: real texcoords plus a large integer card offset in V.
+        let offset_atlas = vec![
+            [0.1, 12.0],
+            [0.9, 12.0],
+            [0.9, 12.9],
+            [0.1, 12.9],
+            [0.2, 47.1],
+            [0.8, 47.8],
+        ];
+        // UV1: an ordinary lightmap-style unwrap in [0, 1].
+        let lightmap = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.5, 0.5], [0.3, 0.7]];
+        assert_eq!(pick_uv_channel(&[offset_atlas, lightmap]), 0);
+    }
+
+    /// A packed per-vertex scalar in UV0 (a wind phase in V, U held constant) is
+    /// not a texture coordinate — it collapses one axis even after wrapping — so
+    /// the pick steps over it to the real texture layer, UV1.
+    #[test]
+    fn uv_pick_steps_over_packed_data_channel() {
+        // UV0: U constant at 0, V an arbitrary per-vertex scalar (wind phase).
+        let packed = vec![[0.0, 3.2], [0.0, 41.7], [0.0, 8.9], [0.0, 70.0]];
+        // UV1: a proper texture-coordinate square.
+        let texcoords = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        assert_eq!(pick_uv_channel(&[packed, texcoords]), 1);
+    }
+
+    /// Every layer degenerate: keep UV0's coordinates rather than drop UVs.
+    #[test]
+    fn uv_pick_falls_back_to_uv0_when_all_degenerate() {
+        let flat_u = vec![[0.0, 1.0], [0.0, 2.0], [0.0, 3.0]];
+        let flat_v = vec![[1.0, 0.0], [2.0, 0.0], [3.0, 0.0]];
+        assert_eq!(pick_uv_channel(&[flat_u, flat_v]), 0);
     }
 }

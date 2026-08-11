@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-08-12
+
+### Changed
+- FBX UV-channel selection now follows Unity's rule: the base map samples the
+  first authored UV layer (UV0), and UV value ranges are never a selection
+  signal. It replaces the previous heuristic (reject channels whose values
+  exceed a magnitude limit, then prefer the largest-area channel). A layer is
+  only skipped when it is not a texture coordinate at all — a packed per-vertex
+  scalar that holds one axis constant across the mesh (a wind phase) — in which
+  case the next layer is used. `VIEWPORT_FBX_UV_CHANNEL=<n>` still forces a
+  channel for A/B testing.
+
+### Fixed
+- Foliage whose albedo UV0 bakes an integer per-card offset into V (a wind
+  convention: card index in the integer part, the real texture coordinate in
+  the fraction, recovered by repeat-wrap sampling) no longer renders with dark /
+  black branches. The old picker rejected that channel on its large raw V range
+  and fell through to a secondary lightmap unwrap; the UV0-first rule keeps it.
+
 ## [0.4.0] - 2026-08-11
 
 ### Fixed
