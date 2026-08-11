@@ -1,6 +1,6 @@
 [package]
 name = "viewport-lib-io"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 description = "File format loaders and exporters for viewport-lib"
 readme = "README.md"
@@ -15,7 +15,7 @@ publish = true
 exclude = ["examples/"]
 
 [features]
-default = ["png", "jpeg", "tga", "bmp", "svg", "hdr", "exr", "stl", "obj", "msh", "gltf", "fbx", "ply", "csv", "numpy", "raw", "vtk", "xdmf", "exodus", "ensight", "tecplot", "cgns", "netcdf"]
+default = ["png", "jpeg", "tga", "bmp", "svg", "hdr", "exr", "stl", "obj", "msh", "gltf", "fbx", "bvh", "ply", "csv", "numpy", "raw", "vtk", "xdmf", "exodus", "ensight", "tecplot", "cgns", "netcdf"]
 png = ["dep:image"]
 jpeg = ["dep:image"]
 tga = ["dep:image"]
@@ -28,6 +28,7 @@ obj = ["dep:tobj"]
 msh = []
 gltf = ["dep:gltf"]
 fbx = ["dep:fbxcel-dom", "dep:anyhow", "png"]
+bvh = []
 ply = []
 csv = []
 numpy = ["dep:flate2"]
@@ -39,7 +40,7 @@ ensight = []
 tecplot = []
 cgns = ["dep:hdf5", "dep:hdf5-sys"]
 netcdf = ["dep:netcdf-reader"]
-all-formats = ["png", "jpeg", "tga", "bmp", "svg", "hdr", "exr", "stl", "obj", "msh", "gltf", "fbx", "ply", "csv", "numpy", "raw", "vtk", "xdmf", "exodus", "ensight", "tecplot", "cgns", "netcdf"]
+all-formats = ["png", "jpeg", "tga", "bmp", "svg", "hdr", "exr", "stl", "obj", "msh", "gltf", "fbx", "bvh", "ply", "csv", "numpy", "raw", "vtk", "xdmf", "exodus", "ensight", "tecplot", "cgns", "netcdf"]
 
 [dependencies]
 anyhow = { version = "1", optional = true }
@@ -69,3 +70,8 @@ required-features = ["gltf"]
 name = "probe-fbx-axis"
 path = "examples/probe_fbx_axis.rs"
 required-features = ["fbx"]
+
+[[example]]
+name = "probe-bvh"
+path = "examples/probe_bvh.rs"
+required-features = ["bvh"]

@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-08-12
+
+### Added
+- Biovision Hierarchy (`.bvh`) loader (new `loaders::bvh` module, behind a
+  `bvh` feature): `scene_from_path` / `scene_from_bytes` / `scene_from_str`
+  decode a BVH motion-capture file into an `IoScene` carrying one `Skeleton`
+  and one `AnimationClip`. The `HIERARCHY` block builds the joint tree with
+  inverse-bind matrices from the accumulated `OFFSET`s; the `MOTION` block
+  becomes per-joint rotation tracks (Euler channels composed in their listed
+  order) plus translation tracks wherever position channels are present. BVH is
+  authored Y-up, so samples and bind matrices are reoriented into the library's
+  Z-up convention exactly as the glTF loader does. End Sites are consumed and
+  dropped (they fix a leaf tip, which animation never drives). This opens the
+  large free mocap libraries (CMU, Bandai Namco, SFU, ACCAD), which ship as BVH.
+  A `probe-bvh` example prints a file's skeleton and clip shape.
+
 ## [0.5.0] - 2026-08-12
 
 ### Changed

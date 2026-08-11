@@ -4,6 +4,10 @@
 #[cfg(feature = "bmp")]
 pub mod bmp;
 
+/// Biovision Hierarchy (`.bvh`) motion-capture decoding.
+#[cfg(feature = "bvh")]
+pub mod bvh;
+
 /// CGNS dataset decoding.
 #[cfg(feature = "cgns")]
 pub mod cgns;
