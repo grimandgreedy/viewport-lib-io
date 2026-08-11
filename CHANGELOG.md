@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-11
+
+### Fixed
+- FBX texture coordinates are V-flipped on import to match the renderer's
+  top-left texture origin (the same convention the glTF loader reads to).
+  Without this, FBX UV atlases sampled upside down: a character's face texture
+  landed on the wrong geometry at the wrong scale. Symmetric or tiling textures
+  hid the fault; an asymmetric atlas (a face) exposed it.
+- FBX skeleton joint order is now deterministic, so repeated loads of the same
+  file produce the same joint indexing.
+- Ambiguous FBX transparency extremes are treated as opaque, so a material
+  whose opacity is a degenerate 0 or 1 no longer renders unexpectedly
+  see-through.
+
 ## [0.3.0] - 2026-08-10
 
 ### Added

@@ -576,7 +576,13 @@ fn build_fbx_scene(
                                         triangle_vertices.triangle_vertex_indices()
                                     {
                                         match uv_data.uv(&triangle_vertices, triangle_vertex) {
-                                            Ok(uv) => uvs.push([uv.x as f32, uv.y as f32]),
+                                            // FBX stores UVs with the V origin at the bottom (the
+                                            // OpenGL / Maya convention); the renderer samples with V
+                                            // at the top (wgpu), matching the glTF loader which reads
+                                            // tex-coords unflipped. Flip V so an FBX atlas lands the
+                                            // same way round as a glTF one, rather than mirrored top
+                                            // to bottom (a face's features on the wrong geometry).
+                                            Ok(uv) => uvs.push([uv.x as f32, 1.0 - uv.y as f32]),
                                             Err(_) => {
                                                 ok = false;
                                                 break;
