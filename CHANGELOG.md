@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Morph-target (blend-shape) geometry on `SurfaceMesh`. A new `MorphTarget`
+  neutral type carries per-vertex position (and optional normal / tangent)
+  displacements from the base mesh, and `SurfaceMesh::morph_targets` holds them
+  in authored order (empty when a format carries none, so every other loader is
+  unaffected). The glTF loader reads a primitive's morph targets and reorients
+  the displacements into Z-up alongside the base attributes. Targets are named
+  by index (`target_<n>`) for now: glTF stores names in `mesh.extras`, which
+  needs the `extras` feature and raw-JSON parsing, so named targets and the
+  morph-weight animation curves (still skipped in `convert_animations`) are a
+  follow-up. FBX blend-shape deformers are not yet parsed.
+
 ### Tests
 - Cross-format skinning parity test (`tests/fbx_gltf_skinning_parity.rs`): the
   same rigged Fox asset loaded from FBX and from glTF must produce matching

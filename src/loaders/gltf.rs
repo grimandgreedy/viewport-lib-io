@@ -3,8 +3,8 @@ use std::path::Path;
 use crate::error::IoError;
 use crate::types::{
     AlphaMode, AnimationChannel, AnimationClip, AnimationInterpolation, AnimationSampler,
-    AnimationTrack, AnimationTrackValues, IoMaterial, IoMesh, IoScene, Joint, MAX_JOINTS, Skeleton,
-    SkinWeights, SurfaceMesh, TextureData, TextureSource,
+    AnimationTrack, AnimationTrackValues, IoMaterial, IoMesh, IoScene, Joint, MAX_JOINTS,
+    MorphTarget, Skeleton, SkinWeights, SurfaceMesh, TextureData, TextureSource,
 };
 
 /// Decode a glTF or GLB file into a CPU-side scene.
@@ -761,6 +761,85 @@ mod tests {
         let _ = std::fs::remove_dir(dir);
     }
 
+    #[cfg(feature = "gltf")]
+    #[test]
+    fn loads_morph_target_deltas_reoriented_to_z_up() {
+        // Minimal triangle with one morph target carrying POSITION deltas.
+        let dir = temp_dir("gltf_morph");
+        let gltf_path = dir.join("tri.gltf");
+        let bin_path = dir.join("tri.bin");
+
+        // Binary layout (little-endian):
+        //   positions:    3 vec3  (36 bytes) offset 0
+        //   indices:      3 u32   (12 bytes) offset 36
+        //   morph deltas: 3 vec3  (36 bytes) offset 48
+        // Total: 84 bytes.
+        let mut bin = Vec::new();
+        for v in [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in [0u32, 1, 2] {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        // Per-vertex deltas in Y-up authoring space, chosen so the Z-up
+        // reorientation `(x, y, z) -> (x, -z, y)` moves each onto a different
+        // axis: Y->Z, Z->-Y, X unchanged.
+        let deltas_y_up = [[0.0f32, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]];
+        for d in deltas_y_up {
+            for v in d {
+                bin.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        assert_eq!(bin.len(), 84);
+        std::fs::write(&bin_path, &bin).unwrap();
+
+        let json = r#"{
+  "asset": { "version": "2.0" },
+  "scene": 0,
+  "scenes": [{ "nodes": [0] }],
+  "nodes": [{ "mesh": 0, "name": "morph_tri" }],
+  "meshes": [{
+    "primitives": [{
+      "attributes": { "POSITION": 0 },
+      "indices": 1,
+      "targets": [{ "POSITION": 2 }]
+    }]
+  }],
+  "buffers": [{ "uri": "tri.bin", "byteLength": 84 }],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0,  "byteLength": 36 },
+    { "buffer": 0, "byteOffset": 36, "byteLength": 12, "target": 34963 },
+    { "buffer": 0, "byteOffset": 48, "byteLength": 36 }
+  ],
+  "accessors": [
+    { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0,0,0], "max": [1,1,0] },
+    { "bufferView": 1, "componentType": 5125, "count": 3, "type": "SCALAR" },
+    { "bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0,0,0], "max": [1,1,1] }
+  ]
+}"#;
+        std::fs::write(&gltf_path, json).unwrap();
+
+        let scene = scene_from_path(&gltf_path).unwrap();
+        let mesh = scene.meshes.first().expect("mesh missing");
+        assert_eq!(mesh.mesh.morph_targets.len(), 1, "one target expected");
+        let target = &mesh.mesh.morph_targets[0];
+        assert_eq!(target.name, "target_0");
+        assert!(target.normal_deltas.is_none());
+        assert!(target.tangent_deltas.is_none());
+
+        let expected_z_up = [[0.0f32, 0.0, 1.0], [0.0, -1.0, 0.0], [1.0, 0.0, 0.0]];
+        assert_eq!(target.position_deltas.len(), 3);
+        for (g, e) in target.position_deltas.iter().zip(expected_z_up.iter()) {
+            for k in 0..3 {
+                assert!((g[k] - e[k]).abs() < 1e-5, "delta mismatch: {g:?} vs {e:?}");
+            }
+        }
+
+        let _ = std::fs::remove_file(gltf_path);
+        let _ = std::fs::remove_file(bin_path);
+        let _ = std::fs::remove_dir(dir);
+    }
+
     // --- Z-up reorientation helpers ---
 
     #[test]
@@ -1289,6 +1368,27 @@ fn convert_primitive(
         _ => None,
     };
 
+    // Morph targets (blend shapes): each is a set of per-vertex position (and
+    // optionally normal / tangent) displacements from the base geometry, in
+    // the same vertex order as `positions`. glTF does not store target names on
+    // the accessor; the conventional `mesh.extras().targetNames` needs the
+    // `extras` feature and raw-JSON parsing, so targets are named by index here
+    // and real names are a follow-up. Displacements are reoriented into Z-up
+    // alongside the base attributes in `reorient_mesh_z_up`.
+    let morph_targets: Vec<MorphTarget> = reader
+        .read_morph_targets()
+        .enumerate()
+        .filter_map(|(i, (positions, normals, tangents))| {
+            let position_deltas: Vec<[f32; 3]> = positions?.collect();
+            Some(MorphTarget {
+                name: format!("target_{i}"),
+                position_deltas,
+                normal_deltas: normals.map(|iter| iter.collect()),
+                tangent_deltas: tangents.map(|iter| iter.collect()),
+            })
+        })
+        .collect();
+
     let material_index = primitive.material().index();
 
     let base_name = mesh
@@ -1309,6 +1409,7 @@ fn convert_primitive(
     mesh_data.tangents = tangents;
     mesh_data.colours = colours;
     mesh_data.skin_weights = skin_weights;
+    mesh_data.morph_targets = morph_targets;
 
     Some(IoMesh {
         name,
@@ -1671,6 +1772,25 @@ fn reorient_mesh_z_up(mesh: &mut IoMesh) {
     if let Some(tangents) = mesh.mesh.tangents.as_mut() {
         for t in tangents.iter_mut() {
             *t = reorient_tangent(*t);
+        }
+    }
+    // Morph displacements live in the same space as the base attributes, so
+    // they rotate by the same Y-up to Z-up transform. The rotation is linear,
+    // so a displacement reorients exactly like a position. Tangent deltas are
+    // xyz-only (no bitangent sign), so reuse the vec3 rotation.
+    for target in &mut mesh.mesh.morph_targets {
+        for d in &mut target.position_deltas {
+            *d = reorient_vec3(*d);
+        }
+        if let Some(normals) = target.normal_deltas.as_mut() {
+            for n in normals.iter_mut() {
+                *n = reorient_vec3(*n);
+            }
+        }
+        if let Some(tangents) = target.tangent_deltas.as_mut() {
+            for t in tangents.iter_mut() {
+                *t = reorient_vec3(*t);
+            }
         }
     }
     mesh.transform = reorient_affine_mat4(mesh.transform);

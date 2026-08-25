@@ -201,6 +201,7 @@ impl Dataset {
             colours: None,
             attributes,
             skin_weights: None,
+            morph_targets: Vec::new(),
         }
     }
 

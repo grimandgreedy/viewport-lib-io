@@ -212,6 +212,25 @@ pub struct SkinWeights {
     pub joint_weights: Vec<[f32; 4]>,
 }
 
+/// One blend shape (morph target): per-vertex displacements from the base
+/// mesh, parallel to [`SurfaceMesh::positions`]. A deformer sums the base
+/// geometry with each target's displacements scaled by that target's weight.
+#[derive(Clone, Debug)]
+pub struct MorphTarget {
+    /// Target name. Source formats that do not carry per-target names (or
+    /// whose names are not read) fall back to `target_<index>`.
+    pub name: String,
+    /// Position displacement per vertex, one entry per base-mesh vertex.
+    pub position_deltas: Vec<[f32; 3]>,
+    /// Optional normal displacement per vertex, same length as
+    /// `position_deltas` when present.
+    pub normal_deltas: Option<Vec<[f32; 3]>>,
+    /// Optional tangent displacement per vertex (xyz only; the bitangent sign
+    /// on the base tangent is unaffected). Same length as `position_deltas`
+    /// when present.
+    pub tangent_deltas: Option<Vec<[f32; 3]>>,
+}
+
 /// One joint in a skeleton hierarchy.
 #[derive(Clone, Debug)]
 pub struct Joint {
@@ -325,6 +344,10 @@ pub struct SurfaceMesh {
     pub attributes: HashMap<String, AttributeData>,
     /// Optional skinning weights.
     pub skin_weights: Option<SkinWeights>,
+    /// Blend shapes for this mesh, in authored order. Empty when the source
+    /// carries none. A downstream deformer indexes these by position, so the
+    /// order is the order a weight palette is expected to follow.
+    pub morph_targets: Vec<MorphTarget>,
 }
 
 /// A mesh entry inside a loaded scene.
