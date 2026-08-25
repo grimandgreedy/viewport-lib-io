@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Tests
+- Cross-format skinning parity test (`tests/fbx_gltf_skinning_parity.rs`): the
+  same rigged Fox asset loaded from FBX and from glTF must produce matching
+  geometry, both in bind pose and when posed by sampling the "Walk" clip. This
+  locks in the FBX axis / unit conversion applied uniformly to mesh transforms,
+  skeleton inverse-binds and animation curves: under `AxisPolicy::HonourHeader`
+  the Z-up fixture converts by identity and must equal the glTF output directly;
+  under `AxisPolicy::ForceYUpRaw` both outputs differ by exactly the same +90
+  degree X rotation. It is the regression guard for the sampled-pose bug where
+  curves stayed in raw file space and the posed geometry came out ~90 degrees
+  rotated against the bind pose. Ships the Fox fixtures (`fox.glb`,
+  `fox_rigged.fbx`, CC-BY 4.0) under `tests/fixtures/`.
+
+### Internal
+- Reformatted `build_fbx_scene` (its body was indented one level too deep),
+  `lightmap.rs` and the `probe_fbx_uv` example to satisfy `cargo fmt`. No
+  behavioural change.
+
 ## [0.6.0] - 2026-08-12
 
 ### Added

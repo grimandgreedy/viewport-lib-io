@@ -14,8 +14,12 @@
 use std::path::PathBuf;
 
 fn bbox(uvs: &[[f32; 2]]) -> (f32, f32, f32, f32) {
-    let (mut umin, mut umax, mut vmin, mut vmax) =
-        (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY);
+    let (mut umin, mut umax, mut vmin, mut vmax) = (
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+    );
     for uv in uvs {
         umin = umin.min(uv[0]);
         umax = umax.max(uv[0]);
@@ -47,8 +51,15 @@ fn main() {
     };
 
     println!("file: {}", path.display());
-    println!("summary: {} meshes, {} materials", scene.meshes.len(), scene.materials.len());
-    println!("\n{:<34} {:<28} {:>8}  uv-bbox", "mesh", "material", "verts");
+    println!(
+        "summary: {} meshes, {} materials",
+        scene.meshes.len(),
+        scene.materials.len()
+    );
+    println!(
+        "\n{:<34} {:<28} {:>8}  uv-bbox",
+        "mesh", "material", "verts"
+    );
     for m in &scene.meshes {
         let mat = m
             .material_index
@@ -70,6 +81,12 @@ fn main() {
             }
             _ => "<no uvs>".to_string(),
         };
-        println!("{:<34} {:<28} {:>8}  {}", m.name, mat, sm.positions.len(), uv);
+        println!(
+            "{:<34} {:<28} {:>8}  {}",
+            m.name,
+            mat,
+            sm.positions.len(),
+            uv
+        );
     }
 }

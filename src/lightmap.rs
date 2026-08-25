@@ -73,9 +73,10 @@ impl LightmapData {
         let n = self.texel_count();
         match &self.encoding {
             LightmapEncoding::NonDirectional { radiance } => radiance.len() == n,
-            LightmapEncoding::DominantDirection { radiance, direction } => {
-                radiance.len() == n && direction.len() == n
-            }
+            LightmapEncoding::DominantDirection {
+                radiance,
+                direction,
+            } => radiance.len() == n && direction.len() == n,
         }
     }
 }
