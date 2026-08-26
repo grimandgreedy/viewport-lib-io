@@ -72,6 +72,16 @@ path = "examples/probe_fbx_axis.rs"
 required-features = ["fbx"]
 
 [[example]]
+name = "probe-fbx-morph"
+path = "examples/probe_fbx_morph.rs"
+required-features = ["fbx"]
+
+[[example]]
+name = "probe-gltf-morph"
+path = "examples/probe_gltf_morph.rs"
+required-features = ["gltf"]
+
+[[example]]
 name = "probe-bvh"
 path = "examples/probe_bvh.rs"
 required-features = ["bvh"]

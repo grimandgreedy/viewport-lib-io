@@ -1467,17 +1467,25 @@ fn convert_primitive(
     // `extras` feature and raw-JSON parsing, so targets are named by index here
     // and real names are a follow-up. Displacements are reoriented into Z-up
     // alongside the base attributes in `reorient_mesh_z_up`.
+    let base_vertex_count = positions.len();
     let morph_targets: Vec<MorphTarget> = reader
         .read_morph_targets()
         .enumerate()
-        .filter_map(|(i, (positions, normals, tangents))| {
-            let position_deltas: Vec<[f32; 3]> = positions?.collect();
-            Some(MorphTarget {
+        .map(|(i, (positions, normals, tangents))| {
+            // Keep every target, even one with no POSITION displacement (some
+            // face rigs carry a normals-only target): a dropped target would
+            // shift the indices a weight animation drives by, and change the
+            // count so the whole clip no longer matches. Zero-fill instead.
+            let position_deltas: Vec<[f32; 3]> = match positions {
+                Some(iter) => iter.collect(),
+                None => vec![[0.0, 0.0, 0.0]; base_vertex_count],
+            };
+            MorphTarget {
                 name: format!("target_{i}"),
                 position_deltas,
                 normal_deltas: normals.map(|iter| iter.collect()),
                 tangent_deltas: tangents.map(|iter| iter.collect()),
-            })
+            }
         })
         .collect();
 

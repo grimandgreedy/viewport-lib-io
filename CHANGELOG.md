@@ -16,7 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the displacements into Z-up alongside the base attributes. Targets are named
   by index (`target_<n>`) for now: glTF stores names in `mesh.extras`, which
   needs the `extras` feature and raw-JSON parsing, so named targets are a
-  follow-up. FBX blend-shape deformers are not yet parsed.
+  follow-up.
+- FBX blend-shape import. The FBX loader now reads `Deformer`(BlendShape) →
+  `BlendShapeChannel` → `Shape` chains, expanding each shape's sparse
+  `Indexes` / `Vertices` into dense per-vertex deltas through the same
+  control-point map skinning uses, and splitting them across material
+  sub-meshes. Named after the blend-shape channel. Not yet verified against a
+  real asset (none of the sample FBX files carry blend shapes) and FBX
+  blend-shape weight animation is a follow-up.
 - Morph-weight animation import. A new `MorphWeightClip` type carries keyframed
   blend-shape weights for one mesh's targets (row-major `[keyframe][target]`),
   and `SceneData::morph_animations` collects them. The glTF loader reads
@@ -24,6 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   channel, named after its animation, with `CubicSpline` output collapsed to its
   value component. Kept apart from `AnimationClip` because the weights drive a
   mesh's morph target set, not a skeleton.
+
+### Fixed
+- glTF morph-target extraction kept a target that carries no `POSITION`
+  displacement (a normals-only face shape) instead of dropping it. Dropping one
+  shifted the indices a weight animation drives by and changed the target count,
+  so a real 52-blendshape face imported 51 geometry targets against a 52-target
+  animation. Absent position deltas are now zero-filled, keeping geometry and
+  animation aligned.
 
 ### Tests
 - Cross-format skinning parity test (`tests/fbx_gltf_skinning_parity.rs`): the

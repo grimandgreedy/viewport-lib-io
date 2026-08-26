@@ -14,8 +14,8 @@ use fbxcel_dom::v7400::object::model::TypedModelHandle;
 use crate::error::IoError;
 use crate::types::{
     AlphaMode, AnimationChannel, AnimationClip, AnimationInterpolation, AnimationSampler,
-    AnimationTrack, AnimationTrackValues, IoMaterial, IoMesh, IoScene, Joint, Skeleton,
-    SkinWeights, SurfaceMesh, TextureData, TextureSource,
+    AnimationTrack, AnimationTrackValues, IoMaterial, IoMesh, IoScene, Joint, MorphTarget,
+    Skeleton, SkinWeights, SurfaceMesh, TextureData, TextureSource,
 };
 
 /// How the loader decides whether to apply the Y-up to Z-up axis transform.
@@ -657,6 +657,23 @@ fn build_fbx_scene(
                     (None, None)
                 };
 
+            // Blend shapes: harvest per-control-point deltas, then expand to
+            // one delta per emitted vertex through the same control-point map
+            // the skin path uses, so a target lines up with `positions`. Split
+            // across sub-meshes below exactly like positions / skin.
+            let blend_shapes =
+                extract_blend_shapes(&geometry, (max_cp_index as usize).saturating_add(1));
+            let full_morph_targets: Vec<(String, Vec<[f32; 3]>)> = blend_shapes
+                .iter()
+                .map(|bs| {
+                    let deltas: Vec<[f32; 3]> = vertex_cp_index
+                        .iter()
+                        .map(|&cp| bs.cp_deltas.get(cp as usize).copied().unwrap_or([0.0; 3]))
+                        .collect();
+                    (bs.name.clone(), deltas)
+                })
+                .collect();
+
             // Pick the UV channel the material's base map samples.
             //
             // The rule is Unity's, and it is deliberately not a
@@ -797,12 +814,31 @@ fn build_fbx_scene(
                                 .collect(),
                         });
 
+                        // Slice each blend shape onto this sub-mesh's vertices,
+                        // the same remap as positions. Every sub-mesh carries
+                        // the full named target list (zero deltas where a face
+                        // shape does not touch a body sub-mesh), so a downstream
+                        // merge lines the targets up by name.
+                        let sub_morphs: Vec<MorphTarget> = full_morph_targets
+                            .iter()
+                            .map(|(name, deltas)| MorphTarget {
+                                name: name.clone(),
+                                position_deltas: vertex_indices
+                                    .iter()
+                                    .map(|&i| deltas[i])
+                                    .collect(),
+                                normal_deltas: None,
+                                tangent_deltas: None,
+                            })
+                            .collect();
+
                         let mut mesh_data = SurfaceMesh::default();
                         mesh_data.positions = sub_positions;
                         mesh_data.normals = sub_normals;
                         mesh_data.indices = sub_indices;
                         mesh_data.uvs = sub_uvs;
                         mesh_data.skin_weights = sub_skin;
+                        mesh_data.morph_targets = sub_morphs;
 
                         let parent_index = if meshes.len() > first_mesh_index {
                             Some(first_mesh_index)
@@ -831,6 +867,15 @@ fn build_fbx_scene(
             mesh_data.indices = (0..mesh_data.positions.len() as u32).collect();
             mesh_data.uvs = uvs_vec;
             mesh_data.skin_weights = skin_per_vertex;
+            mesh_data.morph_targets = full_morph_targets
+                .into_iter()
+                .map(|(name, position_deltas)| MorphTarget {
+                    name,
+                    position_deltas,
+                    normal_deltas: None,
+                    tangent_deltas: None,
+                })
+                .collect();
 
             // Single-submesh path: log the whole mesh's UV extent so a
             // single-material atlas mesh (trunk + leaves in one material)
@@ -1492,6 +1537,66 @@ fn compute_flat_normals(positions: &[[f32; 3]]) -> Vec<[f32; 3]> {
 struct ExtractedSkin {
     skeleton: Skeleton,
     cp_influences: Vec<Vec<(u8, f32)>>,
+}
+
+/// One blend shape harvested from a geometry's BlendShape deformers: a name and
+/// a dense per-control-point position delta (zero where the shape leaves a
+/// control point in place).
+#[cfg(feature = "fbx")]
+struct ExtractedBlendShape {
+    name: String,
+    cp_deltas: Vec<[f32; 3]>,
+}
+
+/// Read a geometry's blend shapes as dense per-control-point deltas.
+///
+/// FBX stores each blend shape as a `Deformer`(BlendShape) → `SubDeformer`
+/// (BlendShapeChannel) → `Geometry`(Shape) chain. A Shape carries a **sparse**
+/// `Indexes` (control-point indices) + `Vertices` (the position delta for each,
+/// flat x/y/z) pair, which this expands into a dense array over all control
+/// points. Deltas sit in the same local control-point space as the base
+/// positions (the axis / unit conversion rides the mesh transform), so no
+/// reorientation applies here. A channel with several in-between shapes keeps
+/// the last shape's displacement per control point (the full-weight target);
+/// progressive in-betweens are not blended.
+#[cfg(feature = "fbx")]
+fn extract_blend_shapes(
+    geometry: &fbxcel_dom::v7400::object::geometry::MeshHandle<'_>,
+    control_point_count: usize,
+) -> Vec<ExtractedBlendShape> {
+    let mut out: Vec<ExtractedBlendShape> = Vec::new();
+    for blendshape in geometry.blendshapes() {
+        for channel in blendshape.blendshape_channels() {
+            let name = channel.name().unwrap_or("").to_string();
+            let mut cp_deltas = vec![[0.0f32; 3]; control_point_count];
+            let mut any = false;
+            for shape in channel.shapes() {
+                let node = shape.node();
+                let indexes = read_i32_array(&node, "Indexes").unwrap_or_default();
+                let verts = read_f64_array(&node, "Vertices").unwrap_or_default();
+                if indexes.is_empty() || verts.len() < indexes.len() * 3 {
+                    continue;
+                }
+                for (k, &cp_i32) in indexes.iter().enumerate() {
+                    let cp = cp_i32 as usize;
+                    if cp >= cp_deltas.len() {
+                        continue;
+                    }
+                    let base = k * 3;
+                    cp_deltas[cp] = [
+                        verts[base] as f32,
+                        verts[base + 1] as f32,
+                        verts[base + 2] as f32,
+                    ];
+                    any = true;
+                }
+            }
+            if any {
+                out.push(ExtractedBlendShape { name, cp_deltas });
+            }
+        }
+    }
+    out
 }
 
 #[cfg(feature = "fbx")]
