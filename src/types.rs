@@ -323,6 +323,36 @@ pub struct AnimationClip {
     pub tracks: Vec<AnimationTrack>,
 }
 
+/// A keyframed blend-shape weight animation for one mesh's morph targets.
+///
+/// Kept apart from [`AnimationClip`] because it drives a mesh's morph target
+/// set, not a skeleton: weights are scalar and target the mesh's targets in
+/// order, so the joint-indexed [`AnimationTrack`] does not fit. Scalar weights
+/// carry no orientation, so no Z-up reorientation applies.
+#[derive(Clone, Debug)]
+pub struct MorphWeightClip {
+    /// Clip name, from the source animation. Anonymous clips are named by the
+    /// loader.
+    pub name: String,
+    /// Length in seconds: the maximum keyframe time.
+    pub duration: f32,
+    /// Index into [`SceneData::meshes`]' source mesh (the glTF `mesh.index()`)
+    /// whose morph targets these weights drive. All primitives of that mesh
+    /// share the same target order.
+    pub mesh_index: usize,
+    /// Number of morph targets, so [`weights`](Self::weights) can be
+    /// de-interleaved per keyframe.
+    pub target_count: usize,
+    /// Interpolation between keyframes. `CubicSpline` is collapsed to its value
+    /// component on read, so this is `Step` or `Linear` in practice.
+    pub interpolation: AnimationInterpolation,
+    /// Keyframe times in seconds, strictly increasing.
+    pub times: Vec<f32>,
+    /// Weights, row-major `[keyframe][target]`: length is
+    /// `times.len() * target_count`.
+    pub weights: Vec<f32>,
+}
+
 /// Source-agnostic surface mesh data.
 #[derive(Clone, Debug, Default)]
 pub struct SurfaceMesh {
@@ -655,6 +685,8 @@ pub struct SceneData {
     pub skeletons: Vec<Skeleton>,
     /// Animation clips targeting the scene's skeletons.
     pub animations: Vec<AnimationClip>,
+    /// Blend-shape weight animations targeting the scene's morphable meshes.
+    pub morph_animations: Vec<MorphWeightClip>,
 }
 
 pub(crate) type TextureData = RasterImageData;
