@@ -21,9 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `BlendShapeChannel` → `Shape` chains, expanding each shape's sparse
   `Indexes` / `Vertices` into dense per-vertex deltas through the same
   control-point map skinning uses, and splitting them across material
-  sub-meshes. Named after the blend-shape channel. Not yet verified against a
-  real asset (none of the sample FBX files carry blend shapes) and FBX
-  blend-shape weight animation is a follow-up.
+  sub-meshes. Named after the blend-shape channel. Verified against a real
+  asset (a Blender-authored blend-shape sphere).
+- FBX blend-shape weight animation import. The FBX loader now reads each
+  `BlendShapeChannel`'s `DeformPercent` animation curve (walking `AnimStack →
+  AnimLayer → AnimCurveNode`, the same traversal the bone tracks use) and emits
+  a `MorphWeightClip` per animated mesh, correlating a curve to its target by
+  the channel name. FBX keys each channel independently, so a mesh's curves are
+  merged onto a union timeline and sampled per key into the dense row-major
+  `[keyframe][target]` matrix; the percentage weight is converted to `0..1`. FBX
+  now reaches morph-weight animation parity with glTF.
 - Morph-weight animation import. A new `MorphWeightClip` type carries keyframed
   blend-shape weights for one mesh's targets (row-major `[keyframe][target]`),
   and `SceneData::morph_animations` collects them. The glTF loader reads

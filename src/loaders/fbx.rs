@@ -15,7 +15,7 @@ use crate::error::IoError;
 use crate::types::{
     AlphaMode, AnimationChannel, AnimationClip, AnimationInterpolation, AnimationSampler,
     AnimationTrack, AnimationTrackValues, IoMaterial, IoMesh, IoScene, Joint, MorphTarget,
-    Skeleton, SkinWeights, SurfaceMesh, TextureData, TextureSource,
+    MorphWeightClip, Skeleton, SkinWeights, SurfaceMesh, TextureData, TextureSource,
 };
 
 /// How the loader decides whether to apply the Y-up to Z-up axis transform.
@@ -912,11 +912,34 @@ fn build_fbx_scene(
 
     let animations = extract_animations(&document, &mut skeletons, &axis_transform, unit_scale);
 
+    // Blend-shape weight animation: each emitted mesh's morph targets, in the
+    // order `extract_blend_shapes` produced them, correlated to their FBX
+    // `BlendShapeChannel` weight curves by name (the channel name is the target
+    // name). Read straight off the assembled meshes, so a submesh split needs no
+    // special handling.
+    let mesh_targets: Vec<(usize, Vec<String>)> = meshes
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| !m.mesh.morph_targets.is_empty())
+        .map(|(i, m)| {
+            (
+                i,
+                m.mesh
+                    .morph_targets
+                    .iter()
+                    .map(|t| t.name.clone())
+                    .collect(),
+            )
+        })
+        .collect();
+    let morph_animations = extract_morph_weight_clips(&document, &mesh_targets);
+
     Ok(IoScene {
         meshes,
         materials,
         skeletons,
         animations,
+        morph_animations,
         ..IoScene::default()
     })
 }
@@ -2298,6 +2321,140 @@ fn read_f32_array(node: &fbxcel::tree::v7400::NodeHandle<'_>, name: &str) -> Opt
         }
         _ => None,
     }
+}
+
+/// Import blend-shape **weight** animation from the FBX anim graph, the morph
+/// counterpart of [`extract_animations`]. Each `BlendShapeChannel` carries a
+/// `DeformPercent` property (0..100) driven by one `AnimCurve`; this walks
+/// `AnimStack → AnimLayer → AnimCurveNode` (the same connection traversal the
+/// bone tracks use), keeps the curve nodes whose destination property is
+/// `DeformPercent`, and keys the curve by its channel's name — which is the same
+/// name [`extract_blend_shapes`] gives the morph target.
+///
+/// `mesh_targets` is `(scene-mesh index, target names in emitted order)` for each
+/// mesh that carries blend shapes. Per animation stack, one [`MorphWeightClip`]
+/// is emitted for each such mesh with at least one animated target: FBX keys each
+/// channel on its own times, so the mesh's animated curves are merged onto a union
+/// timeline and every target sampled at each key (an unanimated target holds `0`),
+/// yielding the dense row-major `[keyframe][target]` matrix the consumers expect.
+#[cfg(feature = "fbx")]
+fn extract_morph_weight_clips(
+    document: &Document,
+    mesh_targets: &[(usize, Vec<String>)],
+) -> Vec<MorphWeightClip> {
+    if mesh_targets.is_empty() {
+        return Vec::new();
+    }
+    let anim_stacks: Vec<fbxcel_dom::v7400::object::ObjectHandle<'_>> = document
+        .objects()
+        .filter(|o| matches!(o.class(), "AnimStack" | "AnimationStack"))
+        .collect();
+
+    let mut out: Vec<MorphWeightClip> = Vec::new();
+    for stack in anim_stacks {
+        let stack_name = stack.name().unwrap_or("AnimStack").to_string();
+
+        // Channel name -> its weight curve (times in seconds, values in 0..1).
+        let mut curves: HashMap<String, (Vec<f32>, Vec<f32>)> = HashMap::new();
+        for layer in stack
+            .source_objects()
+            .filter_map(|c| c.object_handle())
+            .filter(|o| matches!(o.class(), "AnimLayer" | "AnimationLayer"))
+        {
+            for cn in layer
+                .source_objects()
+                .filter_map(|c| c.object_handle())
+                .filter(|o| matches!(o.class(), "AnimCurveNode" | "AnimationCurveNode"))
+            {
+                // Keep only curve nodes driving a channel's DeformPercent; the
+                // destination object is the BlendShapeChannel, named like the target.
+                let channel_name = cn.destination_objects().find_map(|c| {
+                    if c.label() != Some("DeformPercent") {
+                        return None;
+                    }
+                    c.object_handle()?.name().map(str::to_string)
+                });
+                let Some(channel_name) = channel_name else {
+                    continue;
+                };
+
+                for c in cn.source_objects() {
+                    let Some(label) = c.label() else { continue };
+                    if !label.starts_with("d|DeformPercent") {
+                        continue;
+                    }
+                    let Some(obj) = c.object_handle() else {
+                        continue;
+                    };
+                    if !matches!(obj.class(), "AnimCurve" | "AnimationCurve") {
+                        continue;
+                    }
+                    let node = obj.node();
+                    let Some(times) = read_i64_array(&node, "KeyTime") else {
+                        continue;
+                    };
+                    let Some(values) = read_f32_array(&node, "KeyValueFloat") else {
+                        continue;
+                    };
+                    if times.is_empty() || times.len() != values.len() {
+                        continue;
+                    }
+                    let times_s: Vec<f32> = times
+                        .iter()
+                        .map(|t| (*t as f64 / FBX_KTIME_PER_SECOND) as f32)
+                        .collect();
+                    // FBX stores the weight as a percentage; the runtime wants 0..1.
+                    let vals01: Vec<f32> = values.iter().map(|v| v / 100.0).collect();
+                    curves.insert(channel_name.clone(), (times_s, vals01));
+                    break;
+                }
+            }
+        }
+        if curves.is_empty() {
+            continue;
+        }
+
+        for (mesh_index, names) in mesh_targets {
+            if !names.iter().any(|n| curves.contains_key(n)) {
+                continue;
+            }
+            // Union of every animated target's key times across this mesh.
+            let mut union_times: Vec<f32> = Vec::new();
+            for n in names {
+                if let Some((ts, _)) = curves.get(n) {
+                    union_times.extend_from_slice(ts);
+                }
+            }
+            union_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            union_times.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+            if union_times.is_empty() {
+                continue;
+            }
+
+            let target_count = names.len();
+            let mut weights = Vec::with_capacity(union_times.len() * target_count);
+            for &t in &union_times {
+                for n in names {
+                    let w = match curves.get(n) {
+                        Some((ts, vs)) => sample_linear(ts, vs, t),
+                        None => 0.0,
+                    };
+                    weights.push(w);
+                }
+            }
+            let duration = union_times.last().copied().unwrap_or(0.0);
+            out.push(MorphWeightClip {
+                name: stack_name.clone(),
+                duration,
+                mesh_index: *mesh_index,
+                target_count,
+                interpolation: AnimationInterpolation::Linear,
+                times: union_times,
+                weights,
+            });
+        }
+    }
+    out
 }
 
 #[cfg(feature = "fbx")]

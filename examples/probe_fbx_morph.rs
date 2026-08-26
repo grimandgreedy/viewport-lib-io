@@ -44,6 +44,29 @@ fn main() {
         total_targets,
     );
 
+    println!(
+        "\n{} morph weight animation(s):",
+        scene.morph_animations.len()
+    );
+    for clip in &scene.morph_animations {
+        println!(
+            "  '{}': {:.2}s, mesh {}, {} targets, {} keyframes",
+            clip.name,
+            clip.duration,
+            clip.mesh_index,
+            clip.target_count,
+            clip.times.len(),
+        );
+        if let (Some(first), Some(last)) = (clip.times.first(), clip.times.last()) {
+            let peak = clip
+                .weights
+                .iter()
+                .cloned()
+                .fold(f32::NEG_INFINITY, f32::max);
+            println!("    t {first:.2}..{last:.2}, peak weight {peak:.2}");
+        }
+    }
+
     // Raw census: what object kinds does fbxcel-dom recognise? Reveals whether
     // BlendShape deformers / Shape geometries are present at all.
     census(&path);
