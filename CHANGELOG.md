@@ -23,6 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   control-point map skinning uses, and splitting them across material
   sub-meshes. Named after the blend-shape channel. Verified against a real
   asset (a Blender-authored blend-shape sphere).
+- Legacy FBX blend-shape import (pre-7.5). Older exports (e.g. FBX 7.1, as many
+  game-character ARKit facial rigs still are) nest the `Shape` sub-nodes
+  directly inside the `Geometry` node with no `BlendShape` deformer objects in
+  the connection graph, which `fbxcel-dom`'s object model does not surface. When
+  the modern deformer walk finds nothing, the loader now falls back to reading
+  those nested `Shape` sub-nodes off the raw geometry tree, in the same sparse
+  `Indexes` / `Vertices` layout. Verified against a real character carrying the
+  full 52-name ARKit set as legacy nested shapes.
 - FBX blend-shape weight animation import. The FBX loader now reads each
   `BlendShapeChannel`'s `DeformPercent` animation curve (walking `AnimStack →
   AnimLayer → AnimCurveNode`, the same traversal the bone tracks use) and emits
