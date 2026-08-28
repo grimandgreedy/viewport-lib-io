@@ -689,6 +689,82 @@ pub struct SceneData {
     pub morph_animations: Vec<MorphWeightClip>,
 }
 
+/// One segment of a [`SubPath`]. The start point is implicit: it is the
+/// subpath's `start` for the first segment, and the previous segment's end
+/// point after that. Coordinates are in the source drawing's user units.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PathSegment {
+    /// Straight line to `to`.
+    Line {
+        /// End point.
+        to: [f32; 2],
+    },
+    /// Quadratic Bezier through control point `ctrl` to `to`.
+    Quad {
+        /// Control point.
+        ctrl: [f32; 2],
+        /// End point.
+        to: [f32; 2],
+    },
+    /// Cubic Bezier through control points `ctrl1`, `ctrl2` to `to`.
+    Cubic {
+        /// First control point.
+        ctrl1: [f32; 2],
+        /// Second control point.
+        ctrl2: [f32; 2],
+        /// End point.
+        to: [f32; 2],
+    },
+}
+
+/// A single contour: a start point, a run of segments, and whether it closes
+/// back to the start. Multiple subpaths in one [`VectorShape`] combine under
+/// the shape's [`FillRule`], so the inner loop of a letter "O" is a hole.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SubPath {
+    /// Start point in the drawing's user units.
+    pub start: [f32; 2],
+    /// Segments in order from `start`.
+    pub segments: Vec<PathSegment>,
+    /// Whether the last point connects back to `start`.
+    pub closed: bool,
+}
+
+/// How overlapping and nested subpaths combine into filled area. Matches the
+/// SVG fill rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum FillRule {
+    /// Inside where the signed crossing count is non-zero. The SVG default.
+    #[default]
+    NonZero,
+    /// Inside where the crossing count is odd.
+    EvenOdd,
+}
+
+/// One filled shape from a vector drawing: its contours, fill rule, and the
+/// resolved fill colour.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VectorShape {
+    /// Contours making up the shape. Curves are preserved, not flattened.
+    pub subpaths: Vec<SubPath>,
+    /// How the subpaths combine into filled area.
+    pub fill_rule: FillRule,
+    /// Resolved fill colour as linear RGBA in `[0, 1]`, alpha carrying the
+    /// fill opacity. `None` when the source shape has no fill, or a gradient or
+    /// pattern paint this loader does not resolve to a single colour.
+    pub fill: Option<[f32; 4]>,
+}
+
+/// A decoded 2D vector drawing: filled shapes in draw order plus the source
+/// canvas size. Produced by [`crate::loaders::svg::vector_from_path`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct VectorArt {
+    /// Filled shapes in the drawing's paint order (first painted first).
+    pub shapes: Vec<VectorShape>,
+    /// Source canvas size in user units (width, height).
+    pub size: [f32; 2],
+}
+
 pub(crate) type TextureData = RasterImageData;
 pub(crate) type HdrTextureData = HdrImageData;
 pub(crate) type IoMaterial = MaterialData;
