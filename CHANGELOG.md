@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- SVG vector-path loading. `loaders::svg::vector_from_path` decodes an SVG into
+  neutral vector paths instead of a rasterized texture (the existing
+  `texture_from_path` is unchanged; both are kept). It walks the `usvg` path
+  tree, bakes each path's absolute transform into the geometry, keeps line and
+  Bezier (quadratic/cubic) segments unflattened, reads the fill rule, and
+  resolves solid fills to linear RGBA. New neutral types `VectorArt`,
+  `VectorShape`, `SubPath`, `PathSegment`, and `FillRule` carry the result; feed
+  them into `viewport_lib::OverlayShape::Vector`. Gradient and pattern fills
+  leave the colour unset (the geometry is still emitted); `<text>` and image
+  nodes are skipped (text needs a font DB fed to `usvg`).
 - Morph-target (blend-shape) geometry on `SurfaceMesh`. A new `MorphTarget`
   neutral type carries per-vertex position (and optional normal / tangent)
   displacements from the base mesh, and `SurfaceMesh::morph_targets` holds them
