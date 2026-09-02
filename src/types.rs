@@ -44,6 +44,45 @@ pub enum TextureSource {
     Decoded(RasterImageData),
 }
 
+/// The colour space a texture's pixels are in, so a consumer routes the GPU
+/// upload correctly: sRGB colour textures must decode to linear on sample;
+/// linear data textures (normal, metallic-roughness, occlusion) must not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColourSpace {
+    /// sRGB-encoded colour (base colour, emissive). Upload so the sampler
+    /// decodes to linear.
+    Srgb,
+    /// Linear data. Upload without any sRGB decode.
+    Linear,
+}
+
+/// Which material texture slot a [`TextureSource`] fills.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MaterialTextureSlot {
+    /// Base colour (albedo). sRGB.
+    BaseColour,
+    /// Combined metallic-roughness (ORM). Linear data.
+    MetallicRoughness,
+    /// Tangent-space normal map. Linear data.
+    Normal,
+    /// Ambient occlusion. Linear data.
+    Occlusion,
+    /// Emissive. sRGB.
+    Emissive,
+}
+
+impl MaterialTextureSlot {
+    /// The colour space this slot's pixels are in.
+    pub fn colour_space(self) -> ColourSpace {
+        match self {
+            MaterialTextureSlot::BaseColour | MaterialTextureSlot::Emissive => ColourSpace::Srgb,
+            MaterialTextureSlot::MetallicRoughness
+            | MaterialTextureSlot::Normal
+            | MaterialTextureSlot::Occlusion => ColourSpace::Linear,
+        }
+    }
+}
+
 /// How a material's alpha channel is interpreted, matching glTF `alphaMode`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AlphaMode {
@@ -79,14 +118,17 @@ impl Default for AlphaMode {
 pub struct MaterialData {
     /// Material name from the source scene.
     pub name: String,
-    /// Base colour in linear space.
+    /// Base colour in linear space (glTF `baseColorFactor` and equivalents are
+    /// linear). Map it to a renderer material through the linear path, e.g.
+    /// `Colour::linear_rgb`, not an sRGB constructor, so it is not decoded again.
     pub base_color: [f32; 3],
     /// Metallic factor.
     pub metallic: f32,
     /// Roughness factor.
     pub roughness: f32,
     /// Emissive colour in linear space, matching glTF `emissiveFactor`. Black
-    /// `[0.0, 0.0, 0.0]` when the source declares no emission.
+    /// `[0.0, 0.0, 0.0]` when the source declares no emission. Linear like
+    /// [`base_color`](Self::base_color): map through the linear path.
     pub emissive: [f32; 3],
     /// Opacity factor from the source file.
     pub opacity: f32,
@@ -97,25 +139,57 @@ pub struct MaterialData {
     /// Whether back faces are drawn, matching glTF `doubleSided`. `false` for
     /// formats without the concept.
     pub double_sided: bool,
-    /// Base colour texture, if present.
+    /// Base colour texture, if present. sRGB colour ([`ColourSpace::Srgb`]):
+    /// upload it so the sampler decodes to linear (the renderer's
+    /// `upload_texture` path).
     pub base_color_texture: Option<TextureSource>,
     /// Combined metallic-roughness (ORM) texture, if present. Matches the glTF
     /// `metallicRoughnessTexture`: G channel is roughness, B channel is metallic.
+    /// Linear data ([`ColourSpace::Linear`]): upload without sRGB decode (the
+    /// renderer's `upload_data_texture` path).
     pub metallic_roughness_texture: Option<TextureSource>,
-    /// Normal map, if present.
+    /// Normal map, if present. Linear data ([`ColourSpace::Linear`]): upload
+    /// without sRGB decode (`upload_normal_map` / `upload_data_texture`).
     pub normal_map_texture: Option<TextureSource>,
     /// Scales the tangent-space normal read from `normal_map_texture`, matching
     /// glTF `normalScale`. 1.0 leaves the map at authored strength. Files with no
     /// equivalent (OBJ, FBX) leave this at 1.0.
     pub normal_scale: f32,
-    /// Ambient-occlusion texture, if present.
+    /// Ambient-occlusion texture, if present. Linear data
+    /// ([`ColourSpace::Linear`]): upload without sRGB decode (`upload_data_texture`).
     pub ao_texture: Option<TextureSource>,
     /// Strength of the ambient-occlusion contribution, matching glTF
     /// `occlusionStrength`. 1.0 applies the map fully, 0.0 disables it. Files with
     /// no equivalent leave this at 1.0.
     pub occlusion_strength: f32,
     /// Emissive texture, multiplied by `emissive`. Matches glTF `emissiveTexture`.
+    /// sRGB colour ([`ColourSpace::Srgb`]): upload so the sampler decodes to
+    /// linear (`upload_texture`).
     pub emissive_texture: Option<TextureSource>,
+}
+
+impl MaterialData {
+    /// Every present texture with its slot, so a consumer can route each upload
+    /// by colour space: `slot.colour_space()` is [`ColourSpace::Srgb`] for base
+    /// colour and emissive (upload so the sampler decodes to linear) and
+    /// [`ColourSpace::Linear`] for metallic-roughness, normal, and occlusion
+    /// (upload without decode). Store each returned id back in the matching
+    /// material texture field.
+    pub fn textures(&self) -> Vec<(MaterialTextureSlot, &TextureSource)> {
+        [
+            (MaterialTextureSlot::BaseColour, &self.base_color_texture),
+            (
+                MaterialTextureSlot::MetallicRoughness,
+                &self.metallic_roughness_texture,
+            ),
+            (MaterialTextureSlot::Normal, &self.normal_map_texture),
+            (MaterialTextureSlot::Occlusion, &self.ao_texture),
+            (MaterialTextureSlot::Emissive, &self.emissive_texture),
+        ]
+        .into_iter()
+        .filter_map(|(slot, src)| src.as_ref().map(|s| (slot, s)))
+        .collect()
+    }
 }
 
 impl Default for MaterialData {

@@ -28,8 +28,8 @@ pub use lightmap::{LightmapData, LightmapEncoding};
 pub use types::{
     AlphaMode, AnimationChannel, AnimationClip, AnimationInterpolation, AnimationSampler,
     AnimationTrack, AnimationTrackValues, AttributeData, AttributeDomain, AttributeValues,
-    CELL_SENTINEL, DecodedDataSet, FillRule, GaussianSplatSet, HdrImageData, Joint, MAX_JOINTS,
-    MaterialData, PathSegment, PointSet, RasterImageData, SceneData, SceneMesh, ShDegree, Skeleton,
-    SkinWeights, SparseGrid, StructuredVolume, SubPath, SurfaceMesh, TextureSource, VectorArt,
-    VectorShape, VolumeGridGeometry, VolumeMesh,
+    CELL_SENTINEL, ColourSpace, DecodedDataSet, FillRule, GaussianSplatSet, HdrImageData, Joint,
+    MAX_JOINTS, MaterialData, MaterialTextureSlot, PathSegment, PointSet, RasterImageData,
+    SceneData, SceneMesh, ShDegree, Skeleton, SkinWeights, SparseGrid, StructuredVolume, SubPath,
+    SurfaceMesh, TextureSource, VectorArt, VectorShape, VolumeGridGeometry, VolumeMesh,
 };
