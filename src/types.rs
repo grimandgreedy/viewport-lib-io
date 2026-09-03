@@ -839,14 +839,29 @@ pub struct VectorArt {
     pub size: [f32; 2],
 }
 
+// Naming-compat aliases the loaders use for these payload types. Each loader is
+// behind its own cargo feature, so a given alias is unused when its loaders are
+// disabled (the default build enables only some); the allow keeps that from
+// warning without gating each alias on the union of loader features.
+#[allow(dead_code)]
 pub(crate) type TextureData = RasterImageData;
+#[allow(dead_code)]
 pub(crate) type HdrTextureData = HdrImageData;
+#[allow(dead_code)]
 pub(crate) type IoMaterial = MaterialData;
+#[allow(dead_code)]
 pub(crate) type IoMesh = SceneMesh;
+#[allow(dead_code)]
 pub(crate) type IoPointCloud = PointSet;
+#[allow(dead_code)]
 pub(crate) type IoVolumeGeometry = VolumeGridGeometry;
+#[allow(dead_code)]
 pub(crate) type IoVolume = StructuredVolume;
+#[allow(dead_code)]
 pub(crate) type IoSparseVolume = SparseGrid;
+#[allow(dead_code)]
 pub(crate) type IoVolumeMesh = VolumeMesh;
+#[allow(dead_code)]
 pub(crate) type IoDataSet = DecodedDataSet;
+#[allow(dead_code)]
 pub(crate) type IoScene = SceneData;
