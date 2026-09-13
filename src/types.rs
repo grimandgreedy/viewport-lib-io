@@ -140,23 +140,24 @@ pub struct MaterialData {
     /// formats without the concept.
     pub double_sided: bool,
     /// Base colour texture, if present. sRGB colour ([`ColourSpace::Srgb`]):
-    /// upload it so the sampler decodes to linear (the renderer's
-    /// `upload_texture` path).
+    /// upload it so the sampler decodes to linear (build the payload with the
+    /// renderer's `TextureData::srgb`).
     pub base_color_texture: Option<TextureSource>,
     /// Combined metallic-roughness (ORM) texture, if present. Matches the glTF
     /// `metallicRoughnessTexture`: G channel is roughness, B channel is metallic.
-    /// Linear data ([`ColourSpace::Linear`]): upload without sRGB decode (the
-    /// renderer's `upload_data_texture` path).
+    /// Linear data ([`ColourSpace::Linear`]): upload without sRGB decode (build
+    /// the payload with the renderer's `TextureData::linear`).
     pub metallic_roughness_texture: Option<TextureSource>,
     /// Normal map, if present. Linear data ([`ColourSpace::Linear`]): upload
-    /// without sRGB decode (`upload_normal_map` / `upload_data_texture`).
+    /// without sRGB decode (`TextureData::normal_map`, which also binds it into
+    /// the normal slot rather than the albedo one).
     pub normal_map_texture: Option<TextureSource>,
     /// Scales the tangent-space normal read from `normal_map_texture`, matching
     /// glTF `normalScale`. 1.0 leaves the map at authored strength. Files with no
     /// equivalent (OBJ, FBX) leave this at 1.0.
     pub normal_scale: f32,
     /// Ambient-occlusion texture, if present. Linear data
-    /// ([`ColourSpace::Linear`]): upload without sRGB decode (`upload_data_texture`).
+    /// ([`ColourSpace::Linear`]): upload without sRGB decode (`TextureData::linear`).
     pub ao_texture: Option<TextureSource>,
     /// Strength of the ambient-occlusion contribution, matching glTF
     /// `occlusionStrength`. 1.0 applies the map fully, 0.0 disables it. Files with
@@ -164,7 +165,7 @@ pub struct MaterialData {
     pub occlusion_strength: f32,
     /// Emissive texture, multiplied by `emissive`. Matches glTF `emissiveTexture`.
     /// sRGB colour ([`ColourSpace::Srgb`]): upload so the sampler decodes to
-    /// linear (`upload_texture`).
+    /// linear (`TextureData::srgb`).
     pub emissive_texture: Option<TextureSource>,
 }
 
@@ -175,6 +176,22 @@ impl MaterialData {
     /// [`ColourSpace::Linear`] for metallic-roughness, normal, and occlusion
     /// (upload without decode). Store each returned id back in the matching
     /// material texture field.
+    ///
+    /// Against viewport-lib that is a `TextureData` per texture:
+    ///
+    /// ```ignore
+    /// for (slot, source) in material.textures() {
+    ///     let (w, h, pixels) = decode(source);
+    ///     let data = match slot.colour_space() {
+    ///         ColourSpace::Srgb => TextureData::srgb(w, h, pixels),
+    ///         ColourSpace::Linear if slot == MaterialTextureSlot::Normal => {
+    ///             TextureData::normal_map(w, h, pixels)
+    ///         }
+    ///         ColourSpace::Linear => TextureData::linear(w, h, pixels),
+    ///     };
+    ///     let id = res.upload_texture(&device, &queue, data)?;
+    /// }
+    /// ```
     pub fn textures(&self) -> Vec<(MaterialTextureSlot, &TextureSource)> {
         [
             (MaterialTextureSlot::BaseColour, &self.base_color_texture),
