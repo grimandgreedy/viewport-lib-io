@@ -8,107 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- SVG vector-path loading. `loaders::svg::vector_from_path` decodes an SVG into
-  neutral vector paths instead of a rasterized texture (the existing
-  `texture_from_path` is unchanged; both are kept). It walks the `usvg` path
-  tree, bakes each path's absolute transform into the geometry, keeps line and
-  Bezier (quadratic/cubic) segments unflattened, reads the fill rule, and
-  resolves solid fills to linear RGBA. New neutral types `VectorArt`,
-  `VectorShape`, `SubPath`, `PathSegment`, and `FillRule` carry the result; feed
-  them into `viewport_lib::OverlayShape::Vector`. Gradient and pattern fills
-  leave the colour unset (the geometry is still emitted); `<text>` and image
-  nodes are skipped (text needs a font DB fed to `usvg`). Coordinates are in the
-  SVG canvas frame (X right, Y down), not the Z-up scene convention, which
-  covers 3D geometry only.
-- Stroke paint and width on imported SVG vector art. `VectorShape` gained
-  `stroke: Option<VectorStroke>`, where `VectorStroke { colour, width }` mirrors
-  `viewport-lib-ui`'s `DrawCommand::Vector` stroke field for field, so the
-  consumer map stays a copy. Stroke-drawn art (most icon and cursor sets) now
-  imports with its paint instead of as unpainted contours: a stroke-only path
-  yields `fill: None` with a populated `stroke`, and open subpaths stay open so
-  a consumer strokes them rather than filling them under the fill rule. The
-  width is scaled by the transform baked into the geometry, averaging the two
-  scale factors under a non-uniform scale, and stroke opacity folds in enclosing
-  group opacity the way fill does. Gradient and pattern stroke paints leave
-  `stroke` as `None` with the geometry still emitted, mirroring fill. Stroke
-  cap, join, dash, and miter limit are not carried: the renderer draws a uniform
-  outline of the contours and has no vocabulary for them.
-- Morph-target (blend-shape) geometry on `SurfaceMesh`. A new `MorphTarget`
-  neutral type carries per-vertex position (and optional normal / tangent)
-  displacements from the base mesh, and `SurfaceMesh::morph_targets` holds them
-  in authored order (empty when a format carries none, so every other loader is
-  unaffected). The glTF loader reads a primitive's morph targets and reorients
-  the displacements into Z-up alongside the base attributes. Targets are named
-  by index (`target_<n>`) for now: glTF stores names in `mesh.extras`, which
-  needs the `extras` feature and raw-JSON parsing, so named targets are a
-  follow-up.
-- FBX blend-shape import. The FBX loader now reads `Deformer`(BlendShape) →
-  `BlendShapeChannel` → `Shape` chains, expanding each shape's sparse
-  `Indexes` / `Vertices` into dense per-vertex deltas through the same
-  control-point map skinning uses, and splitting them across material
-  sub-meshes. Named after the blend-shape channel. Verified against a real
-  asset (a Blender-authored blend-shape sphere).
-- Legacy FBX blend-shape import (pre-7.5). Older exports (e.g. FBX 7.1, as many
-  game-character ARKit facial rigs still are) nest the `Shape` sub-nodes
-  directly inside the `Geometry` node with no `BlendShape` deformer objects in
-  the connection graph, which `fbxcel-dom`'s object model does not surface. When
-  the modern deformer walk finds nothing, the loader now falls back to reading
-  those nested `Shape` sub-nodes off the raw geometry tree, in the same sparse
-  `Indexes` / `Vertices` layout. Verified against a real character carrying the
-  full 52-name ARKit set as legacy nested shapes.
-- FBX blend-shape weight animation import. The FBX loader now reads each
-  `BlendShapeChannel`'s `DeformPercent` animation curve (walking `AnimStack →
-  AnimLayer → AnimCurveNode`, the same traversal the bone tracks use) and emits
-  a `MorphWeightClip` per animated mesh, correlating a curve to its target by
-  the channel name. FBX keys each channel independently, so a mesh's curves are
-  merged onto a union timeline and sampled per key into the dense row-major
-  `[keyframe][target]` matrix; the percentage weight is converted to `0..1`. FBX
-  now reaches morph-weight animation parity with glTF.
-- Morph-weight animation import. A new `MorphWeightClip` type carries keyframed
-  blend-shape weights for one mesh's targets (row-major `[keyframe][target]`),
-  and `SceneData::morph_animations` collects them. The glTF loader reads
-  `MorphTargetWeights` channels (previously skipped): one clip per morph
-  channel, named after its animation, with `CubicSpline` output collapsed to its
-  value component. Kept apart from `AnimationClip` because the weights drive a
-  mesh's morph target set, not a skeleton.
+- **SVG vector paths** - `loaders::svg::vector_from_path` decodes an SVG into neutral vector paths instead of pixels, alongside the unchanged `texture_from_path`. New types `VectorArt`, `VectorShape`, `SubPath`, `PathSegment`, `FillRule`; feed them into `viewport_lib::OverlayShape::Vector`. Curves stay unflattened, each path's transform is baked in, and coordinates are the SVG canvas frame (X right, Y down), not the Z-up scene convention. Gradient and pattern fills leave the colour unset, and `<text>` and image nodes are skipped.
+- **Stroke paint and width on vector art** - `VectorShape::stroke` carries a `VectorStroke { colour, width }`, so stroke-drawn icon and cursor sets import with their paint instead of as unpainted contours. Width scales with the baked transform (averaged under a non-uniform scale) and stroke opacity folds in group opacity. Cap, join, dash, and miter limit are not carried.
+- **`loaders::svg::vector_from_bytes`** - the in-memory sibling of `vector_from_path`, for SVG art served from a bundle or fetched over the network. Output is identical to the path form. There is no base directory to resolve external references against, which costs nothing here: the nodes that reference external files (images, text) are the ones this loader skips.
+- **Morph targets on `SurfaceMesh`** - `MorphTarget` carries per-vertex position, normal, and tangent displacements, and `SurfaceMesh::morph_targets` holds them in authored order (empty for formats that have none). The glTF loader reads them and reorients into Z-up with the base attributes. Targets are named by index for now: glTF keeps names in `mesh.extras`.
+- **FBX blend shapes** - the FBX loader reads `Deformer`(BlendShape) -> `BlendShapeChannel` -> `Shape` chains, expands each shape's sparse deltas through the control-point map skinning uses, and splits them across material sub-meshes.
+- **Legacy FBX blend shapes** - pre-7.5 exports nest `Shape` nodes inside `Geometry` with no deformer objects, which `fbxcel-dom` does not surface. When the modern walk finds nothing, the loader falls back to the raw geometry tree. Verified against a character carrying the full 52-name ARKit set.
+- **Morph-weight animation** - `MorphWeightClip` carries keyframed blend-shape weights for one mesh (row-major `[keyframe][target]`) in `SceneData::morph_animations`. glTF reads `MorphTargetWeights` channels; FBX reads each channel's `DeformPercent` curve, merges a mesh's independently-keyed curves onto a union timeline, and converts percentages to `0..1`. The two formats are now at parity.
 
 ### Fixed
-- SVG vector-path loading emitted paths the drawing does not paint: a path with
-  `visibility="hidden"` came through as a normal filled shape, disagreeing with
-  what `texture_from_path` rasterizes from the same file. Hidden paths are now
-  skipped.
-- SVG vector-path loading dropped enclosing group opacity, so a shape inside
-  `<g opacity="0.5">` came back fully opaque. Group opacity is now multiplied
-  down the tree and folded into the shape's fill alpha, alongside the path's own
-  `fill-opacity`.
-- `probe_fbx_orientation` and `probe_fbx_uv` were missing the
-  `required-features = ["fbx"]` declaration the other probe examples carry, so
-  any build without the `fbx` feature (including `--no-default-features` test
-  runs for a single loader) failed to compile the examples.
-- glTF morph-target extraction kept a target that carries no `POSITION`
-  displacement (a normals-only face shape) instead of dropping it. Dropping one
-  shifted the indices a weight animation drives by and changed the target count,
-  so a real 52-blendshape face imported 51 geometry targets against a 52-target
-  animation. Absent position deltas are now zero-filled, keeping geometry and
-  animation aligned.
+- **Hidden SVG paths were emitted** - a path with `visibility="hidden"` came through as a normal filled shape, disagreeing with what `texture_from_path` rasterizes from the same file. Hidden paths are now skipped.
+- **Group opacity was dropped on SVG vector art** - a shape inside `<g opacity="0.5">` came back fully opaque. Group opacity now multiplies down the tree into the fill and stroke alpha, alongside the path's own `fill-opacity`.
+- **Two probe examples were missing `required-features`** - `probe_fbx_orientation` and `probe_fbx_uv` failed to compile on any build without the `fbx` feature, including single-loader test runs.
+- **glTF morph targets with no `POSITION` were dropped** - a normals-only face shape shifted every later target index and changed the count, so a 52-blendshape face imported 51 geometry targets against a 52-target animation. Absent position deltas are zero-filled.
 
 ### Tests
-- Cross-format skinning parity test (`tests/fbx_gltf_skinning_parity.rs`): the
-  same rigged Fox asset loaded from FBX and from glTF must produce matching
-  geometry, both in bind pose and when posed by sampling the "Walk" clip. This
-  locks in the FBX axis / unit conversion applied uniformly to mesh transforms,
-  skeleton inverse-binds and animation curves: under `AxisPolicy::HonourHeader`
-  the Z-up fixture converts by identity and must equal the glTF output directly;
-  under `AxisPolicy::ForceYUpRaw` both outputs differ by exactly the same +90
-  degree X rotation. It is the regression guard for the sampled-pose bug where
-  curves stayed in raw file space and the posed geometry came out ~90 degrees
-  rotated against the bind pose. Ships the Fox fixtures (`fox.glb`,
-  `fox_rigged.fbx`, CC-BY 4.0) under `tests/fixtures/`.
+- **Cross-format skinning parity** (`tests/fbx_gltf_skinning_parity.rs`) - the same rigged Fox asset from FBX and from glTF must match in bind pose and when posed from the "Walk" clip, under both `AxisPolicy::HonourHeader` (identity, equal directly) and `AxisPolicy::ForceYUpRaw` (both offset by the same +90 degree X). Guards the sampled-pose bug where curves stayed in raw file space. Ships the Fox fixtures (CC-BY 4.0) under `tests/fixtures/`.
 
 ### Internal
-- Reformatted `build_fbx_scene` (its body was indented one level too deep),
-  `lightmap.rs` and the `probe_fbx_uv` example to satisfy `cargo fmt`. No
-  behavioural change.
+- **Formatting** - reformatted `build_fbx_scene`, `lightmap.rs`, and the `probe_fbx_uv` example to satisfy `cargo fmt`. No behavioural change.
 
 ## [0.6.0] - 2026-08-12
 
@@ -133,8 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first authored UV layer (UV0), and UV value ranges are never a selection
   signal. It replaces the previous heuristic (reject channels whose values
   exceed a magnitude limit, then prefer the largest-area channel). A layer is
-  only skipped when it is not a texture coordinate at all — a packed per-vertex
-  scalar that holds one axis constant across the mesh (a wind phase) — in which
+  only skipped when it is not a texture coordinate at all : a packed per-vertex
+  scalar that holds one axis constant across the mesh (a wind phase) : in which
   case the next layer is used. `VIEWPORT_FBX_UV_CHANNEL=<n>` still forces a
   channel for A/B testing.
 

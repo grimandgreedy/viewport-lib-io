@@ -76,19 +76,7 @@ pub fn vector_from_path(path: &Path) -> Result<VectorArt, IoError> {
         let bytes = std::fs::read(path)?;
         let mut options = resvg::usvg::Options::default();
         options.resources_dir = path.parent().map(std::path::Path::to_path_buf);
-
-        let tree = resvg::usvg::Tree::from_data(&bytes, &options)
-            .map_err(|error| IoError::Parse(format!("failed to parse SVG: {error}")))?;
-
-        let size = tree.size();
-        let mut shapes = Vec::new();
-        let root = tree.root();
-        collect_shapes(root, root.opacity().get(), &mut shapes);
-
-        Ok(VectorArt {
-            shapes,
-            size: [size.width(), size.height()],
-        })
+        vector_from_data(&bytes, &options)
     }
 
     #[cfg(not(feature = "svg"))]
@@ -99,6 +87,51 @@ pub fn vector_from_path(path: &Path) -> Result<VectorArt, IoError> {
             context: "SVG vector-path decoding",
         })
     }
+}
+
+/// Load neutral vector paths from in-memory SVG bytes.
+///
+/// The in-memory sibling of [`vector_from_path`], for art served from a cooked
+/// bundle (or fetched over the network for a `wasm32` target) rather than read
+/// from a file. Output is identical to the path form: same shapes, same
+/// coordinates, same paint.
+///
+/// Without a file there is no directory to resolve external references against,
+/// but that costs nothing here: the nodes that reference external files are
+/// images, which this loader skips, and text, which needs a font database fed to
+/// `usvg` either way. Anything the loader does emit is self-contained in the
+/// bytes.
+pub fn vector_from_bytes(bytes: &[u8]) -> Result<VectorArt, IoError> {
+    #[cfg(feature = "svg")]
+    {
+        vector_from_data(bytes, &resvg::usvg::Options::default())
+    }
+
+    #[cfg(not(feature = "svg"))]
+    {
+        let _ = bytes;
+        Err(IoError::MissingFeature {
+            feature: "svg",
+            context: "SVG vector-path decoding",
+        })
+    }
+}
+
+/// Parse SVG bytes and walk the resulting tree into neutral vector shapes.
+#[cfg(feature = "svg")]
+fn vector_from_data(bytes: &[u8], options: &resvg::usvg::Options) -> Result<VectorArt, IoError> {
+    let tree = resvg::usvg::Tree::from_data(bytes, options)
+        .map_err(|error| IoError::Parse(format!("failed to parse SVG: {error}")))?;
+
+    let size = tree.size();
+    let mut shapes = Vec::new();
+    let root = tree.root();
+    collect_shapes(root, root.opacity().get(), &mut shapes);
+
+    Ok(VectorArt {
+        shapes,
+        size: [size.width(), size.height()],
+    })
 }
 
 /// Recurse the node tree, appending a `VectorShape` for each painted path.
@@ -533,5 +566,34 @@ mod tests {
             "group opacity times stroke-opacity: {}",
             stroke.colour[3]
         );
+    }
+
+    #[cfg(feature = "svg")]
+    #[test]
+    fn bytes_and_path_decode_to_the_same_art() {
+        let path = temp_path("svg_vector_bytes");
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+  <path d="M0 0 H10 V10 H0 Z M2 2 H8 V8 H2 Z" fill="#ff0000" fill-rule="evenodd"/>
+  <path d="M0 0 C 0 5, 5 10, 10 10" fill="none" stroke="#0000ff" stroke-width="2"/>
+</svg>"##;
+
+        std::fs::write(&path, svg).unwrap();
+        let from_path = vector_from_path(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let from_bytes = vector_from_bytes(svg.as_bytes()).unwrap();
+
+        assert_eq!(from_bytes, from_path, "same art whichever way it is read");
+        assert_eq!(from_bytes.shapes.len(), 2);
+        assert!(from_bytes.shapes[1].stroke.is_some(), "stroke survives");
+    }
+
+    #[cfg(feature = "svg")]
+    #[test]
+    fn invalid_svg_bytes_return_a_parse_error() {
+        let err = vector_from_bytes(b"<svg").unwrap_err();
+        match err {
+            IoError::Parse(message) => assert!(message.contains("failed to parse SVG")),
+            other => panic!("expected Parse error, got {other:?}"),
+        }
     }
 }
