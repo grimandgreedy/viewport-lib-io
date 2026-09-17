@@ -40,6 +40,9 @@ ensight = []
 tecplot = []
 cgns = ["dep:hdf5", "dep:hdf5-sys"]
 netcdf = ["dep:netcdf-reader"]
+# Shared invariant checks and in-memory fixture builders for loader tests.
+# Deliberately outside `all-formats`: it is test scaffolding, not a format.
+testkit = []
 all-formats = ["png", "jpeg", "tga", "bmp", "svg", "hdr", "exr", "stl", "obj", "msh", "gltf", "fbx", "bvh", "ply", "csv", "numpy", "raw", "vtk", "xdmf", "exodus", "ensight", "tecplot", "cgns", "netcdf"]
 
 [dependencies]
