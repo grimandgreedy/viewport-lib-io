@@ -1,16 +1,9 @@
 use crate::error::IoError;
 
-use vtkio::Error as VtkError;
-use vtkio::model::Error as VtkModelError;
-
 #[derive(thiserror::Error, Debug)]
 pub enum ReadError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("VTK parse error: {0}")]
-    Parse(#[from] VtkError),
-    #[error("VTK model error: {0}")]
-    Model(#[from] VtkModelError),
     #[error("Unsupported format: {0}")]
     UnsupportedFormat(String),
     #[error("Empty dataset")]

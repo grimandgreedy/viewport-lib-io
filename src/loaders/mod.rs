@@ -11,15 +11,7 @@ pub mod bvh;
 /// CGNS dataset decoding.
 #[cfg(feature = "cgns")]
 pub mod cgns;
-#[cfg(any(
-    feature = "cgns",
-    feature = "tecplot",
-    feature = "xdmf",
-    feature = "exodus",
-    feature = "ensight",
-    feature = "netcdf",
-    feature = "vtk"
-))]
+#[cfg(feature = "_scientific-common")]
 mod common;
 
 /// CSV point-set decoding.
@@ -27,15 +19,7 @@ mod common;
 pub mod csv;
 
 /// Shared loader error types.
-#[cfg(any(
-    feature = "cgns",
-    feature = "tecplot",
-    feature = "xdmf",
-    feature = "exodus",
-    feature = "ensight",
-    feature = "netcdf",
-    feature = "vtk"
-))]
+#[cfg(feature = "_scientific-common")]
 mod error;
 
 /// EnSight Gold dataset decoding.
@@ -83,7 +67,7 @@ pub mod numpy;
 pub mod obj;
 
 /// Shared PVD/timestep helpers for scientific loaders.
-#[cfg(any(feature = "vtk", feature = "xdmf", feature = "ensight"))]
+#[cfg(feature = "_scientific-common")]
 pub mod pvd;
 
 /// PLY point-set decoding.

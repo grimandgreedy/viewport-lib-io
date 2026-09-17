@@ -6,7 +6,7 @@ use crate::types::{
 };
 
 /// Structured scalar volume data for scientific dataset loaders.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug)]
 pub struct VolumeGrid {
     /// Point dimensions `[nx, ny, nz]`.
     pub dims: [u32; 3],
@@ -19,7 +19,7 @@ pub struct VolumeGrid {
 }
 
 /// Geometry model for a structured volume.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug)]
 pub enum VolumeGeometry {
     /// Uniform voxel spacing.
     Uniform { origin: [f32; 3], spacing: [f32; 3] },
@@ -125,7 +125,7 @@ impl VolumeGrid {
 }
 
 /// Internal scientific dataset model used by several source loaders.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug)]
 pub struct Dataset {
     /// Vertex positions in world space.
     pub positions: Vec<[f32; 3]>,
@@ -140,12 +140,10 @@ pub struct Dataset {
     /// Per-halfedge scalar fields.
     pub edge_data: HashMap<String, Vec<f32>>,
     /// Sparse voxel grid representation.
-    #[serde(skip)]
     pub sparse_volume: Option<Box<SparseGrid>>,
     /// Optional structured volume representation.
     pub volume: Option<VolumeGrid>,
     /// Optional unstructured volume mesh.
-    #[serde(skip)]
     pub volume_mesh: Option<Box<VolumeMesh>>,
 }
 

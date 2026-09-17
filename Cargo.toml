@@ -33,13 +33,18 @@ ply = []
 csv = []
 numpy = ["dep:flate2"]
 raw = ["dep:serde", "dep:serde_json"]
-vtk = ["dep:vtkio"]
-xdmf = ["dep:quick-xml", "dep:hdf5", "dep:hdf5-sys"]
-exodus = ["dep:hdf5", "dep:hdf5-sys"]
-ensight = []
-tecplot = []
-cgns = ["dep:hdf5", "dep:hdf5-sys"]
-netcdf = ["dep:netcdf-reader"]
+vtk = ["dep:vtkio", "_scientific-common"]
+xdmf = ["dep:hdf5", "dep:hdf5-sys", "_scientific-common"]
+exodus = ["dep:hdf5", "dep:hdf5-sys", "_scientific-common"]
+ensight = ["_scientific-common"]
+tecplot = ["_scientific-common"]
+cgns = ["dep:hdf5", "dep:hdf5-sys", "_scientific-common"]
+netcdf = ["dep:netcdf-reader", "_scientific-common"]
+# Plumbing every scientific loader compiles: the shared ReadError, the PVD
+# time-series reader (which parses XML), and the internal Dataset model. Not a
+# format, so it is not in all-formats and is not meant to be enabled directly:
+# the format features above pull it in.
+_scientific-common = ["dep:quick-xml"]
 # Shared invariant checks and in-memory fixture builders for loader tests.
 # Deliberately outside `all-formats`: it is test scaffolding, not a format.
 testkit = []
