@@ -206,7 +206,7 @@ pub fn chain_breakdown(path: &Path, options: FbxLoadOptions) -> Result<Vec<FbxMe
         let (file_axis, unit_scale) = get_axis_transform(&document, options.axis_policy);
 
         let mut chains = Vec::new();
-        for object in document.objects() {
+        for object in objects_in_stable_order(&document) {
             if let TypedObjectHandle::Model(TypedModelHandle::Mesh(mesh_model)) = object.get_typed()
             {
                 chains.push(build_chain_breakdown(
@@ -296,20 +296,10 @@ fn build_chain_breakdown(
         };
     }
 
-    let (effective_axis, axis_veto_fired) = match options.axis_policy {
-        AxisPolicy::HeuristicVeto => {
-            let cum_y = cumulative.transform_vector3(glam::Vec3::Y);
-            let veto = cum_y.z > 0.9 && cum_y.y.abs() < 0.5;
-            if veto {
-                (glam::Mat4::IDENTITY, true)
-            } else {
-                (*file_axis, false)
-            }
-        }
-        AxisPolicy::HonourHeader | AxisPolicy::ForceYUpRaw | AxisPolicy::PassThrough => {
-            (*file_axis, false)
-        }
-    };
+    // Same decision the loader makes, from the same helper, so the diagnostic
+    // cannot drift from what was actually applied.
+    let (effective_axis, axis_veto_fired) =
+        effective_axis_transform(options.axis_policy, file_axis, &cumulative);
 
     FbxMeshChain {
         mesh_name: leaf_name,
@@ -442,7 +432,7 @@ fn build_fbx_scene(
     let mut skeletons: Vec<Skeleton> = Vec::new();
     let mut material_map: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
 
-    for object in document.objects() {
+    for object in objects_in_stable_order(&document) {
         if let TypedObjectHandle::Model(TypedModelHandle::Mesh(mesh_model)) = object.get_typed() {
             let model_name = mesh_model
                 .name()
@@ -1140,6 +1130,50 @@ fn extract_local_components(
 /// position matches what a runtime engine using FBX cumulative
 /// transforms would produce.
 ///
+/// The axis transform to apply to one mesh leaf, and whether the heuristic
+/// veto suppressed the file-level conversion.
+///
+/// Only [`AxisPolicy::HeuristicVeto`] varies this per leaf. The others apply
+/// `file_axis` as computed for the file as a whole.
+///
+/// The veto: if the cumulative chain (Lcl Rotation on the mesh or any
+/// Null/LimbNode ancestor) already lands +Y on +Z, applying the file-level
+/// Y-to-Z fix on top would double it up. The check is signed, deliberately:
+///
+/// - cumulative +Y lands on +Z: the artist already converted Y-up to Z-up at
+///   the vertex level, so suppress the +90 degree X and return identity.
+/// - cumulative +Y lands on -Z: the artist baked a rotation targeting a Y-up
+///   consumer (a Z-up authored mesh wrapped in a -90 degree X Null for Unity
+///   ingestion). Do not veto: the +90 degree X composes with their -90 degree
+///   X to identity.
+/// - cumulative +Y stays near +Y: ordinary Y-up content, so apply the
+///   +90 degree X.
+///
+/// The `y.abs() < 0.5` half of the test keeps a chain that merely tilts towards
+/// +Z from tripping the veto: both components have to agree that the chain is a
+/// genuine Y-to-Z conversion.
+#[cfg(feature = "fbx")]
+fn effective_axis_transform(
+    policy: AxisPolicy,
+    file_axis: &glam::Mat4,
+    cumulative: &glam::Mat4,
+) -> (glam::Mat4, bool) {
+    match policy {
+        AxisPolicy::HeuristicVeto => {
+            let cumulative_y = cumulative.transform_vector3(glam::Vec3::Y);
+            let already_z_up = cumulative_y.z > 0.9 && cumulative_y.y.abs() < 0.5;
+            if already_z_up {
+                (glam::Mat4::IDENTITY, true)
+            } else {
+                (*file_axis, false)
+            }
+        }
+        AxisPolicy::HonourHeader | AxisPolicy::ForceYUpRaw | AxisPolicy::PassThrough => {
+            (*file_axis, false)
+        }
+    }
+}
+
 fn extract_node_transform(
     mesh_model: &fbxcel_dom::v7400::object::model::MeshHandle<'_>,
     axis_transform: &glam::Mat4,
@@ -1185,38 +1219,8 @@ fn extract_node_transform(
         };
     }
 
-    // Decide the effective axis transform for this leaf. Only the
-    // signed-veto policy varies it per-leaf; the others apply
-    // `axis_transform` as-is (it was already computed for the file as
-    // a whole in `get_axis_transform`).
-    let effective_axis = match options.axis_policy {
-        AxisPolicy::HeuristicVeto => {
-            // Per-leaf axis-transform veto: if the cumulative chain
-            // (Lcl Rotation on the mesh or any Null/LimbNode ancestor)
-            // already lands +Y on **+Z**, the scene-level Y→Z fix from
-            // `get_axis_transform` would double up. The check is
-            // **signed** intentionally:
-            //
-            // - `cumulative_y → +Z`: artist already converted Y-up to
-            //   Z-up at the vertex level. Suppress our +90° X.
-            // - `cumulative_y → -Z`: artist baked a rotation targeting
-            //   a Y-up consumer (e.g. a Z-up authored mesh wrapped in
-            //   a `-90° X` Null for Unity ingestion). Don't veto; our
-            //   +90° X composes with their -90° X to identity.
-            // - `cumulative_y` close to Y: standard Y-up raw content.
-            //   Apply our +90° X.
-            let cumulative_y_in_world = cumulative.transform_vector3(glam::Vec3::Y);
-            let already_z_up = cumulative_y_in_world.z > 0.9 && cumulative_y_in_world.y.abs() < 0.5;
-            if already_z_up {
-                glam::Mat4::IDENTITY
-            } else {
-                *axis_transform
-            }
-        }
-        AxisPolicy::HonourHeader | AxisPolicy::ForceYUpRaw | AxisPolicy::PassThrough => {
-            *axis_transform
-        }
-    };
+    let (effective_axis, _veto_fired) =
+        effective_axis_transform(options.axis_policy, axis_transform, &cumulative);
 
     let scale = glam::Mat4::from_scale(glam::Vec3::splat(unit_scale));
     match options.cumulative_order {
@@ -1476,8 +1480,8 @@ fn assign_hierarchy(document: &Document, meshes: &mut [IoMesh]) {
         std::collections::HashMap::new();
 
     let mut mesh_cursor = 0;
-    let model_ids: Vec<(i64, String)> = document
-        .objects()
+    let model_ids: Vec<(i64, String)> = objects_in_stable_order(document)
+        .into_iter()
         .filter_map(|object| {
             if let TypedObjectHandle::Model(TypedModelHandle::Mesh(mesh)) = object.get_typed() {
                 Some((
@@ -1503,7 +1507,7 @@ fn assign_hierarchy(document: &Document, meshes: &mut [IoMesh]) {
     }
 
     mesh_cursor = 0;
-    for object in document.objects() {
+    for object in objects_in_stable_order(document) {
         if let TypedObjectHandle::Model(TypedModelHandle::Mesh(mesh_model)) = object.get_typed() {
             if mesh_cursor >= meshes.len() {
                 break;
@@ -1857,6 +1861,27 @@ fn extract_skin(
     })
 }
 
+/// The document's objects in a stable order: ascending FBX object id.
+///
+/// `Document::objects()` yields its keys from a `HashMap`, so the order varies
+/// between decodes of the same file, even within one process. Anything that
+/// appends to an ordered output walks this instead, so a positional index
+/// recorded against one decode still addresses the same thing in the next.
+/// Object ids come from the file, so the order is also the same across runs and
+/// machines, and it follows the file's own numbering rather than being
+/// arbitrary.
+///
+/// Code that only looks an object up, or fills a map keyed by object id, does
+/// not need this.
+#[cfg(feature = "fbx")]
+fn objects_in_stable_order(
+    document: &Document,
+) -> Vec<fbxcel_dom::v7400::object::ObjectHandle<'_>> {
+    let mut objects: Vec<_> = document.objects().collect();
+    objects.sort_by_key(|object| object.object_id().raw());
+    objects
+}
+
 #[cfg(feature = "fbx")]
 fn lookup_object<'a>(
     document: &'a Document,
@@ -1961,7 +1986,7 @@ fn extract_animations(
     unit_scale: f32,
 ) -> Vec<AnimationClip> {
     let mut anim_stacks: Vec<fbxcel_dom::v7400::object::ObjectHandle<'_>> = Vec::new();
-    for obj in document.objects() {
+    for obj in objects_in_stable_order(document) {
         let c = obj.class();
         if c == "AnimStack" || c == "AnimationStack" {
             anim_stacks.push(obj);
@@ -2411,10 +2436,11 @@ fn extract_morph_weight_clips(
     if mesh_targets.is_empty() {
         return Vec::new();
     }
-    let anim_stacks: Vec<fbxcel_dom::v7400::object::ObjectHandle<'_>> = document
-        .objects()
-        .filter(|o| matches!(o.class(), "AnimStack" | "AnimationStack"))
-        .collect();
+    let anim_stacks: Vec<fbxcel_dom::v7400::object::ObjectHandle<'_>> =
+        objects_in_stable_order(document)
+            .into_iter()
+            .filter(|o| matches!(o.class(), "AnimStack" | "AnimationStack"))
+            .collect();
 
     let mut out: Vec<MorphWeightClip> = Vec::new();
     for stack in anim_stacks {
@@ -2561,6 +2587,103 @@ fn read_mat4(node: &fbxcel::tree::v7400::NodeHandle<'_>, name: &str) -> Option<g
 #[cfg(all(test, feature = "fbx"))]
 mod rig_reconcile_tests {
     use super::*;
+
+    /// +90 degrees about X: the file-level Y-up to Z-up conversion this loader
+    /// applies when the header says the content is Y-up.
+    fn y_to_z() -> glam::Mat4 {
+        glam::Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2)
+    }
+
+    fn maps_y_to(m: &glam::Mat4) -> glam::Vec3 {
+        m.transform_vector3(glam::Vec3::Y)
+    }
+
+    #[test]
+    fn veto_fires_when_the_chain_already_lands_y_on_plus_z() {
+        // The artist converted Y-up to Z-up at the vertex level, so applying
+        // the file conversion on top would rotate the mesh twice.
+        let cumulative = glam::Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2);
+        assert!(maps_y_to(&cumulative).z > 0.9, "chain maps +Y to +Z");
+
+        let (axis, vetoed) =
+            effective_axis_transform(AxisPolicy::HeuristicVeto, &y_to_z(), &cumulative);
+
+        assert!(vetoed, "the veto should fire");
+        assert_eq!(axis, glam::Mat4::IDENTITY);
+    }
+
+    #[test]
+    fn veto_does_not_fire_when_the_chain_lands_y_on_minus_z() {
+        // A Z-up mesh wrapped in a -90 degree X Null for a Y-up consumer. Our
+        // +90 degree X composes with their -90 degree X back to identity, so
+        // vetoing here double-applies the artist's intent: the Triumph_Arc case.
+        let cumulative = glam::Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+        assert!(maps_y_to(&cumulative).z < -0.9, "chain maps +Y to -Z");
+
+        let (axis, vetoed) =
+            effective_axis_transform(AxisPolicy::HeuristicVeto, &y_to_z(), &cumulative);
+
+        assert!(!vetoed, "the veto must stay signed, not absolute");
+        assert_eq!(axis, y_to_z());
+    }
+
+    #[test]
+    fn veto_does_not_fire_on_ordinary_y_up_content() {
+        let (axis, vetoed) =
+            effective_axis_transform(AxisPolicy::HeuristicVeto, &y_to_z(), &glam::Mat4::IDENTITY);
+
+        assert!(!vetoed);
+        assert_eq!(axis, y_to_z());
+    }
+
+    #[test]
+    fn veto_does_not_fire_on_a_chain_merely_tilted_towards_z() {
+        // 45 degrees puts +Y at z = 0.707, under the 0.9 threshold: a tilted
+        // placement is not an axis conversion.
+        let cumulative = glam::Mat4::from_rotation_x(std::f32::consts::FRAC_PI_4);
+        let y = maps_y_to(&cumulative);
+        assert!(y.z > 0.7 && y.z < 0.9, "tilted, not converted: {y:?}");
+
+        let (axis, vetoed) =
+            effective_axis_transform(AxisPolicy::HeuristicVeto, &y_to_z(), &cumulative);
+
+        assert!(!vetoed, "a 45 degree tilt is under the threshold");
+        assert_eq!(axis, y_to_z());
+    }
+
+    #[test]
+    fn only_the_heuristic_policy_vetoes() {
+        // A chain that would trip the veto, under every other policy.
+        let cumulative = glam::Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2);
+        for policy in [
+            AxisPolicy::HonourHeader,
+            AxisPolicy::ForceYUpRaw,
+            AxisPolicy::PassThrough,
+        ] {
+            let (axis, vetoed) = effective_axis_transform(policy, &y_to_z(), &cumulative);
+            assert!(!vetoed, "{policy:?} must not veto");
+            assert_eq!(axis, y_to_z(), "{policy:?} applies the file axis as given");
+        }
+    }
+
+    #[test]
+    fn a_vetoed_leaf_keeps_its_chain_orientation() {
+        // What the veto is for, end to end on the matrices: a chain that
+        // already converts, composed with the effective axis, lands +Y on +Z
+        // exactly once. Composing the file axis instead would overshoot to -Y.
+        let cumulative = glam::Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2);
+        let (effective, _) =
+            effective_axis_transform(AxisPolicy::HeuristicVeto, &y_to_z(), &cumulative);
+
+        let vetoed = maps_y_to(&(effective * cumulative));
+        assert!(vetoed.z > 0.99, "converted once: {vetoed:?}");
+
+        let doubled = maps_y_to(&(y_to_z() * cumulative));
+        assert!(
+            doubled.y < -0.99,
+            "converting twice overshoots: {doubled:?}"
+        );
+    }
 
     fn skel(bones: &[(&str, Option<u8>)]) -> Skeleton {
         Skeleton {

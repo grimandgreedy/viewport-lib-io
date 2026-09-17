@@ -27,8 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by index (`target_<n>`) for now: glTF stores names in `mesh.extras`, which
   needs the `extras` feature and raw-JSON parsing, so named targets are a
   follow-up.
-- FBX blend-shape import. The FBX loader now reads `Deformer`(BlendShape) →
-  `BlendShapeChannel` → `Shape` chains, expanding each shape's sparse
+- FBX blend-shape import. The FBX loader now reads `Deformer`(BlendShape) ->
+  `BlendShapeChannel` -> `Shape` chains, expanding each shape's sparse
   `Indexes` / `Vertices` into dense per-vertex deltas through the same
   control-point map skinning uses, and splitting them across material
   sub-meshes. Named after the blend-shape channel. Verified against a real
@@ -42,8 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Indexes` / `Vertices` layout. Verified against a real character carrying the
   full 52-name ARKit set as legacy nested shapes.
 - FBX blend-shape weight animation import. The FBX loader now reads each
-  `BlendShapeChannel`'s `DeformPercent` animation curve (walking `AnimStack →
-  AnimLayer → AnimCurveNode`, the same traversal the bone tracks use) and emits
+  `BlendShapeChannel`'s `DeformPercent` animation curve (walking `AnimStack ->
+  AnimLayer -> AnimCurveNode`, the same traversal the bone tracks use) and emits
   a `MorphWeightClip` per animated mesh, correlating a curve to its target by
   the channel name. FBX keys each channel independently, so a mesh's curves are
   merged onto a union timeline and sampled per key into the dense row-major
@@ -106,8 +106,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first authored UV layer (UV0), and UV value ranges are never a selection
   signal. It replaces the previous heuristic (reject channels whose values
   exceed a magnitude limit, then prefer the largest-area channel). A layer is
-  only skipped when it is not a texture coordinate at all — a packed per-vertex
-  scalar that holds one axis constant across the mesh (a wind phase) — in which
+  only skipped when it is not a texture coordinate at all : a packed per-vertex
+  scalar that holds one axis constant across the mesh (a wind phase) : in which
   case the next layer is used. `VIEWPORT_FBX_UV_CHANNEL=<n>` still forces a
   channel for A/B testing.
 
