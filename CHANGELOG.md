@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Cross-format skinning parity** (`tests/fbx_gltf_skinning_parity.rs`) - the same rigged Fox asset from FBX and from glTF must match in bind pose and when posed from the "Walk" clip, under both `AxisPolicy::HonourHeader` (identity, equal directly) and `AxisPolicy::ForceYUpRaw` (both offset by the same +90 degree X). Guards the sampled-pose bug where curves stayed in raw file space. Ships the Fox fixtures (CC-BY 4.0) under `tests/fixtures/`.
 
 ### Internal
+- **The glTF loader is a module** - `loaders/gltf.rs` became `loaders/gltf/` with one file per concern: `node`, `primitive`, `material`, `skin`, `animation`, `axis` (the Y-up to Z-up conversion), and `mod.rs` holding the two entrypoints. Each module carries the tests for what it does, so the 1150-line test block that made up half the old file now sits beside the code it covers. `scene_from_path` and `scene_from_slice` are unchanged, and no decoding logic moved with it.
 - **The FBX axis veto lives in one function** - `effective_axis_transform` is now the single implementation of the per-leaf veto rule, called by both the loader and the `chain_breakdown` diagnostic. The two carried copy-pasted thresholds, so the tool that exists to explain the loader's axis decision could have drifted from the decision actually applied.
 - **Formatting** - reformatted `build_fbx_scene`, `lightmap.rs`, and the `probe_fbx_uv` example to satisfy `cargo fmt`. No behavioural change.
 
