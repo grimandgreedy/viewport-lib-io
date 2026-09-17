@@ -14,8 +14,10 @@ use fbxcel_dom::v7400::object::model::TypedModelHandle;
 use crate::error::IoError;
 use crate::types::{
     AlphaMode, AnimationChannel, AnimationClip, AnimationInterpolation, AnimationSampler,
-    AnimationTrack, AnimationTrackValues, IoMaterial, IoMesh, IoScene, Joint, MorphTarget,
-    MorphWeightClip, Skeleton, SkinWeights, SurfaceMesh, TextureData, TextureSource,
+    AnimationTrack, AnimationTrackValues, AttributeData, AttributeDomain, IoMaterial, IoMesh,
+    IoScene, Joint, MATERIAL_TEXTURE_SLOTS, MaterialTextureSlot, MorphTarget, MorphWeightClip,
+    Skeleton, SkinWeights, SurfaceMesh, TextureData, TextureFilter, TextureSampler, TextureSource,
+    UvTransform, WrapMode,
 };
 
 /// How the loader decides whether to apply the Y-up to Z-up axis transform.
@@ -428,9 +430,15 @@ fn build_fbx_scene(
     let (axis_transform, unit_scale) = get_axis_transform(&document, options.axis_policy);
 
     let mut meshes = Vec::new();
-    let mut materials = Vec::new();
+    let mut materials: Vec<IoMaterial> = Vec::new();
     let mut skeletons: Vec<Skeleton> = Vec::new();
     let mut material_map: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+    // A texture names the UV layer it samples; a mesh decides which of its
+    // layers is UV0 and which is UV1. Neither knows about the other while it is
+    // being read, so the names are collected from both sides and matched up
+    // once every object has been walked.
+    let mut pending_uv_sets: Vec<(usize, MaterialTextureSlot, String)> = Vec::new();
+    let mut uv_set_indices: HashMap<String, u32> = HashMap::new();
 
     for object in objects_in_stable_order(&document) {
         if let TypedObjectHandle::Model(TypedModelHandle::Mesh(mesh_model)) = object.get_typed() {
@@ -449,9 +457,12 @@ fn build_fbx_scene(
                     if let Some(&index) = material_map.get(&material_id) {
                         index
                     } else {
-                        let material = convert_material(&material_object, parent_dir);
+                        let converted = convert_material(&material_object, parent_dir);
                         let index = materials.len();
-                        materials.push(material);
+                        for (slot, uv_set_name) in converted.uv_set_names {
+                            pending_uv_sets.push((index, slot, uv_set_name));
+                        }
+                        materials.push(converted.material);
                         material_map.insert(material_id, index);
                         index
                     }
@@ -512,6 +523,11 @@ fn build_fbx_scene(
             // every fragment in whatever atlas region (0, 70 mod 1)
             // ends up at — typically the transparent corner.
             let mut uv_candidates: Vec<Vec<[f32; 2]>> = Vec::new();
+            // Each candidate's layer name, parallel to `uv_candidates`. A
+            // texture names the layer it samples by name, and a layer that turns
+            // out not to be a UV set is emitted as a named attribute, so both
+            // ends need it.
+            let mut uv_layer_names: Vec<String> = Vec::new();
             let mut material_indices_per_vert: Option<Vec<usize>> = None;
 
             // Walk EVERY layer the geometry exposes. FBX commonly
@@ -558,13 +574,13 @@ fn build_fbx_scene(
                                 let mut ok = true;
                                 for triangle_vertex in triangle_vertices.triangle_vertex_indices() {
                                     match uv_data.uv(&triangle_vertices, triangle_vertex) {
-                                        // FBX stores UVs with the V origin at the bottom (the
-                                        // OpenGL / Maya convention); the renderer samples with V
-                                        // at the top (wgpu), matching the glTF loader which reads
-                                        // tex-coords unflipped. Flip V so an FBX atlas lands the
-                                        // same way round as a glTF one, rather than mirrored top
-                                        // to bottom (a face's features on the wrong geometry).
-                                        Ok(uv) => uvs.push([uv.x as f32, 1.0 - uv.y as f32]),
+                                        // The file's own coordinates, V unflipped.
+                                        // A layer emitted as a UV set is flipped
+                                        // once it is chosen; a layer that turns
+                                        // out to be packed per-vertex data is
+                                        // not a texture coordinate and must not
+                                        // be flipped at all.
+                                        Ok(uv) => uvs.push([uv.x as f32, uv.y as f32]),
                                         Err(_) => {
                                             ok = false;
                                             break;
@@ -573,6 +589,14 @@ fn build_fbx_scene(
                                 }
                                 if ok && uvs.len() == positions.len() {
                                     uv_candidates.push(uvs);
+                                    uv_layer_names.push(
+                                        uv_handle
+                                            .name()
+                                            .map(std::borrow::ToOwned::to_owned)
+                                            .unwrap_or_else(|_| {
+                                                format!("uv{}", uv_candidates.len() - 1)
+                                            }),
+                                    );
                                 }
                             }
                         }
@@ -708,7 +732,7 @@ fn build_fbx_scene(
             };
             if log_uv && !uv_candidates.is_empty() {
                 eprintln!(
-                    "VIEWPORT_FBX_LOG_UV: model '{model_name}' ({} fbx material(s)): {} UV channel(s) found:",
+                    "VIEWPORT_FBX_LOG_UV: model '{model_name}' ({} fbx material(s)): {} UV channel(s) found (file coordinates, V not yet flipped):",
                     model_materials.len(),
                     uv_candidates.len()
                 );
@@ -764,12 +788,59 @@ fn build_fbx_scene(
                     None => eprintln!("VIEWPORT_FBX_LOG_UV: no second UV set"),
                 }
             }
+            // Which layer name ended up as which set, for the textures that
+            // name one. Meshes sharing a material share their layer naming in
+            // practice, so the first mesh to claim a name decides it.
+            for (set, index) in [(0u32, primary), (1, secondary)] {
+                if let Some(name) = index.and_then(|index| uv_layer_names.get(index)) {
+                    uv_set_indices.entry(name.clone()).or_insert(set);
+                }
+            }
+
             let mut uv_candidates: Vec<Option<Vec<[f32; 2]>>> =
                 uv_candidates.into_iter().map(Some).collect();
+            // FBX stores UVs with the V origin at the bottom (the OpenGL / Maya
+            // convention); the renderer samples with V at the top (wgpu),
+            // matching the glTF loader which reads tex-coords unflipped. Flip V
+            // on the sets emitted as texture coordinates so an FBX atlas lands
+            // the same way round as a glTF one, rather than mirrored top to
+            // bottom (a face's features on the wrong geometry).
+            let take_uv_set = |candidates: &mut Vec<Option<Vec<[f32; 2]>>>, index: usize| {
+                candidates.get_mut(index).and_then(Option::take).map(|uvs| {
+                    uvs.into_iter()
+                        .map(|uv| [uv[0], 1.0 - uv[1]])
+                        .collect::<Vec<_>>()
+                })
+            };
             let uvs_vec: Option<Vec<[f32; 2]>> =
-                primary.and_then(|idx| uv_candidates.get_mut(idx).and_then(Option::take));
+                primary.and_then(|idx| take_uv_set(&mut uv_candidates, idx));
             let uvs1_vec: Option<Vec<[f32; 2]>> =
-                secondary.and_then(|idx| uv_candidates.get_mut(idx).and_then(Option::take));
+                secondary.and_then(|idx| take_uv_set(&mut uv_candidates, idx));
+
+            // Whatever is left is per-vertex data the file carries in a UV
+            // layer without being a texture coordinate: the packed scalars
+            // `is_texture_coordinate` rejects (a wind phase in V with U held
+            // constant), and any third and later set, which the mesh type does
+            // not carry. Emit each under its layer name rather than dropping it.
+            // Values stay as authored, V unflipped: a packed scalar is not a
+            // texture coordinate and flipping it would corrupt the value. The
+            // third component is padding, since the neutral vector attribute is
+            // three-wide and the source is two.
+            let leftover_layers: Vec<(String, Vec<[f32; 3]>)> = uv_candidates
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, layer)| {
+                    let layer = layer?;
+                    let name = uv_layer_names
+                        .get(index)
+                        .cloned()
+                        .unwrap_or_else(|| format!("uv{index}"));
+                    Some((
+                        name,
+                        layer.into_iter().map(|uv| [uv[0], uv[1], 0.0]).collect(),
+                    ))
+                })
+                .collect();
 
             if let Some(ref material_per_vertex) = material_indices_per_vert {
                 if !model_materials.is_empty() && material_per_vertex.iter().any(|&m| m != 0) {
@@ -848,6 +919,15 @@ fn build_fbx_scene(
                         mesh_data.indices = sub_indices;
                         mesh_data.uvs = sub_uvs;
                         mesh_data.uvs1 = sub_uvs1;
+                        for (name, values) in leftover_layers.iter() {
+                            mesh_data.attributes.insert(
+                                name.clone(),
+                                AttributeData::vectors(
+                                    AttributeDomain::Point,
+                                    vertex_indices.iter().map(|&i| values[i]).collect(),
+                                ),
+                            );
+                        }
                         mesh_data.skin_weights = sub_skin;
                         mesh_data.morph_targets = sub_morphs;
 
@@ -878,6 +958,12 @@ fn build_fbx_scene(
             mesh_data.indices = (0..mesh_data.positions.len() as u32).collect();
             mesh_data.uvs = uvs_vec;
             mesh_data.uvs1 = uvs1_vec;
+            for (name, values) in leftover_layers.iter() {
+                mesh_data.attributes.insert(
+                    name.clone(),
+                    AttributeData::vectors(AttributeDomain::Point, values.clone()),
+                );
+            }
             mesh_data.skin_weights = skin_per_vertex;
             mesh_data.morph_targets = full_morph_targets
                 .into_iter()
@@ -929,6 +1015,30 @@ fn build_fbx_scene(
     // `BlendShapeChannel` weight curves by name (the channel name is the target
     // name). Read straight off the assembled meshes, so a submesh split needs no
     // special handling.
+    // Match each textured slot's UV-set name against the layer names the meshes
+    // emitted. A name that matches nothing leaves the slot on UV0: the file
+    // named a layer this decode did not carry, and UV0 is the set every
+    // consumer has.
+    for (material_index, slot, uv_set_name) in pending_uv_sets {
+        let Some(&uv_set) = uv_set_indices.get(&uv_set_name) else {
+            continue;
+        };
+        if uv_set == 0 {
+            continue;
+        }
+        let slot = slot.index();
+        let material = &mut materials[material_index];
+        match &mut material.uv_transforms[slot] {
+            Some(transform) => transform.uv_set = uv_set,
+            none => {
+                *none = Some(UvTransform {
+                    uv_set,
+                    ..UvTransform::IDENTITY
+                })
+            }
+        }
+    }
+
     let mesh_targets: Vec<(usize, Vec<String>)> = meshes
         .iter()
         .enumerate()
@@ -1344,10 +1454,19 @@ fn opacity_from_transparency(transparency: f32) -> (f32, AlphaMode) {
     }
 }
 
+/// One FBX material converted, with the UV-set *name* each textured slot asks
+/// for. FBX names the layer a texture samples rather than indexing it, and the
+/// layer names belong to a mesh, so resolving a name to a set index waits until
+/// the meshes are decoded.
+struct ConvertedMaterial {
+    material: IoMaterial,
+    uv_set_names: Vec<(MaterialTextureSlot, String)>,
+}
+
 fn convert_material(
     material: &fbxcel_dom::v7400::object::material::MaterialHandle<'_>,
     parent_dir: &Path,
-) -> IoMaterial {
+) -> ConvertedMaterial {
     let props = material.properties();
 
     let diffuse_color = props
@@ -1373,34 +1492,150 @@ fn convert_material(
     let shininess = props.shininess_or_default().ok().unwrap_or(20.0) as f32;
     let roughness = (1.0 - (shininess / 100.0).sqrt()).clamp(0.1, 1.0);
 
-    IoMaterial {
-        name: material
-            .name()
-            .map(std::borrow::ToOwned::to_owned)
-            .unwrap_or_else(|| "fbx_material".into()),
-        base_color,
-        metallic: 0.0,
-        roughness,
-        emissive: [0.0, 0.0, 0.0],
-        emissive_strength: 1.0,
-        opacity,
-        alpha_mode,
-        double_sided: false,
-        base_color_texture: material
-            .diffuse_texture()
-            .and_then(|texture| extract_texture(&texture, parent_dir)),
-        metallic_roughness_texture: None,
-        normal_map_texture: material
-            .normal_map_texture()
-            .and_then(|texture| extract_texture(&texture, parent_dir)),
-        normal_scale: 1.0,
-        ao_texture: None,
-        occlusion_strength: 1.0,
-        emissive_texture: None,
-        // FBX carries its own per-texture UV scale and translation on the
-        // texture node; it is not read yet, so every slot samples plainly.
-        ..IoMaterial::default()
+    let mut uv_transforms = [None; MATERIAL_TEXTURE_SLOTS];
+    let mut samplers = [None; MATERIAL_TEXTURE_SLOTS];
+    let mut uv_set_names = Vec::new();
+
+    // Each textured slot carries its own placement and wrap state on the FBX
+    // texture node, read here into the neutral per-slot records.
+    let mut read_slot = |texture: &fbxcel_dom::v7400::object::texture::TextureHandle<'_>,
+                         slot: MaterialTextureSlot| {
+        let (transform, sampler, uv_set_name) = texture_slot_state(texture);
+        uv_transforms[slot.index()] = transform;
+        samplers[slot.index()] = sampler;
+        if let Some(name) = uv_set_name {
+            uv_set_names.push((slot, name));
+        }
+    };
+
+    let base_color_texture = material.diffuse_texture().and_then(|texture| {
+        read_slot(&texture, MaterialTextureSlot::BaseColour);
+        extract_texture(&texture, parent_dir)
+    });
+    let normal_map_texture = material.normal_map_texture().and_then(|texture| {
+        read_slot(&texture, MaterialTextureSlot::Normal);
+        extract_texture(&texture, parent_dir)
+    });
+
+    ConvertedMaterial {
+        material: IoMaterial {
+            name: material
+                .name()
+                .map(std::borrow::ToOwned::to_owned)
+                .unwrap_or_else(|| "fbx_material".into()),
+            base_color,
+            metallic: 0.0,
+            roughness,
+            emissive: [0.0, 0.0, 0.0],
+            emissive_strength: 1.0,
+            opacity,
+            alpha_mode,
+            double_sided: false,
+            base_color_texture,
+            metallic_roughness_texture: None,
+            normal_map_texture,
+            normal_scale: 1.0,
+            ao_texture: None,
+            occlusion_strength: 1.0,
+            emissive_texture: None,
+            uv_transforms,
+            samplers,
+            ..IoMaterial::default()
+        },
+        uv_set_names,
     }
+}
+
+/// FBX texture placement re-expressed against the flipped V the loader emits.
+///
+/// In the file's own frame the placement maps `uv` to
+/// `translation + rotate(rotation) * (uv * scaling)`, rotating about the UV
+/// origin. The loader hands out `(u, 1 - v)`, so the transform a consumer
+/// applies has to be the same mapping conjugated by that flip: the rotation
+/// negates, the scale is unchanged, and the V offset reflects through the flip
+/// along with the rotated scale. With no rotation this is just
+/// `v_offset = 1 - translation.v - scaling.v`, and a transform that only tiles
+/// (`translation` zero, `scaling` one) comes out unchanged.
+#[cfg(feature = "fbx")]
+fn uv_transform_from_placement(
+    translation: [f32; 2],
+    scaling: [f32; 2],
+    rotation: f32,
+) -> UvTransform {
+    let (sin, cos) = rotation.sin_cos();
+    UvTransform {
+        offset: [
+            translation[0] + sin * scaling[1],
+            1.0 - translation[1] - cos * scaling[1],
+        ],
+        scale: scaling,
+        rotation: -rotation,
+        uv_set: 0,
+    }
+}
+
+/// How one FBX texture samples: its UV placement, its wrap modes, and the name
+/// of the UV layer it reads.
+///
+/// FBX composes placement as translation, rotation and scaling about the
+/// texture's rotation and scaling pivots. With the pivots at their default
+/// origin, that is translate after rotate after scale about the UV origin,
+/// which is [`UvTransform`]'s own convention, so the three properties map
+/// across directly. A file setting a non-default pivot is not represented:
+/// there is nowhere to put it, and approximating it silently would be worse
+/// than leaving the placement where the pivot-free reading puts it. `UVSwap` is
+/// not carried either.
+///
+/// The one conversion is V. The loader flips V on the UV sets it emits, so the
+/// placement has to be re-expressed against flipped coordinates or an offset
+/// texture lands mirrored: the rotation negates and the V offset reflects. A
+/// pure tiling transform is unaffected, which is the common case.
+fn texture_slot_state(
+    texture: &fbxcel_dom::v7400::object::texture::TextureHandle<'_>,
+) -> (Option<UvTransform>, Option<TextureSampler>, Option<String>) {
+    let props = texture.properties();
+
+    let translation = props
+        .translation_or_default()
+        .map(|t| [t.x as f32, t.y as f32])
+        .unwrap_or([0.0, 0.0]);
+    let scaling = props
+        .scaling_or_default()
+        .map(|s| [s.x as f32, s.y as f32])
+        .unwrap_or([1.0, 1.0]);
+    // FBX Euler angles are degrees; only the Z angle turns a 2D UV plane.
+    let rotation = props
+        .rotation_or_default()
+        .map(|r| (r[2] as f32).to_radians())
+        .unwrap_or(0.0);
+
+    let transform = uv_transform_from_placement(translation, scaling, rotation);
+
+    let wrap = |mode| match mode {
+        fbxcel_dom::v7400::data::texture::WrapMode::Clamp => WrapMode::ClampToEdge,
+        fbxcel_dom::v7400::data::texture::WrapMode::Repeat => WrapMode::Repeat,
+    };
+    // FBX has no filter concept to map, so filtering stays at the neutral
+    // default and only the wrap modes come from the file.
+    let sampler = TextureSampler {
+        wrap_u: props.wrap_mode_u_or_default().map(wrap).unwrap_or_default(),
+        wrap_v: props.wrap_mode_v_or_default().map(wrap).unwrap_or_default(),
+        filter: TextureFilter::default(),
+    };
+
+    // "default" is what fbxcel-dom reports for a texture that names no UV set,
+    // and is not a layer name worth resolving.
+    let uv_set_name = props
+        .uv_set_or_default()
+        .ok()
+        .filter(|name| !name.is_empty() && *name != "default")
+        .map(std::borrow::ToOwned::to_owned);
+
+    (
+        (!transform.is_identity()).then_some(transform),
+        (sampler != TextureSampler::default()).then_some(sampler),
+        uv_set_name,
+    )
 }
 
 fn extract_texture(
@@ -2890,6 +3125,61 @@ mod rig_reconcile_tests {
         // UV1: a proper texture-coordinate square.
         let texcoords = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
         assert_eq!(pick_uv_channel(&[packed, texcoords]), 1);
+    }
+
+    /// The FBX placement and the transform we hand out must sample the same
+    /// texel, once the loader's V flip is accounted for on both the input UV and
+    /// the resulting coordinate. Checked against a placement that translates,
+    /// scales and rotates at once, which is where a wrong conjugation shows.
+    #[test]
+    fn texture_placement_survives_the_v_flip() {
+        let translation = [0.3_f32, 0.15];
+        let scaling = [2.0_f32, 3.0];
+        let rotation = 0.6_f32;
+
+        // The file's own mapping: scale, rotate about the UV origin, translate.
+        let in_file = |uv: [f32; 2]| {
+            let (sin, cos) = rotation.sin_cos();
+            let p = [uv[0] * scaling[0], uv[1] * scaling[1]];
+            [
+                translation[0] + cos * p[0] + sin * p[1],
+                translation[1] - sin * p[0] + cos * p[1],
+            ]
+        };
+        // What a consumer applies to the UVs this loader emits.
+        let converted = uv_transform_from_placement(translation, scaling, rotation);
+        let ours = |uv: [f32; 2]| {
+            let (sin, cos) = converted.rotation.sin_cos();
+            let p = [uv[0] * converted.scale[0], uv[1] * converted.scale[1]];
+            [
+                converted.offset[0] + cos * p[0] + sin * p[1],
+                converted.offset[1] - sin * p[0] + cos * p[1],
+            ]
+        };
+
+        for uv in [[0.0, 0.0], [1.0, 1.0], [0.25, 0.8], [0.6, 0.1]] {
+            let want = in_file(uv);
+            // Same vertex, as the loader hands it out, and the same texel, in
+            // the flipped frame the texture is sampled in.
+            let got = ours([uv[0], 1.0 - uv[1]]);
+            assert!(
+                (want[0] - got[0]).abs() < 1e-5 && (1.0 - want[1] - got[1]).abs() < 1e-5,
+                "uv {uv:?}: file {want:?} vs ours {got:?}"
+            );
+        }
+    }
+
+    /// A texture that only tiles is the common case and must come through
+    /// untouched by the flip conversion.
+    #[test]
+    fn pure_tiling_placement_is_unchanged() {
+        let transform = uv_transform_from_placement([0.0, 0.0], [4.0, 4.0], 0.0);
+        assert_eq!(transform.scale, [4.0, 4.0]);
+        assert_eq!(transform.rotation, 0.0);
+        assert!((transform.offset[0]).abs() < 1e-6);
+        // v' = 1 - 0 - 4: tiling four times up a flipped axis starts three
+        // tiles below the origin, which is the same strip of texture.
+        assert!((transform.offset[1] - (1.0 - 4.0)).abs() < 1e-6);
     }
 
     /// The layer after UV0 becomes the second UV set: the lightmap-style unwrap
