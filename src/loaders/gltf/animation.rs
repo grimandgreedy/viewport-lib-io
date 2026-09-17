@@ -216,8 +216,8 @@ pub(super) fn convert_morph_animations(
 
 #[cfg(test)]
 mod tests {
-    use super::super::testdata::temp_dir;
     use super::super::*;
+    use crate::testkit::synth::temp_dir;
 
     #[cfg(feature = "gltf")]
     #[test]

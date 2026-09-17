@@ -18,6 +18,7 @@
 //! viewport_lib_io::testkit::check_scene("hero.glb", &scene).expect_clean();
 //! ```
 
+pub mod conformance;
 pub mod determinism;
 pub mod invariants;
 pub mod synth;

@@ -292,7 +292,7 @@ pub(super) fn to_rgba8(data: &gltf::image::Data) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::testdata::temp_dir;
+    use crate::testkit::synth::temp_dir;
     use super::super::*;
     use super::*;
 

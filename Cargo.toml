@@ -26,7 +26,7 @@ exr = ["dep:image"]
 stl = ["dep:stl_io"]
 obj = ["dep:tobj"]
 msh = []
-gltf = ["dep:gltf"]
+gltf = ["dep:gltf", "gltf/KHR_texture_transform", "gltf/extensions", "dep:serde_json"]
 fbx = ["dep:fbxcel-dom", "dep:anyhow", "png"]
 bvh = []
 ply = []
@@ -54,7 +54,7 @@ all-formats = ["png", "jpeg", "tga", "bmp", "svg", "hdr", "exr", "stl", "obj", "
 anyhow = { version = "1", optional = true }
 fbxcel-dom = { version = "0.0.10", optional = true }
 glam = { version = "=0.30.10", features = ["bytemuck"] }
-gltf = { version = "1", features = ["import", "KHR_materials_pbrSpecularGlossiness"], optional = true }
+gltf = { version = "1", features = ["import", "KHR_materials_emissive_strength", "KHR_materials_pbrSpecularGlossiness"], optional = true }
 hdf5 = { version = "0.8", optional = true }
 hdf5-sys = { version = "0.8", features = ["static", "zlib"], optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "hdr", "exr", "tga", "bmp"], optional = true }
@@ -103,3 +103,47 @@ required-features = ["fbx"]
 name = "probe-fbx-uv"
 path = "examples/probe_fbx_uv.rs"
 required-features = ["fbx"]
+
+# The conformance tests are external consumers of this crate, so they only see
+# `testkit` when it is enabled: run them with `cargo test --features testkit`.
+# Declaring the requirement means cargo skips these targets when the feature is
+# off, rather than failing to compile them.
+[[test]]
+name = "testkit_selfcheck"
+required-features = ["testkit"]
+
+[[test]]
+name = "loader_obj"
+required-features = ["testkit"]
+
+[[test]]
+name = "loader_stl"
+required-features = ["testkit"]
+
+[[test]]
+name = "loader_ply"
+required-features = ["testkit"]
+
+[[test]]
+name = "loader_csv"
+required-features = ["testkit"]
+
+[[test]]
+name = "loader_vtk"
+required-features = ["testkit"]
+
+[[test]]
+name = "loader_gltf"
+required-features = ["testkit"]
+
+[[test]]
+name = "loader_svg"
+required-features = ["testkit"]
+
+[[test]]
+name = "loader_numpy"
+required-features = ["testkit"]
+
+[[test]]
+name = "loader_fbx"
+required-features = ["testkit"]

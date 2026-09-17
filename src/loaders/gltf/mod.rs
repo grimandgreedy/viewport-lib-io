@@ -17,8 +17,6 @@ mod material;
 mod node;
 mod primitive;
 mod skin;
-#[cfg(test)]
-mod testdata;
 
 use animation::{convert_animations, convert_morph_animations};
 use axis::reorient_mesh_z_up;
@@ -152,8 +150,8 @@ pub fn scene_from_slice(data: &[u8], base: Option<&Path>) -> Result<IoScene, IoE
 
 #[cfg(test)]
 mod tests {
-    use super::testdata::temp_dir;
     use super::*;
+    use crate::testkit::synth::temp_dir;
 
     #[cfg(feature = "gltf")]
     #[test]

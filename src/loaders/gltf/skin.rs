@@ -148,9 +148,9 @@ pub(super) fn convert_skeletons(
 
 #[cfg(test)]
 mod tests {
-    use super::super::testdata::{make_glb, temp_dir};
     use super::super::*;
     use super::*;
+    use crate::testkit::synth::{glb as make_glb, temp_dir};
     use crate::types::{AnimationChannel, AnimationInterpolation, AnimationTrackValues};
 
     #[cfg(feature = "gltf")]
