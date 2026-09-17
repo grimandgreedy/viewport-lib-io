@@ -17,7 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `VectorShape`, `SubPath`, `PathSegment`, and `FillRule` carry the result; feed
   them into `viewport_lib::OverlayShape::Vector`. Gradient and pattern fills
   leave the colour unset (the geometry is still emitted); `<text>` and image
-  nodes are skipped (text needs a font DB fed to `usvg`).
+  nodes are skipped (text needs a font DB fed to `usvg`). Coordinates are in the
+  SVG canvas frame (X right, Y down), not the Z-up scene convention, which
+  covers 3D geometry only; strokes carry no paint or width into the output,
+  which models filled area.
 - Morph-target (blend-shape) geometry on `SurfaceMesh`. A new `MorphTarget`
   neutral type carries per-vertex position (and optional normal / tangent)
   displacements from the base mesh, and `SurfaceMesh::morph_targets` holds them
@@ -58,6 +61,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mesh's morph target set, not a skeleton.
 
 ### Fixed
+- SVG vector-path loading emitted paths the drawing does not paint: a path with
+  `visibility="hidden"` came through as a normal filled shape, disagreeing with
+  what `texture_from_path` rasterizes from the same file. Hidden paths are now
+  skipped.
+- SVG vector-path loading dropped enclosing group opacity, so a shape inside
+  `<g opacity="0.5">` came back fully opaque. Group opacity is now multiplied
+  down the tree and folded into the shape's fill alpha, alongside the path's own
+  `fill-opacity`.
+- `probe_fbx_orientation` and `probe_fbx_uv` were missing the
+  `required-features = ["fbx"]` declaration the other probe examples carry, so
+  any build without the `fbx` feature (including `--no-default-features` test
+  runs for a single loader) failed to compile the examples.
 - glTF morph-target extraction kept a target that carries no `POSITION`
   displacement (a normals-only face shape) instead of dropping it. Dropping one
   shifted the indices a weight animation drives by and changed the target count,

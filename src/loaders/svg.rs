@@ -54,13 +54,21 @@ pub fn texture_from_path(path: &Path) -> Result<TextureData, IoError> {
 /// with its subpaths (curves preserved, not flattened), fill rule, and resolved
 /// solid fill colour. Coordinates are baked into the drawing's user-unit space
 /// (each path's absolute transform is applied), so the output places directly
-/// without further transform bookkeeping. Feed the result into
+/// without further transform bookkeeping. This is the SVG canvas frame: X to
+/// the right, Y *down* from the top-left origin, not the crate's Z-up scene
+/// convention, which covers 3D geometry only. Feed the result into
 /// `viewport_lib::OverlayShapeItem::vector` to draw it.
 ///
 /// Only solid fills are resolved to a colour; gradient and pattern fills leave
-/// [`VectorShape::fill`] as `None` (the geometry is still emitted). Stroke-only
-/// paths yield a shape with no fill. Use [`texture_from_path`] instead when a
-/// baked raster image is wanted.
+/// [`VectorShape::fill`] as `None` (the geometry is still emitted). Enclosing
+/// group opacity is folded into the fill alpha. Invisible paths
+/// (`visibility="hidden"`) are skipped, matching what [`texture_from_path`]
+/// rasterizes.
+///
+/// Strokes are not carried: the output models filled area only, so a
+/// stroke-only path yields a shape with no fill, and stroke paint and width are
+/// dropped. Group clip paths, masks, and filters are ignored. Use
+/// [`texture_from_path`] instead when a baked raster image is wanted.
 pub fn vector_from_path(path: &Path) -> Result<VectorArt, IoError> {
     #[cfg(feature = "svg")]
     {
@@ -73,7 +81,8 @@ pub fn vector_from_path(path: &Path) -> Result<VectorArt, IoError> {
 
         let size = tree.size();
         let mut shapes = Vec::new();
-        collect_shapes(tree.root(), &mut shapes);
+        let root = tree.root();
+        collect_shapes(root, root.opacity().get(), &mut shapes);
 
         Ok(VectorArt {
             shapes,
@@ -92,13 +101,18 @@ pub fn vector_from_path(path: &Path) -> Result<VectorArt, IoError> {
 }
 
 /// Recurse the node tree, appending a `VectorShape` for each filled path.
+///
+/// `opacity` is the product of the enclosing groups' opacities, folded into
+/// each shape's fill alpha since the neutral output has no group nesting.
 #[cfg(feature = "svg")]
-fn collect_shapes(group: &resvg::usvg::Group, out: &mut Vec<VectorShape>) {
+fn collect_shapes(group: &resvg::usvg::Group, opacity: f32, out: &mut Vec<VectorShape>) {
     for node in group.children() {
         match node {
-            resvg::usvg::Node::Group(child) => collect_shapes(child, out),
+            resvg::usvg::Node::Group(child) => {
+                collect_shapes(child, opacity * child.opacity().get(), out)
+            }
             resvg::usvg::Node::Path(path) => {
-                if let Some(shape) = path_to_shape(path) {
+                if let Some(shape) = path_to_shape(path, opacity) {
                     out.push(shape);
                 }
             }
@@ -111,7 +125,12 @@ fn collect_shapes(group: &resvg::usvg::Group, out: &mut Vec<VectorShape>) {
 
 /// Convert one usvg path into a `VectorShape` in absolute coordinates.
 #[cfg(feature = "svg")]
-fn path_to_shape(path: &resvg::usvg::Path) -> Option<VectorShape> {
+fn path_to_shape(path: &resvg::usvg::Path, opacity: f32) -> Option<VectorShape> {
+    // A hidden path is not painted, so it is not part of the drawing.
+    if !path.is_visible() {
+        return None;
+    }
+
     // Bake the absolute transform into the geometry so the output needs no
     // further transform bookkeeping.
     let data = path.data().clone().transform(path.abs_transform())?;
@@ -131,7 +150,7 @@ fn path_to_shape(path: &resvg::usvg::Path) -> Option<VectorShape> {
                     srgb_to_linear(c.red),
                     srgb_to_linear(c.green),
                     srgb_to_linear(c.blue),
-                    fill.opacity().get(),
+                    fill.opacity().get() * opacity,
                 ]),
                 // Gradients and patterns are not reduced to a single colour.
                 _ => None,
@@ -310,5 +329,53 @@ mod tests {
             .flat_map(|s| &s.segments)
             .any(|seg| matches!(seg, PathSegment::Cubic { .. }));
         assert!(has_cubic, "cubic segment should survive without flattening");
+    }
+
+    #[cfg(feature = "svg")]
+    #[test]
+    fn hidden_paths_are_skipped() {
+        let path = temp_path("svg_vector_hidden");
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+  <rect x="0" y="0" width="4" height="4" fill="#ff0000" visibility="hidden"/>
+  <rect x="5" y="5" width="4" height="4" fill="#00ff00"/>
+</svg>"##;
+
+        std::fs::write(&path, svg).unwrap();
+        let art = vector_from_path(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(art.shapes.len(), 1, "the hidden rect is not painted");
+        let fill = art.shapes[0].fill.expect("solid fill resolves to a colour");
+        assert!(
+            fill[1] > 0.9 && fill[0] < 0.1,
+            "green rect survives: {fill:?}"
+        );
+    }
+
+    #[cfg(feature = "svg")]
+    #[test]
+    fn group_opacity_folds_into_fill_alpha() {
+        let path = temp_path("svg_vector_group_opacity");
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+  <g opacity="0.5">
+    <g opacity="0.5">
+      <rect x="0" y="0" width="4" height="4" fill="#ff0000"/>
+    </g>
+  </g>
+  <rect x="5" y="5" width="4" height="4" fill="#ff0000" fill-opacity="0.5"/>
+</svg>"##;
+
+        std::fs::write(&path, svg).unwrap();
+        let art = vector_from_path(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(art.shapes.len(), 2);
+        let nested = art.shapes[0].fill.expect("solid fill")[3];
+        assert!(
+            (nested - 0.25).abs() < 1e-5,
+            "nested group opacity multiplies: {nested}"
+        );
+        let own = art.shapes[1].fill.expect("solid fill")[3];
+        assert!((own - 0.5).abs() < 1e-5, "fill-opacity is unchanged: {own}");
     }
 }

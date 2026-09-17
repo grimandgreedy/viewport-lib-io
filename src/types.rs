@@ -782,7 +782,9 @@ pub struct SceneData {
 
 /// One segment of a [`SubPath`]. The start point is implicit: it is the
 /// subpath's `start` for the first segment, and the previous segment's end
-/// point after that. Coordinates are in the source drawing's user units.
+/// point after that. Coordinates are in the source drawing's user units, in the
+/// 2D canvas frame: X right, Y down from the top-left origin. The crate's Z-up
+/// convention covers 3D scene geometry and does not apply here.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PathSegment {
     /// Straight line to `to`.
@@ -833,16 +835,18 @@ pub enum FillRule {
 }
 
 /// One filled shape from a vector drawing: its contours, fill rule, and the
-/// resolved fill colour.
+/// resolved fill colour. This models filled area only: source strokes carry no
+/// paint or width into this type.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VectorShape {
     /// Contours making up the shape. Curves are preserved, not flattened.
     pub subpaths: Vec<SubPath>,
     /// How the subpaths combine into filled area.
     pub fill_rule: FillRule,
-    /// Resolved fill colour as linear RGBA in `[0, 1]`, alpha carrying the
-    /// fill opacity. `None` when the source shape has no fill, or a gradient or
-    /// pattern paint this loader does not resolve to a single colour.
+    /// Resolved fill colour as linear RGBA in `[0, 1]`, alpha carrying the fill
+    /// opacity multiplied by any enclosing group opacity. `None` when the
+    /// source shape has no fill, or a gradient or pattern paint the loader does
+    /// not resolve to a single colour.
     pub fill: Option<[f32; 4]>,
 }
 
