@@ -2,7 +2,17 @@
 
 use std::path::Path;
 
-use crate::types::{AlphaMode, IoMaterial, TextureData, TextureSource};
+use crate::types::{
+    AlphaMode, IoMaterial, MATERIAL_TEXTURE_SLOTS, MaterialTextureSlot, TextureData, TextureFilter,
+    TextureSampler, TextureSource, UvTransform, WrapMode,
+};
+
+/// The per-slot sampling state a material is built up with: how each slot
+/// transforms its UVs and what sampler its texture names.
+struct SlotState {
+    uv_transforms: [Option<UvTransform>; MATERIAL_TEXTURE_SLOTS],
+    samplers: [Option<TextureSampler>; MATERIAL_TEXTURE_SLOTS],
+}
 
 /// Convert one glTF material into the neutral [`IoMaterial`].
 ///
@@ -15,6 +25,11 @@ pub(super) fn convert_material(
     images: &[gltf::image::Data],
     parent_dir: &Path,
 ) -> IoMaterial {
+    let mut slots = SlotState {
+        uv_transforms: [None; MATERIAL_TEXTURE_SLOTS],
+        samplers: [None; MATERIAL_TEXTURE_SLOTS],
+    };
+
     // KHR_materials_pbrSpecularGlossiness assets get the reference lossy
     // conversion to metallic-roughness; everything else reads the standard
     // metallic-roughness properties.
@@ -30,9 +45,10 @@ pub(super) fn convert_material(
             // glossiness texture is not converted, so per-texel specular
             // variation is dropped and only the factors steer metallic and
             // roughness. There is no metallic-roughness texture on this path.
-            let texture = sg
-                .diffuse_texture()
-                .and_then(|info| image_to_texture_source(&info.texture(), images, parent_dir));
+            let texture = sg.diffuse_texture().and_then(|info| {
+                record_info(&mut slots, MaterialTextureSlot::BaseColour, &info);
+                image_to_texture_source(&info.texture(), images, parent_dir)
+            });
             (
                 rgb,
                 metallic,
@@ -44,12 +60,14 @@ pub(super) fn convert_material(
         } else {
             let pbr = material.pbr_metallic_roughness();
             let base_color_factor = pbr.base_color_factor();
-            let texture = pbr
-                .base_color_texture()
-                .and_then(|info| image_to_texture_source(&info.texture(), images, parent_dir));
-            let mr_texture = pbr
-                .metallic_roughness_texture()
-                .and_then(|info| image_to_texture_source(&info.texture(), images, parent_dir));
+            let texture = pbr.base_color_texture().and_then(|info| {
+                record_info(&mut slots, MaterialTextureSlot::BaseColour, &info);
+                image_to_texture_source(&info.texture(), images, parent_dir)
+            });
+            let mr_texture = pbr.metallic_roughness_texture().and_then(|info| {
+                record_info(&mut slots, MaterialTextureSlot::MetallicRoughness, &info);
+                image_to_texture_source(&info.texture(), images, parent_dir)
+            });
             (
                 [
                     base_color_factor[0],
@@ -65,9 +83,13 @@ pub(super) fn convert_material(
         };
 
     let emissive = material.emissive_factor();
-    let emissive_texture = material
-        .emissive_texture()
-        .and_then(|info| image_to_texture_source(&info.texture(), images, parent_dir));
+    // KHR_materials_emissive_strength multiplies the factor. Absent, the glTF
+    // default of 1.0 leaves the emission at the authored factor.
+    let emissive_strength = material.emissive_strength().unwrap_or(1.0);
+    let emissive_texture = material.emissive_texture().and_then(|info| {
+        record_info(&mut slots, MaterialTextureSlot::Emissive, &info);
+        image_to_texture_source(&info.texture(), images, parent_dir)
+    });
 
     let alpha_mode = match material.alpha_mode() {
         gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
@@ -80,13 +102,29 @@ pub(super) fn convert_material(
     // textures leave the scalars at the glTF defaults of 1.0.
     let normal_texture = material.normal_texture();
     let normal_scale = normal_texture.as_ref().map_or(1.0, |t| t.scale());
-    let normal_map_texture = normal_texture
-        .and_then(|info| image_to_texture_source(&info.texture(), images, parent_dir));
+    let normal_map_texture = normal_texture.and_then(|info| {
+        record_slot(
+            &mut slots,
+            MaterialTextureSlot::Normal,
+            info.tex_coord(),
+            info.extension_value(TEXTURE_TRANSFORM),
+            &info.texture(),
+        );
+        image_to_texture_source(&info.texture(), images, parent_dir)
+    });
 
     let occlusion_texture = material.occlusion_texture();
     let occlusion_strength = occlusion_texture.as_ref().map_or(1.0, |t| t.strength());
-    let ao_texture = occlusion_texture
-        .and_then(|info| image_to_texture_source(&info.texture(), images, parent_dir));
+    let ao_texture = occlusion_texture.and_then(|info| {
+        record_slot(
+            &mut slots,
+            MaterialTextureSlot::Occlusion,
+            info.tex_coord(),
+            info.extension_value(TEXTURE_TRANSFORM),
+            &info.texture(),
+        );
+        image_to_texture_source(&info.texture(), images, parent_dir)
+    });
 
     IoMaterial {
         name: material
@@ -97,6 +135,7 @@ pub(super) fn convert_material(
         metallic,
         roughness,
         emissive,
+        emissive_strength,
         opacity,
         alpha_mode,
         double_sided,
@@ -107,7 +146,122 @@ pub(super) fn convert_material(
         ao_texture,
         occlusion_strength,
         emissive_texture,
+        uv_transforms: slots.uv_transforms,
+        samplers: slots.samplers,
     }
+}
+
+/// The extension a `textureInfo` carries its UV transform in.
+const TEXTURE_TRANSFORM: &str = "KHR_texture_transform";
+
+/// Record how a `textureInfo` slot samples: its `texCoord` set and its
+/// KHR_texture_transform, plus the sampler its texture names.
+fn record_info(slots: &mut SlotState, slot: MaterialTextureSlot, info: &gltf::texture::Info) {
+    let mut transform = UvTransform {
+        uv_set: info.tex_coord(),
+        ..UvTransform::IDENTITY
+    };
+    if let Some(source) = info.texture_transform() {
+        transform.offset = source.offset();
+        transform.scale = source.scale();
+        transform.rotation = source.rotation();
+        // The extension's own texCoord overrides the textureInfo one.
+        if let Some(uv_set) = source.tex_coord() {
+            transform.uv_set = uv_set;
+        }
+    }
+    store(slots, slot, transform, &info.texture());
+}
+
+/// The same for the normal and occlusion slots. The `gltf` crate does not model
+/// those as `textureInfo`, so they have no typed `texture_transform()` and the
+/// extension is read from the raw extension map instead.
+fn record_slot(
+    slots: &mut SlotState,
+    slot: MaterialTextureSlot,
+    tex_coord: u32,
+    transform: Option<&serde_json::Value>,
+    texture: &gltf::Texture,
+) {
+    let mut uv = UvTransform {
+        uv_set: tex_coord,
+        ..UvTransform::IDENTITY
+    };
+    if let Some(source) = transform {
+        if let Some(offset) = source.get("offset").and_then(vec2_from_json) {
+            uv.offset = offset;
+        }
+        if let Some(scale) = source.get("scale").and_then(vec2_from_json) {
+            uv.scale = scale;
+        }
+        if let Some(rotation) = source.get("rotation").and_then(serde_json::Value::as_f64) {
+            uv.rotation = rotation as f32;
+        }
+        if let Some(uv_set) = source.get("texCoord").and_then(serde_json::Value::as_u64) {
+            uv.uv_set = uv_set as u32;
+        }
+    }
+    store(slots, slot, uv, texture);
+}
+
+/// Keep a slot's transform and sampler, dropping either when it says nothing
+/// beyond the neutral default: a consumer reads `None` as "sample UV0 plainly"
+/// and "use your default sampler", so recording the default would only cost it
+/// per-slot work.
+fn store(
+    slots: &mut SlotState,
+    slot: MaterialTextureSlot,
+    transform: UvTransform,
+    texture: &gltf::Texture,
+) {
+    if !transform.is_identity() {
+        slots.uv_transforms[slot.index()] = Some(transform);
+    }
+    slots.samplers[slot.index()] = sampler_from_texture(texture);
+}
+
+fn vec2_from_json(value: &serde_json::Value) -> Option<[f32; 2]> {
+    let pair = value.as_array()?;
+    let x = pair.first()?.as_f64()? as f32;
+    let y = pair.get(1)?.as_f64()? as f32;
+    Some([x, y])
+}
+
+/// The sampler state a texture asks for. `None` when it names no sampler, or
+/// names one that resolves to the neutral default.
+fn sampler_from_texture(texture: &gltf::Texture) -> Option<TextureSampler> {
+    let sampler = texture.sampler();
+    // No `sampler` on the texture: the file expresses no preference.
+    sampler.index()?;
+
+    let wrap = |mode| match mode {
+        gltf::texture::WrappingMode::ClampToEdge => WrapMode::ClampToEdge,
+        gltf::texture::WrappingMode::MirroredRepeat => WrapMode::MirrorRepeat,
+        gltf::texture::WrappingMode::Repeat => WrapMode::Repeat,
+    };
+    // Magnification decides the filter. Minification only adds mip selection,
+    // which is the consumer's to make, so it is read for its base filter and
+    // only when there is no magnification filter to read.
+    let filter = match (sampler.mag_filter(), sampler.min_filter()) {
+        (Some(gltf::texture::MagFilter::Nearest), _) => TextureFilter::Nearest,
+        (Some(gltf::texture::MagFilter::Linear), _) => TextureFilter::Linear,
+        (
+            None,
+            Some(
+                gltf::texture::MinFilter::Nearest
+                | gltf::texture::MinFilter::NearestMipmapNearest
+                | gltf::texture::MinFilter::NearestMipmapLinear,
+            ),
+        ) => TextureFilter::Nearest,
+        _ => TextureFilter::Linear,
+    };
+
+    let state = TextureSampler {
+        wrap_u: wrap(sampler.wrap_s()),
+        wrap_v: wrap(sampler.wrap_t()),
+        filter,
+    };
+    (state != TextureSampler::default()).then_some(state)
 }
 
 /// Reference lossy conversion of specular-glossiness factors to
@@ -292,9 +446,9 @@ pub(super) fn to_rgba8(data: &gltf::image::Data) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use crate::testkit::synth::temp_dir;
     use super::super::*;
     use super::*;
+    use crate::testkit::synth::temp_dir;
 
     #[cfg(feature = "gltf")]
     #[test]
@@ -468,6 +622,247 @@ mod tests {
 
         let _ = std::fs::remove_file(gltf_path);
         let _ = std::fs::remove_file(bin_path);
+        let _ = std::fs::remove_dir(dir);
+    }
+
+    #[cfg(feature = "gltf")]
+    #[test]
+    fn reads_emissive_strength_extension() {
+        let dir = temp_dir("gltf_emissive_strength");
+        let gltf_path = dir.join("scene.gltf");
+        let bin_path = dir.join("mesh.bin");
+
+        let mut bin = Vec::new();
+        for value in [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+            bin.extend_from_slice(&value.to_le_bytes());
+        }
+        for value in [0u32, 1, 2] {
+            bin.extend_from_slice(&value.to_le_bytes());
+        }
+        std::fs::write(&bin_path, bin).unwrap();
+
+        let json = r#"{
+  "asset": { "version": "2.0" },
+  "scene": 0,
+  "scenes": [{ "nodes": [0] }],
+  "nodes": [{ "mesh": 0 }],
+  "meshes": [{
+    "primitives": [{
+      "attributes": { "POSITION": 0 },
+      "indices": 1,
+      "material": 0
+    }]
+  }],
+  "materials": [
+    {
+      "name": "sign",
+      "emissiveFactor": [1.0, 0.8, 0.2],
+      "extensions": {
+        "KHR_materials_emissive_strength": { "emissiveStrength": 40.0 }
+      }
+    },
+    {
+      "name": "no_extension",
+      "emissiveFactor": [1.0, 0.8, 0.2]
+    }
+  ],
+  "buffers": [{ "uri": "mesh.bin", "byteLength": 48 }],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+    { "buffer": 0, "byteOffset": 36, "byteLength": 12, "target": 34963 }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC3",
+      "min": [0, 0, 0],
+      "max": [1, 1, 0]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5125,
+      "count": 3,
+      "type": "SCALAR"
+    }
+  ]
+}"#;
+        std::fs::write(&gltf_path, json).unwrap();
+
+        let scene = scene_from_path(&gltf_path).unwrap();
+        assert_eq!(scene.materials.len(), 2);
+
+        // The extension multiplies the factor, so the emissive factor itself is
+        // unchanged and the strength carries the brightness.
+        let lit = &scene.materials[0];
+        assert!((lit.emissive_strength - 40.0).abs() < 1e-4);
+        assert!((lit.emissive[0] - 1.0).abs() < 1e-4);
+
+        // Without the extension the glTF default of 1.0 applies.
+        assert!((scene.materials[1].emissive_strength - 1.0).abs() < 1e-4);
+
+        let _ = std::fs::remove_file(gltf_path);
+        let _ = std::fs::remove_file(bin_path);
+        let _ = std::fs::remove_dir(dir);
+    }
+
+    #[cfg(feature = "gltf")]
+    #[test]
+    fn reads_texture_transforms_and_sampler_state() {
+        use crate::types::{MaterialTextureSlot, TextureFilter, TextureSampler, WrapMode};
+
+        let dir = temp_dir("gltf_texture_transform");
+        let gltf_path = dir.join("scene.gltf");
+        let bin_path = dir.join("mesh.bin");
+        let png_path = dir.join("albedo.png");
+
+        let mut bin = Vec::new();
+        for value in [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+            bin.extend_from_slice(&value.to_le_bytes());
+        }
+        for value in [0u32, 1, 2] {
+            bin.extend_from_slice(&value.to_le_bytes());
+        }
+        std::fs::write(&bin_path, bin).unwrap();
+
+        let png_bytes: &[u8] = &[
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9C, 0x63, 0xF8, 0xCF, 0xC0, 0xF0, 0x1F, 0x00, 0x05, 0x00, 0x01, 0xFF, 0x89, 0x99,
+            0x3D, 0x1D, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ];
+        std::fs::write(&png_path, png_bytes).unwrap();
+
+        // Material 0 tiles its albedo out of an atlas and puts its occlusion on
+        // the second UV set; material 1 asks for nothing beyond the defaults.
+        let json = r#"{
+  "asset": { "version": "2.0" },
+  "scene": 0,
+  "scenes": [{ "nodes": [0] }],
+  "nodes": [{ "mesh": 0 }],
+  "meshes": [{
+    "primitives": [{
+      "attributes": { "POSITION": 0 },
+      "indices": 1,
+      "material": 0
+    }]
+  }],
+  "materials": [
+    {
+      "name": "atlas",
+      "pbrMetallicRoughness": {
+        "baseColorTexture": {
+          "index": 0,
+          "extensions": {
+            "KHR_texture_transform": {
+              "offset": [0.5, 0.25],
+              "scale": [4.0, 4.0],
+              "rotation": 1.5707963
+            }
+          }
+        }
+      },
+      "normalTexture": {
+        "index": 0,
+        "extensions": {
+          "KHR_texture_transform": {
+            "offset": [0.5, 0.25],
+            "scale": [4.0, 4.0]
+          }
+        }
+      },
+      "occlusionTexture": { "index": 1, "texCoord": 1 }
+    },
+    {
+      "name": "plain",
+      "pbrMetallicRoughness": { "baseColorTexture": { "index": 1 } }
+    }
+  ],
+  "textures": [
+    { "sampler": 0, "source": 0 },
+    { "sampler": 1, "source": 0 }
+  ],
+  "samplers": [
+    { "wrapS": 33071, "wrapT": 33648, "magFilter": 9728 },
+    { "wrapS": 10497, "wrapT": 10497 }
+  ],
+  "images": [{ "uri": "albedo.png" }],
+  "buffers": [{ "uri": "mesh.bin", "byteLength": 48 }],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+    { "buffer": 0, "byteOffset": 36, "byteLength": 12, "target": 34963 }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC3",
+      "min": [0, 0, 0],
+      "max": [1, 1, 0]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5125,
+      "count": 3,
+      "type": "SCALAR"
+    }
+  ]
+}"#;
+        std::fs::write(&gltf_path, json).unwrap();
+
+        let scene = scene_from_path(&gltf_path).unwrap();
+        let atlas = &scene.materials[0];
+
+        let base = atlas
+            .uv_transform(MaterialTextureSlot::BaseColour)
+            .expect("base colour carries KHR_texture_transform");
+        assert_eq!(base.offset, [0.5, 0.25]);
+        assert_eq!(base.scale, [4.0, 4.0]);
+        assert!((base.rotation - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+        assert_eq!(base.uv_set, 0);
+
+        // The normal slot is not a `textureInfo` in the gltf crate's model, so
+        // its transform comes out of the raw extension map.
+        let normal = atlas
+            .uv_transform(MaterialTextureSlot::Normal)
+            .expect("normal map carries KHR_texture_transform");
+        assert_eq!(normal.offset, [0.5, 0.25]);
+        assert_eq!(normal.scale, [4.0, 4.0]);
+        assert_eq!(normal.rotation, 0.0);
+
+        // A plain texCoord with no transform still has to survive: it is the
+        // only thing telling a consumer which UV set to sample.
+        let occlusion = atlas
+            .uv_transform(MaterialTextureSlot::Occlusion)
+            .expect("occlusion samples the second UV set");
+        assert_eq!(occlusion.uv_set, 1);
+        assert_eq!(occlusion.scale, [1.0, 1.0]);
+
+        assert_eq!(
+            atlas.sampler(MaterialTextureSlot::BaseColour),
+            Some(TextureSampler {
+                wrap_u: WrapMode::ClampToEdge,
+                wrap_v: WrapMode::MirrorRepeat,
+                filter: TextureFilter::Nearest,
+            })
+        );
+        // The occlusion texture names a sampler, but one that says exactly what
+        // the consumer would have done anyway.
+        assert_eq!(atlas.sampler(MaterialTextureSlot::Occlusion), None);
+
+        let plain = &scene.materials[1];
+        assert_eq!(
+            plain.uv_transforms,
+            [None; crate::types::MATERIAL_TEXTURE_SLOTS]
+        );
+        assert_eq!(plain.samplers, [None; crate::types::MATERIAL_TEXTURE_SLOTS]);
+
+        let _ = std::fs::remove_file(gltf_path);
+        let _ = std::fs::remove_file(bin_path);
+        let _ = std::fs::remove_file(png_path);
         let _ = std::fs::remove_dir(dir);
     }
 

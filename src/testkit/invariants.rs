@@ -100,6 +100,9 @@ pub fn check_surface_mesh(subject: &str, mesh: &SurfaceMesh) -> Report {
     if let Some(uvs) = &mesh.uvs {
         parallel.push(("uvs", uvs.len()));
     }
+    if let Some(uvs1) = &mesh.uvs1 {
+        parallel.push(("uvs1", uvs1.len()));
+    }
     if let Some(tangents) = &mesh.tangents {
         parallel.push(("tangents", tangents.len()));
     }

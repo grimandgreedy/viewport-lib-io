@@ -737,13 +737,13 @@ fn build_fbx_scene(
                 .ok()
                 .and_then(|s| s.trim().parse::<usize>().ok())
                 .filter(|&i| i < uv_candidates.len());
-            let uvs_vec: Option<Vec<[f32; 2]>> = if let Some(idx) = uv_override {
+            let primary: Option<usize> = if let Some(idx) = uv_override {
                 if log_uv {
                     eprintln!("VIEWPORT_FBX_LOG_UV: override forcing channel {idx}");
                 }
-                uv_candidates.into_iter().nth(idx)
+                Some(idx)
             } else if uv_candidates.len() <= 1 {
-                uv_candidates.into_iter().next()
+                (!uv_candidates.is_empty()).then_some(0)
             } else {
                 let idx = pick_uv_channel(&uv_candidates);
                 if log_uv {
@@ -751,8 +751,25 @@ fn build_fbx_scene(
                         "VIEWPORT_FBX_LOG_UV: picked channel {idx} (first non-degenerate UV set; UV0-preferred)"
                     );
                 }
-                uv_candidates.into_iter().nth(idx)
+                Some(idx)
             };
+            // The next authored texture-coordinate layer becomes the second UV
+            // set rather than being dropped. Layers `pick_uv_channel` rejects as
+            // packed per-vertex scalars stay rejected here: they are not texture
+            // coordinates, and routing one into UV1 would only move the problem.
+            let secondary = primary.and_then(|first| pick_second_uv_channel(&uv_candidates, first));
+            if log_uv {
+                match secondary {
+                    Some(idx) => eprintln!("VIEWPORT_FBX_LOG_UV: second UV set from channel {idx}"),
+                    None => eprintln!("VIEWPORT_FBX_LOG_UV: no second UV set"),
+                }
+            }
+            let mut uv_candidates: Vec<Option<Vec<[f32; 2]>>> =
+                uv_candidates.into_iter().map(Some).collect();
+            let uvs_vec: Option<Vec<[f32; 2]>> =
+                primary.and_then(|idx| uv_candidates.get_mut(idx).and_then(Option::take));
+            let uvs1_vec: Option<Vec<[f32; 2]>> =
+                secondary.and_then(|idx| uv_candidates.get_mut(idx).and_then(Option::take));
 
             if let Some(ref material_per_vertex) = material_indices_per_vert {
                 if !model_materials.is_empty() && material_per_vertex.iter().any(|&m| m != 0) {
@@ -772,6 +789,9 @@ fn build_fbx_scene(
                         let sub_positions = vertex_indices.iter().map(|&i| positions[i]).collect();
                         let sub_normals = vertex_indices.iter().map(|&i| normals[i]).collect();
                         let sub_uvs: Option<Vec<[f32; 2]>> = uvs_vec
+                            .as_ref()
+                            .map(|uvs| vertex_indices.iter().map(|&i| uvs[i]).collect());
+                        let sub_uvs1: Option<Vec<[f32; 2]>> = uvs1_vec
                             .as_ref()
                             .map(|uvs| vertex_indices.iter().map(|&i| uvs[i]).collect());
                         // Per-submesh UV extent: reveals whether a submesh
@@ -827,6 +847,7 @@ fn build_fbx_scene(
                         mesh_data.normals = sub_normals;
                         mesh_data.indices = sub_indices;
                         mesh_data.uvs = sub_uvs;
+                        mesh_data.uvs1 = sub_uvs1;
                         mesh_data.skin_weights = sub_skin;
                         mesh_data.morph_targets = sub_morphs;
 
@@ -856,6 +877,7 @@ fn build_fbx_scene(
             mesh_data.normals = normals;
             mesh_data.indices = (0..mesh_data.positions.len() as u32).collect();
             mesh_data.uvs = uvs_vec;
+            mesh_data.uvs1 = uvs1_vec;
             mesh_data.skin_weights = skin_per_vertex;
             mesh_data.morph_targets = full_morph_targets
                 .into_iter()
@@ -952,36 +974,54 @@ fn build_fbx_scene(
 /// UV0's coordinates than to drop UVs). `candidates` must be non-empty.
 #[cfg(feature = "fbx")]
 fn pick_uv_channel(candidates: &[Vec<[f32; 2]>]) -> usize {
-    // Raw span of a layer's coordinates on each axis. A genuine 2D texture
-    // coordinate varies on both; a packed per-vertex scalar holds one axis
-    // constant (span ~0). Wrapping is intentionally NOT applied: a value at
-    // exactly 1.0 would fold onto 0.0 and make a clean [0,1] square look
-    // constant, and magnitude is not a signal anyway.
-    let axis_spans = |uvs: &[[f32; 2]]| -> (f32, f32) {
-        let (mut umin, mut umax, mut vmin, mut vmax) = (
-            f32::INFINITY,
-            f32::NEG_INFINITY,
-            f32::INFINITY,
-            f32::NEG_INFINITY,
-        );
-        for uv in uvs {
-            umin = umin.min(uv[0]);
-            umax = umax.max(uv[0]);
-            vmin = vmin.min(uv[1]);
-            vmax = vmax.max(uv[1]);
-        }
-        ((umax - umin).max(0.0), (vmax - vmin).max(0.0))
-    };
+    candidates
+        .iter()
+        .position(|uvs| is_texture_coordinate(uvs))
+        .unwrap_or(0)
+}
+
+/// Whether a layer is a texture coordinate at all, as opposed to a packed
+/// per-vertex scalar.
+///
+/// Raw span of the layer's coordinates on each axis. A genuine 2D texture
+/// coordinate varies on both; a packed scalar (a wind phase in V) holds one axis
+/// constant. Wrapping is intentionally NOT applied: a value at exactly 1.0 would
+/// fold onto 0.0 and make a clean [0,1] square look constant, and magnitude is
+/// not a signal anyway.
+#[cfg(feature = "fbx")]
+fn is_texture_coordinate(uvs: &[[f32; 2]]) -> bool {
     // An axis that varies less than this across the whole mesh is a constant,
     // not a texture coordinate.
     const CONSTANT: f32 = 1e-4;
+    let (mut umin, mut umax, mut vmin, mut vmax) = (
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+    );
+    for uv in uvs {
+        umin = umin.min(uv[0]);
+        umax = umax.max(uv[0]);
+        vmin = vmin.min(uv[1]);
+        vmax = vmax.max(uv[1]);
+    }
+    (umax - umin).max(0.0) > CONSTANT && (vmax - vmin).max(0.0) > CONSTANT
+}
+
+/// The layer that becomes the second UV set, given the one chosen as UV0.
+///
+/// The first genuine texture-coordinate layer authored after it, by the same
+/// test [`pick_uv_channel`] uses: a layer holding one axis constant is a packed
+/// per-vertex scalar rather than a UV set, and is stepped over here as it is
+/// there. `None` when there is no later layer that qualifies.
+#[cfg(feature = "fbx")]
+fn pick_second_uv_channel(candidates: &[Vec<[f32; 2]>], first: usize) -> Option<usize> {
     candidates
         .iter()
-        .position(|uvs| {
-            let (uspan, vspan) = axis_spans(uvs);
-            uspan > CONSTANT && vspan > CONSTANT
-        })
-        .unwrap_or(0)
+        .enumerate()
+        .skip(first + 1)
+        .find(|(_, uvs)| is_texture_coordinate(uvs))
+        .map(|(index, _)| index)
 }
 
 fn fan_triangulator(
@@ -1342,6 +1382,7 @@ fn convert_material(
         metallic: 0.0,
         roughness,
         emissive: [0.0, 0.0, 0.0],
+        emissive_strength: 1.0,
         opacity,
         alpha_mode,
         double_sided: false,
@@ -1356,6 +1397,9 @@ fn convert_material(
         ao_texture: None,
         occlusion_strength: 1.0,
         emissive_texture: None,
+        // FBX carries its own per-texture UV scale and translation on the
+        // texture node; it is not read yet, so every slot samples plainly.
+        ..IoMaterial::default()
     }
 }
 
@@ -2846,6 +2890,39 @@ mod rig_reconcile_tests {
         // UV1: a proper texture-coordinate square.
         let texcoords = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
         assert_eq!(pick_uv_channel(&[packed, texcoords]), 1);
+    }
+
+    /// The layer after UV0 becomes the second UV set: the lightmap-style unwrap
+    /// an FBX carries alongside its atlas channel is kept rather than dropped.
+    #[test]
+    fn second_uv_set_is_the_next_authored_layer() {
+        let atlas = vec![[0.1, 12.0], [0.9, 12.0], [0.9, 12.9], [0.1, 12.9]];
+        let lightmap = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        assert_eq!(pick_second_uv_channel(&[atlas, lightmap], 0), Some(1));
+    }
+
+    /// A packed per-vertex scalar is not a UV set, so it is stepped over for the
+    /// second channel exactly as it is for the first.
+    #[test]
+    fn second_uv_set_steps_over_packed_data_channel() {
+        let texcoords = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        let packed = vec![[0.0, 3.2], [0.0, 41.7], [0.0, 8.9], [0.0, 70.0]];
+        let lightmap = vec![[0.0, 0.0], [0.5, 0.0], [0.5, 0.5], [0.0, 0.5]];
+        assert_eq!(
+            pick_second_uv_channel(&[texcoords.clone(), packed.clone()], 0),
+            None
+        );
+        assert_eq!(
+            pick_second_uv_channel(&[texcoords, packed, lightmap], 0),
+            Some(2)
+        );
+    }
+
+    /// One UV layer means one UV set, not a second one pointing at the same data.
+    #[test]
+    fn second_uv_set_absent_with_a_single_layer() {
+        let square = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        assert_eq!(pick_second_uv_channel(&[square], 0), None);
     }
 
     /// Every layer degenerate: keep UV0's coordinates rather than drop UVs.

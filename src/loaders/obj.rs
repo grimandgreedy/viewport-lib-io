@@ -27,6 +27,7 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
                 metallic: material.shininess.unwrap_or(0.0).clamp(0.0, 1.0),
                 roughness: 0.5,
                 emissive: [0.0, 0.0, 0.0],
+                emissive_strength: 1.0,
                 opacity: material.dissolve.unwrap_or(1.0),
                 alpha_mode: if material.dissolve.unwrap_or(1.0) < 1.0 {
                     AlphaMode::Blend
@@ -53,6 +54,8 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
                 ao_texture: None,
                 occlusion_strength: 1.0,
                 emissive_texture: None,
+                // MTL has no per-texture transform or sampler state.
+                ..IoMaterial::default()
             })
             .collect();
 

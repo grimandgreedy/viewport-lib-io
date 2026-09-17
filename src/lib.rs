@@ -32,8 +32,8 @@ pub use types::{
     AlphaMode, AnimationChannel, AnimationClip, AnimationInterpolation, AnimationSampler,
     AnimationTrack, AnimationTrackValues, AttributeData, AttributeDomain, AttributeValues,
     CELL_SENTINEL, ColourSpace, DecodedDataSet, FillRule, GaussianSplatSet, HdrImageData, Joint,
-    MAX_JOINTS, MaterialData, MaterialTextureSlot, PathSegment, PointSet, RasterImageData,
-    SceneData, SceneMesh, ShDegree, Skeleton, SkinWeights, SparseGrid, StructuredVolume, SubPath,
-    SurfaceMesh, TextureSource, VectorArt, VectorShape, VectorStroke, VolumeGridGeometry,
-    VolumeMesh,
+    MATERIAL_TEXTURE_SLOTS, MAX_JOINTS, MaterialData, MaterialTextureSlot, PathSegment, PointSet,
+    RasterImageData, SceneData, SceneMesh, ShDegree, Skeleton, SkinWeights, SparseGrid,
+    StructuredVolume, SubPath, SurfaceMesh, TextureFilter, TextureSampler, TextureSource,
+    UvTransform, VectorArt, VectorShape, VectorStroke, VolumeGridGeometry, VolumeMesh, WrapMode,
 };

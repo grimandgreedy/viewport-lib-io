@@ -37,6 +37,12 @@ pub(super) fn convert_primitive(
         .read_tex_coords(0)
         .map(|iter| iter.into_f32().collect());
 
+    // TEXCOORD_1: the second set a material slot can select through its UV
+    // transform's `uv_set`. Sets beyond it are not carried.
+    let uvs1 = reader
+        .read_tex_coords(1)
+        .map(|iter| iter.into_f32().collect());
+
     let tangents = reader.read_tangents().map(|iter| iter.collect());
 
     // COLOR_0: per-vertex colour. glTF stores it as vec3 or vec4 in u8, u16, or
@@ -110,6 +116,7 @@ pub(super) fn convert_primitive(
     mesh_data.normals = normals;
     mesh_data.indices = indices;
     mesh_data.uvs = uvs;
+    mesh_data.uvs1 = uvs1;
     mesh_data.tangents = tangents;
     mesh_data.colours = colours;
     mesh_data.skin_weights = skin_weights;
@@ -158,8 +165,8 @@ pub(super) fn compute_vertex_normals(positions: &[[f32; 3]], indices: &[u32]) ->
 
 #[cfg(test)]
 mod tests {
-    use crate::testkit::synth::temp_dir;
     use super::super::*;
+    use crate::testkit::synth::temp_dir;
 
     #[cfg(feature = "gltf")]
     #[test]
@@ -233,6 +240,134 @@ mod tests {
                 );
             }
         }
+
+        let _ = std::fs::remove_file(gltf_path);
+        let _ = std::fs::remove_file(bin_path);
+        let _ = std::fs::remove_dir(dir);
+    }
+
+    #[cfg(feature = "gltf")]
+    #[test]
+    fn loads_second_uv_set_from_texcoord_1() {
+        // Minimal triangle carrying both TEXCOORD_0 and TEXCOORD_1.
+        let dir = temp_dir("gltf_texcoord1");
+        let gltf_path = dir.join("tri.gltf");
+        let bin_path = dir.join("tri.bin");
+
+        // Binary layout (little-endian):
+        //   positions: 3 vec3 (36 bytes) offset 0
+        //   indices:   3 u32  (12 bytes) offset 36
+        //   uv0:       3 vec2 (24 bytes) offset 48
+        //   uv1:       3 vec2 (24 bytes) offset 72
+        // Total: 96 bytes.
+        let mut bin = Vec::new();
+        for v in [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in [0u32, 1, 2] {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        let uv0 = [[0.0f32, 0.0], [1.0, 0.0], [0.0, 1.0]];
+        let uv1 = [[0.25f32, 0.5], [0.75, 0.5], [0.25, 0.9]];
+        for uv in uv0.iter().chain(uv1.iter()) {
+            for v in uv {
+                bin.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        assert_eq!(bin.len(), 96);
+        std::fs::write(&bin_path, &bin).unwrap();
+
+        let json = r#"{
+  "asset": { "version": "2.0" },
+  "scene": 0,
+  "scenes": [{ "nodes": [0] }],
+  "nodes": [{ "mesh": 0, "name": "two_uv_sets" }],
+  "meshes": [{
+    "primitives": [{
+      "attributes": { "POSITION": 0, "TEXCOORD_0": 2, "TEXCOORD_1": 3 },
+      "indices": 1
+    }]
+  }],
+  "buffers": [{ "uri": "tri.bin", "byteLength": 96 }],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0,  "byteLength": 36 },
+    { "buffer": 0, "byteOffset": 36, "byteLength": 12, "target": 34963 },
+    { "buffer": 0, "byteOffset": 48, "byteLength": 24 },
+    { "buffer": 0, "byteOffset": 72, "byteLength": 24 }
+  ],
+  "accessors": [
+    { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0,0,0], "max": [1,1,0] },
+    { "bufferView": 1, "componentType": 5125, "count": 3, "type": "SCALAR" },
+    { "bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC2" },
+    { "bufferView": 3, "componentType": 5126, "count": 3, "type": "VEC2" }
+  ]
+}"#;
+        std::fs::write(&gltf_path, json).unwrap();
+
+        let scene = scene_from_path(&gltf_path).unwrap();
+        let mesh = scene.meshes.first().expect("mesh missing");
+        let first = mesh.mesh.uvs.as_ref().expect("uvs missing");
+        let second = mesh.mesh.uvs1.as_ref().expect("uvs1 missing");
+        assert_eq!(first.as_slice(), uv0.as_slice());
+        assert_eq!(second.as_slice(), uv1.as_slice());
+
+        let _ = std::fs::remove_file(gltf_path);
+        let _ = std::fs::remove_file(bin_path);
+        let _ = std::fs::remove_dir(dir);
+    }
+
+    /// One UV set stays one UV set: a mesh without TEXCOORD_1 carries no second
+    /// channel rather than a copy of the first.
+    #[cfg(feature = "gltf")]
+    #[test]
+    fn single_uv_set_leaves_uvs1_absent() {
+        let dir = temp_dir("gltf_texcoord0_only");
+        let gltf_path = dir.join("tri.gltf");
+        let bin_path = dir.join("tri.bin");
+
+        let mut bin = Vec::new();
+        for v in [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in [0u32, 1, 2] {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        for uv in [[0.0f32, 0.0], [1.0, 0.0], [0.0, 1.0]] {
+            for v in uv {
+                bin.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        std::fs::write(&bin_path, &bin).unwrap();
+
+        let json = r#"{
+  "asset": { "version": "2.0" },
+  "scene": 0,
+  "scenes": [{ "nodes": [0] }],
+  "nodes": [{ "mesh": 0 }],
+  "meshes": [{
+    "primitives": [{
+      "attributes": { "POSITION": 0, "TEXCOORD_0": 2 },
+      "indices": 1
+    }]
+  }],
+  "buffers": [{ "uri": "tri.bin", "byteLength": 72 }],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0,  "byteLength": 36 },
+    { "buffer": 0, "byteOffset": 36, "byteLength": 12, "target": 34963 },
+    { "buffer": 0, "byteOffset": 48, "byteLength": 24 }
+  ],
+  "accessors": [
+    { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0,0,0], "max": [1,1,0] },
+    { "bufferView": 1, "componentType": 5125, "count": 3, "type": "SCALAR" },
+    { "bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC2" }
+  ]
+}"#;
+        std::fs::write(&gltf_path, json).unwrap();
+
+        let scene = scene_from_path(&gltf_path).unwrap();
+        let mesh = scene.meshes.first().expect("mesh missing");
+        assert!(mesh.mesh.uvs.is_some());
+        assert!(mesh.mesh.uvs1.is_none());
 
         let _ = std::fs::remove_file(gltf_path);
         let _ = std::fs::remove_file(bin_path);
