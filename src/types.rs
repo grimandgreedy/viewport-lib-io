@@ -782,7 +782,9 @@ pub struct SceneData {
 
 /// One segment of a [`SubPath`]. The start point is implicit: it is the
 /// subpath's `start` for the first segment, and the previous segment's end
-/// point after that. Coordinates are in the source drawing's user units.
+/// point after that. Coordinates are in the source drawing's user units, in the
+/// 2D canvas frame: X right, Y down from the top-left origin. The crate's Z-up
+/// convention covers 3D scene geometry and does not apply here.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PathSegment {
     /// Straight line to `to`.
@@ -832,18 +834,61 @@ pub enum FillRule {
     EvenOdd,
 }
 
-/// One filled shape from a vector drawing: its contours, fill rule, and the
-/// resolved fill colour.
+/// An outline stroke on a [`VectorShape`]: the contours drawn at `width` in the
+/// drawing's user units, in `colour`. Field-for-field the shape of
+/// `viewport_lib_ui::primitives::draw::VectorStroke` (the one on
+/// `DrawCommand::Vector`, which names its paint `colour`; the document-level
+/// `WidgetKind::Vector` stroke names it `paint` instead), so mapping across is a
+/// copy.
+///
+/// Open subpaths stroke as open lines and closed ones stroke their whole
+/// boundary, which is what makes stroke-drawn art (most icon and cursor sets)
+/// readable: those contours are lines, not the outlines of filled blobs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VectorStroke {
+    /// Stroke colour as linear RGBA in `[0, 1]`, alpha carrying the stroke
+    /// opacity multiplied by any enclosing group opacity.
+    pub colour: [f32; 4],
+    /// Stroke width in the same user units as the contour coordinates.
+    ///
+    /// Scaled by the transform baked into the geometry, so it stays in step
+    /// with the contours. A non-uniform scale cannot be one scalar width, so it
+    /// becomes the average of the transform's two scale factors: under
+    /// `scale(2, 4)` the width is 3x the authored one. Consumers that scale the
+    /// art further (fitting it to a rect, say) must scale this by the same
+    /// factor, or the stroke stays a fixed width while the drawing grows. Note
+    /// that `viewport-lib-ui` measures its own stroke width in logical pixels,
+    /// so that scale factor is exactly the conversion.
+    pub width: f32,
+}
+
+/// One shape from a vector drawing: its contours, fill rule, and the resolved
+/// fill and stroke paint.
+///
+/// `fill` and `stroke` are independent and either can be absent. A shape with a
+/// stroke and no fill is stroke-only: draw the contours as lines, not as filled
+/// area. The one case the two fields cannot tell apart is a shape whose only
+/// paint is a gradient or pattern the loader does not resolve: it arrives with
+/// both `None`, indistinguishable from a shape with no paint at all. The
+/// geometry is emitted either way.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VectorShape {
     /// Contours making up the shape. Curves are preserved, not flattened.
     pub subpaths: Vec<SubPath>,
     /// How the subpaths combine into filled area.
     pub fill_rule: FillRule,
-    /// Resolved fill colour as linear RGBA in `[0, 1]`, alpha carrying the
-    /// fill opacity. `None` when the source shape has no fill, or a gradient or
-    /// pattern paint this loader does not resolve to a single colour.
+    /// Resolved fill colour as linear RGBA in `[0, 1]`, alpha carrying the fill
+    /// opacity multiplied by any enclosing group opacity. `None` when the
+    /// source shape has no fill, or a gradient or pattern paint the loader does
+    /// not resolve to a single colour.
     pub fill: Option<[f32; 4]>,
+    /// Resolved outline stroke. `None` when the source shape has no stroke, or
+    /// a gradient or pattern stroke paint the loader does not resolve to a
+    /// single colour.
+    ///
+    /// Stroke cap, join, dash, and miter limit are not carried: the renderer
+    /// draws a uniform outline of the contours and has no vocabulary for them.
+    pub stroke: Option<VectorStroke>,
 }
 
 /// A decoded 2D vector drawing: filled shapes in draw order plus the source

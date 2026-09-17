@@ -31,5 +31,6 @@ pub use types::{
     CELL_SENTINEL, ColourSpace, DecodedDataSet, FillRule, GaussianSplatSet, HdrImageData, Joint,
     MAX_JOINTS, MaterialData, MaterialTextureSlot, PathSegment, PointSet, RasterImageData,
     SceneData, SceneMesh, ShDegree, Skeleton, SkinWeights, SparseGrid, StructuredVolume, SubPath,
-    SurfaceMesh, TextureSource, VectorArt, VectorShape, VolumeGridGeometry, VolumeMesh,
+    SurfaceMesh, TextureSource, VectorArt, VectorShape, VectorStroke, VolumeGridGeometry,
+    VolumeMesh,
 };

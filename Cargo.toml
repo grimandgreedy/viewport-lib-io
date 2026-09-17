@@ -85,3 +85,13 @@ required-features = ["gltf"]
 name = "probe-bvh"
 path = "examples/probe_bvh.rs"
 required-features = ["bvh"]
+
+[[example]]
+name = "probe-fbx-orientation"
+path = "examples/probe_fbx_orientation.rs"
+required-features = ["fbx"]
+
+[[example]]
+name = "probe-fbx-uv"
+path = "examples/probe_fbx_uv.rs"
+required-features = ["fbx"]

@@ -12,11 +12,9 @@ book/build/
 .direnv/
 *.log
 *.swp
-*.swo
-*.user
-*.qtc.user
 
 
+scripts/
 docs/
 settings.local.json
 CLAUDE.md
