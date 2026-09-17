@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::error::IoError;
 use crate::types::TextureData;
 #[cfg(feature = "svg")]
-use crate::types::{FillRule, PathSegment, SubPath, VectorArt, VectorShape};
+use crate::types::{FillRule, PathSegment, SubPath, VectorArt, VectorShape, VectorStroke};
 
 /// Decode an SVG file into RGBA8 pixels.
 pub fn texture_from_path(path: &Path) -> Result<TextureData, IoError> {
@@ -50,25 +50,26 @@ pub fn texture_from_path(path: &Path) -> Result<TextureData, IoError> {
 
 /// Load an SVG file as neutral vector paths instead of a rasterized texture.
 ///
-/// Walks the parsed path tree and emits one [`VectorShape`] per filled path,
+/// Walks the parsed path tree and emits one [`VectorShape`] per painted path,
 /// with its subpaths (curves preserved, not flattened), fill rule, and resolved
-/// solid fill colour. Coordinates are baked into the drawing's user-unit space
+/// solid fill and stroke paint. Coordinates are baked into the drawing's user-unit space
 /// (each path's absolute transform is applied), so the output places directly
 /// without further transform bookkeeping. This is the SVG canvas frame: X to
 /// the right, Y *down* from the top-left origin, not the crate's Z-up scene
 /// convention, which covers 3D geometry only. Feed the result into
 /// `viewport_lib::OverlayShapeItem::vector` to draw it.
 ///
-/// Only solid fills are resolved to a colour; gradient and pattern fills leave
-/// [`VectorShape::fill`] as `None` (the geometry is still emitted). Enclosing
-/// group opacity is folded into the fill alpha. Invisible paths
-/// (`visibility="hidden"`) are skipped, matching what [`texture_from_path`]
-/// rasterizes.
+/// Only solid paints are resolved to a colour; gradient and pattern paints leave
+/// [`VectorShape::fill`] or [`VectorShape::stroke`] as `None` (the geometry is
+/// still emitted). Enclosing group opacity is folded into both alphas. Invisible
+/// paths (`visibility="hidden"`) are skipped, matching what
+/// [`texture_from_path`] rasterizes.
 ///
-/// Strokes are not carried: the output models filled area only, so a
-/// stroke-only path yields a shape with no fill, and stroke paint and width are
-/// dropped. Group clip paths, masks, and filters are ignored. Use
-/// [`texture_from_path`] instead when a baked raster image is wanted.
+/// Stroke width is scaled by the transform baked into the geometry, so it stays
+/// in step with the contours; see [`VectorStroke::width`] for the non-uniform
+/// case. Stroke cap, join, dash, and miter limit are not carried. Group clip
+/// paths, masks, and filters are ignored. Use [`texture_from_path`] instead when
+/// a baked raster image is wanted.
 pub fn vector_from_path(path: &Path) -> Result<VectorArt, IoError> {
     #[cfg(feature = "svg")]
     {
@@ -100,7 +101,7 @@ pub fn vector_from_path(path: &Path) -> Result<VectorArt, IoError> {
     }
 }
 
-/// Recurse the node tree, appending a `VectorShape` for each filled path.
+/// Recurse the node tree, appending a `VectorShape` for each painted path.
 ///
 /// `opacity` is the product of the enclosing groups' opacities, folded into
 /// each shape's fill alpha since the neutral output has no group nesting.
@@ -145,26 +146,55 @@ fn path_to_shape(path: &resvg::usvg::Path, opacity: f32) -> Option<VectorShape> 
                 resvg::usvg::FillRule::EvenOdd => FillRule::EvenOdd,
                 resvg::usvg::FillRule::NonZero => FillRule::NonZero,
             };
-            let colour = match fill.paint() {
-                resvg::usvg::Paint::Color(c) => Some([
-                    srgb_to_linear(c.red),
-                    srgb_to_linear(c.green),
-                    srgb_to_linear(c.blue),
-                    fill.opacity().get() * opacity,
-                ]),
-                // Gradients and patterns are not reduced to a single colour.
-                _ => None,
-            };
-            (rule, colour)
+            (
+                rule,
+                solid_colour(fill.paint(), fill.opacity().get() * opacity),
+            )
         }
         None => (FillRule::NonZero, None),
     };
+
+    let stroke = path.stroke().and_then(|stroke| {
+        let colour = solid_colour(stroke.paint(), stroke.opacity().get() * opacity)?;
+        Some(VectorStroke {
+            colour,
+            // usvg reports the width in the path's own units, so it needs the
+            // same transform the geometry just had baked in. A non-uniform
+            // scale has no single right answer; average the two factors.
+            width: stroke.width().get() * transform_scale(path.abs_transform()),
+        })
+    });
 
     Some(VectorShape {
         subpaths,
         fill_rule,
         fill,
+        stroke,
     })
+}
+
+/// Resolve a solid paint to linear RGBA at `alpha`. Gradients and patterns are
+/// not reduced to a single colour, so they yield `None`.
+#[cfg(feature = "svg")]
+fn solid_colour(paint: &resvg::usvg::Paint, alpha: f32) -> Option<[f32; 4]> {
+    match paint {
+        resvg::usvg::Paint::Color(c) => Some([
+            srgb_to_linear(c.red),
+            srgb_to_linear(c.green),
+            srgb_to_linear(c.blue),
+            alpha,
+        ]),
+        _ => None,
+    }
+}
+
+/// The scalar a length in a transform's source space multiplies by. `get_scale`
+/// takes the magnitude of each axis, so rotation and skew are handled; the two
+/// factors are averaged since one scalar cannot express a non-uniform scale.
+#[cfg(feature = "svg")]
+fn transform_scale(transform: resvg::tiny_skia::Transform) -> f32 {
+    let (x, y) = transform.get_scale();
+    (x + y) / 2.0
 }
 
 /// Split a tiny-skia path into subpaths, preserving line and Bezier segments.
@@ -377,5 +407,131 @@ mod tests {
         );
         let own = art.shapes[1].fill.expect("solid fill")[3];
         assert!((own - 0.5).abs() < 1e-5, "fill-opacity is unchanged: {own}");
+    }
+
+    #[cfg(feature = "svg")]
+    #[test]
+    fn stroke_only_path_resolves_a_stroke_and_no_fill() {
+        let path = temp_path("svg_stroke_only");
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+  <path d="M0 0 L10 10" fill="none" stroke="#ff0000" stroke-width="2"/>
+</svg>"##;
+
+        std::fs::write(&path, svg).unwrap();
+        let art = vector_from_path(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(art.shapes.len(), 1);
+        let shape = &art.shapes[0];
+        assert!(shape.fill.is_none(), "no fill: stroke-only art");
+        let stroke = shape.stroke.expect("solid stroke resolves to a colour");
+        assert!(
+            stroke.colour[0] > 0.9 && stroke.colour[1] < 0.1,
+            "red stroke: {:?}",
+            stroke.colour
+        );
+        assert!((stroke.width - 2.0).abs() < 1e-5, "width: {}", stroke.width);
+        assert!(
+            !shape.subpaths[0].closed,
+            "an open line stays open, so a consumer strokes rather than fills it"
+        );
+    }
+
+    #[cfg(feature = "svg")]
+    #[test]
+    fn path_with_both_paints_resolves_both() {
+        let path = temp_path("svg_fill_and_stroke");
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+  <rect x="1" y="1" width="8" height="8" fill="#00ff00" stroke="#0000ff" stroke-width="1"/>
+</svg>"##;
+
+        std::fs::write(&path, svg).unwrap();
+        let art = vector_from_path(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(art.shapes.len(), 1);
+        let shape = &art.shapes[0];
+        let fill = shape.fill.expect("solid fill");
+        assert!(fill[1] > 0.9, "green fill: {fill:?}");
+        let stroke = shape.stroke.expect("solid stroke");
+        assert!(stroke.colour[2] > 0.9, "blue stroke: {:?}", stroke.colour);
+    }
+
+    #[cfg(feature = "svg")]
+    #[test]
+    fn stroke_width_scales_with_the_baked_transform() {
+        let path = temp_path("svg_stroke_width_scale");
+        // usvg reports stroke width in the path's own units, so the width has
+        // to follow the transform that the geometry has baked into it.
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40">
+  <g transform="scale(2)">
+    <path d="M0 0 L10 0" fill="none" stroke="#000000" stroke-width="3"/>
+  </g>
+  <g transform="scale(2,4)">
+    <path d="M0 5 L10 5" fill="none" stroke="#000000" stroke-width="3"/>
+  </g>
+</svg>"##;
+
+        std::fs::write(&path, svg).unwrap();
+        let art = vector_from_path(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(art.shapes.len(), 2);
+        let uniform = art.shapes[0].stroke.expect("solid stroke").width;
+        assert!((uniform - 6.0).abs() < 1e-5, "2x scale: {uniform}");
+        // The geometry also lands at twice the authored x, so the two agree.
+        assert_eq!(art.shapes[0].subpaths[0].segments.len(), 1);
+        assert!(matches!(
+            art.shapes[0].subpaths[0].segments[0],
+            PathSegment::Line { to } if (to[0] - 20.0).abs() < 1e-5
+        ));
+
+        let non_uniform = art.shapes[1].stroke.expect("solid stroke").width;
+        assert!(
+            (non_uniform - 9.0).abs() < 1e-5,
+            "average of 2x and 4x: {non_uniform}"
+        );
+    }
+
+    #[cfg(feature = "svg")]
+    #[test]
+    fn gradient_stroke_leaves_the_stroke_unset() {
+        let path = temp_path("svg_gradient_stroke");
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+  <defs>
+    <linearGradient id="g"><stop offset="0" stop-color="#ff0000"/><stop offset="1" stop-color="#0000ff"/></linearGradient>
+  </defs>
+  <path d="M0 0 L10 10" fill="none" stroke="url(#g)" stroke-width="2"/>
+</svg>"##;
+
+        std::fs::write(&path, svg).unwrap();
+        let art = vector_from_path(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(art.shapes.len(), 1, "the geometry is still emitted");
+        assert!(art.shapes[0].stroke.is_none(), "gradient is not one colour");
+        assert!(!art.shapes[0].subpaths.is_empty());
+    }
+
+    #[cfg(feature = "svg")]
+    #[test]
+    fn group_opacity_folds_into_stroke_alpha() {
+        let path = temp_path("svg_stroke_group_opacity");
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+  <g opacity="0.5">
+    <path d="M0 0 L10 10" fill="none" stroke="#ff0000" stroke-width="2" stroke-opacity="0.5"/>
+  </g>
+</svg>"##;
+
+        std::fs::write(&path, svg).unwrap();
+        let art = vector_from_path(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        let stroke = art.shapes[0].stroke.expect("solid stroke");
+        assert!(
+            (stroke.colour[3] - 0.25).abs() < 1e-5,
+            "group opacity times stroke-opacity: {}",
+            stroke.colour[3]
+        );
     }
 }

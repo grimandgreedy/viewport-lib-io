@@ -19,8 +19,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leave the colour unset (the geometry is still emitted); `<text>` and image
   nodes are skipped (text needs a font DB fed to `usvg`). Coordinates are in the
   SVG canvas frame (X right, Y down), not the Z-up scene convention, which
-  covers 3D geometry only; strokes carry no paint or width into the output,
-  which models filled area.
+  covers 3D geometry only.
+- Stroke paint and width on imported SVG vector art. `VectorShape` gained
+  `stroke: Option<VectorStroke>`, where `VectorStroke { colour, width }` mirrors
+  `viewport-lib-ui`'s `DrawCommand::Vector` stroke field for field, so the
+  consumer map stays a copy. Stroke-drawn art (most icon and cursor sets) now
+  imports with its paint instead of as unpainted contours: a stroke-only path
+  yields `fill: None` with a populated `stroke`, and open subpaths stay open so
+  a consumer strokes them rather than filling them under the fill rule. The
+  width is scaled by the transform baked into the geometry, averaging the two
+  scale factors under a non-uniform scale, and stroke opacity folds in enclosing
+  group opacity the way fill does. Gradient and pattern stroke paints leave
+  `stroke` as `None` with the geometry still emitted, mirroring fill. Stroke
+  cap, join, dash, and miter limit are not carried: the renderer draws a uniform
+  outline of the contours and has no vocabulary for them.
 - Morph-target (blend-shape) geometry on `SurfaceMesh`. A new `MorphTarget`
   neutral type carries per-vertex position (and optional normal / tangent)
   displacements from the base mesh, and `SurfaceMesh::morph_targets` holds them
