@@ -130,9 +130,11 @@ pub struct UvTransform {
     pub scale: [f32; 2],
     /// Rotation in radians about the UV origin, anticlockwise.
     pub rotation: f32,
-    /// Which UV set to sample: 0 is [`SurfaceMesh::uvs`], matching glTF
-    /// `texCoord`. A slot reading a set the mesh does not carry falls back to
-    /// UV0 at the consumer.
+    /// Which UV set to sample, matching glTF `texCoord`: 0 is
+    /// [`SurfaceMesh::uvs`] and 1 is [`SurfaceMesh::uvs1`]. What a consumer does
+    /// with a slot naming a set the mesh does not carry is its own business, and
+    /// is not always a fallback to UV0: viewport-lib samples `(0, 0)` there.
+    /// Sets above 1 are not decoded, so the value is 0 or 1 today.
     pub uv_set: u32,
 }
 

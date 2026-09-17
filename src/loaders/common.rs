@@ -195,6 +195,7 @@ impl Dataset {
             normals: self.normals.clone(),
             indices: self.indices.clone(),
             uvs: None,
+            uvs1: None,
             tangents: None,
             colours: None,
             attributes,
