@@ -461,3 +461,121 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .windows(needle.len())
         .position(|window| window == needle)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The point-cloud reader carries its own copy of the PLY scalar table, so
+    /// it is pinned to the same expectations as the scene reader's. If the two
+    /// ever drift, one of these suites says so.
+    #[test]
+    fn both_spellings_of_every_type_are_accepted() {
+        for (a, b, size) in [
+            ("char", "int8", 1),
+            ("uchar", "uint8", 1),
+            ("short", "int16", 2),
+            ("ushort", "uint16", 2),
+            ("int", "int32", 4),
+            ("uint", "uint32", 4),
+            ("float", "float32", 4),
+            ("double", "float64", 8),
+        ] {
+            let first = ScalarType::from_str(a).unwrap_or_else(|| panic!("{a} is a PLY type"));
+            let second = ScalarType::from_str(b).unwrap_or_else(|| panic!("{b} is a PLY type"));
+            assert_eq!(first.byte_size(), size, "{a} is {size} bytes");
+            assert_eq!(second.byte_size(), size, "{b} is {size} bytes");
+        }
+
+        assert!(ScalarType::from_str("float128").is_none());
+    }
+
+    #[test]
+    fn the_two_byte_orders_read_the_same_value() {
+        let value = -12.25f32;
+        assert_eq!(
+            read_f32(
+                &value.to_le_bytes(),
+                ScalarType::Float32,
+                Format::LittleEndian
+            ),
+            value
+        );
+        assert_eq!(
+            read_f32(&value.to_be_bytes(), ScalarType::Float32, Format::BigEndian),
+            value
+        );
+
+        let wide = 1234.5f64;
+        assert_eq!(
+            read_f32(
+                &wide.to_le_bytes(),
+                ScalarType::Float64,
+                Format::LittleEndian
+            ),
+            wide as f32
+        );
+    }
+
+    #[test]
+    fn signed_and_unsigned_types_read_the_same_byte_differently() {
+        assert_eq!(
+            read_f32(&[0xFF], ScalarType::Uint8, Format::LittleEndian),
+            255.0
+        );
+        assert_eq!(
+            read_f32(&[0xFF], ScalarType::Int8, Format::LittleEndian),
+            -1.0
+        );
+
+        let bytes = (-2i16).to_le_bytes();
+        assert_eq!(
+            read_f32(&bytes, ScalarType::Int16, Format::LittleEndian),
+            -2.0
+        );
+        assert_eq!(
+            read_f32(&bytes, ScalarType::Uint16, Format::LittleEndian),
+            u16::MAX as f32 - 1.0
+        );
+    }
+
+    /// Byte colours are scaled into 0..1, float colours are already there.
+    #[test]
+    fn only_byte_colours_are_scaled() {
+        let parts = ["128", "0.25"];
+        assert!((parse_color_ascii(&parts, 0, true) - 128.0 / 255.0).abs() < 1e-6);
+        assert_eq!(parse_color_ascii(&parts, 1, false), 0.25);
+        assert!(ScalarType::Uint8.is_uchar());
+        assert!(!ScalarType::Float32.is_uchar());
+    }
+
+    #[test]
+    fn a_missing_ascii_field_reads_as_zero() {
+        let parts = ["1.5", "nope"];
+        assert_eq!(parse_ascii_f32(&parts, 0), 1.5);
+        assert_eq!(parse_ascii_f32(&parts, 1), 0.0);
+        assert_eq!(parse_ascii_f32(&parts, 9), 0.0);
+    }
+
+    /// This entry point is point-cloud-first on purpose: a PLY carrying faces
+    /// belongs to the scene loader, and taking it here would silently drop the
+    /// topology.
+    #[test]
+    fn a_ply_with_faces_is_refused() {
+        let bytes = viewport_lib_io_testkit::synth::ply_ascii_quad(false);
+        let error = point_cloud_from_bytes(bytes.as_bytes()).expect_err("a mesh, not a cloud");
+        assert!(
+            format!("{error}").to_lowercase().contains("face"),
+            "the message says why: {error}"
+        );
+    }
+
+    /// A face-less PLY is the point cloud this loader is for.
+    #[test]
+    fn a_face_less_ply_decodes_to_its_points() {
+        let bytes = viewport_lib_io_testkit::synth::ply_ascii_points(true);
+        let cloud = point_cloud_from_bytes(bytes.as_bytes()).expect("decode points");
+        assert_eq!(cloud.positions.len(), 4);
+        assert_eq!(cloud.colors.len(), cloud.positions.len());
+    }
+}

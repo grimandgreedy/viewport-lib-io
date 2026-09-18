@@ -372,3 +372,139 @@ fn compute_smooth_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Gmsh 2.2: nodes in one flat list, elements carrying a variable tag count
+    /// before their node list.
+    fn v2_quad() -> String {
+        String::from(
+            "$MeshFormat\n2.2 0 8\n$EndMeshFormat\n\
+             $Nodes\n4\n1 0 0 0\n2 1 0 0\n3 1 1 0\n4 0 1 0\n$EndNodes\n\
+             $Elements\n2\n1 2 2 0 1 1 2 3\n2 2 2 0 1 1 3 4\n$EndElements\n",
+        )
+    }
+
+    /// Gmsh 4.1: the same quad, described through entity blocks with the node
+    /// tags and their coordinates on separate runs of lines.
+    fn v4_quad() -> String {
+        String::from(
+            "$MeshFormat\n4.1 0 8\n$EndMeshFormat\n\
+             $Nodes\n1 4 1 4\n2 1 0 4\n1\n2\n3\n4\n\
+             0 0 0\n1 0 0\n1 1 0\n0 1 0\n$EndNodes\n\
+             $Elements\n1 2 1 2\n2 1 2 2\n1 1 2 3\n2 1 3 4\n$EndElements\n",
+        )
+    }
+
+    #[test]
+    fn the_version_line_decides_which_parser_runs() {
+        assert_eq!(parse_version(&v2_quad()).unwrap(), 2.2);
+        assert_eq!(parse_version(&v4_quad()).unwrap(), 4.1);
+        assert!(parse_version("$Nodes\n0\n$EndNodes\n").is_err());
+        assert!(parse_version("$MeshFormat\nnot-a-number\n$EndMeshFormat\n").is_err());
+    }
+
+    /// The two format versions lay the same mesh out completely differently, so
+    /// decoding both and comparing checks each parser against an independent
+    /// description rather than against a transcript.
+    #[test]
+    fn both_format_versions_decode_to_the_same_mesh() {
+        let v2 = load_msh(&v2_quad()).expect("decode 2.2");
+        let v4 = load_msh(&v4_quad()).expect("decode 4.1");
+
+        assert_eq!(v2.positions, v4.positions);
+        assert_eq!(v2.indices, v4.indices);
+        assert_eq!(v2.positions.len(), 4, "the shared corner is emitted once");
+        assert_eq!(v2.indices, vec![0, 1, 2, 0, 2, 3]);
+    }
+
+    /// Node tags are arbitrary integers, not positions in an array. A file
+    /// numbering its nodes in the thousands decodes to the same dense mesh.
+    #[test]
+    fn sparse_node_tags_are_remapped_to_dense_indices() {
+        let text = "$MeshFormat\n2.2 0 8\n$EndMeshFormat\n\
+                    $Nodes\n3\n1000 0 0 0\n2000 1 0 0\n3000 1 1 0\n$EndNodes\n\
+                    $Elements\n1\n1 2 2 0 1 1000 2000 3000\n$EndElements\n";
+
+        let mesh = load_msh(text).expect("decode sparse tags");
+        assert_eq!(mesh.indices, vec![0, 1, 2]);
+        assert_eq!(mesh.positions[1], [1.0, 0.0, 0.0]);
+    }
+
+    /// A quad element becomes two triangles across its 0-2 diagonal.
+    #[test]
+    fn a_quad_element_splits_into_two_triangles() {
+        let text = "$MeshFormat\n2.2 0 8\n$EndMeshFormat\n\
+                    $Nodes\n4\n1 0 0 0\n2 1 0 0\n3 1 1 0\n4 0 1 0\n$EndNodes\n\
+                    $Elements\n1\n1 3 2 0 1 1 2 3 4\n$EndElements\n";
+
+        let mesh = load_msh(text).expect("decode quad element");
+        assert_eq!(mesh.indices, vec![0, 1, 2, 0, 2, 3]);
+    }
+
+    /// With no surface elements the loader falls back to the boundary of the
+    /// volume. Two tetrahedra glued on one face have eight faces between them,
+    /// of which six are boundary.
+    #[test]
+    fn a_tet_only_mesh_falls_back_to_its_boundary() {
+        let faces = extract_tet_boundary(&[[1, 2, 3, 4], [1, 2, 3, 5]]);
+        assert_eq!(faces.len(), 6);
+
+        let mut keys: Vec<[u64; 3]> = faces
+            .into_iter()
+            .map(|mut f| {
+                f.sort_unstable();
+                f
+            })
+            .collect();
+        keys.sort_unstable();
+        assert!(
+            !keys.contains(&[1, 2, 3]),
+            "the glued face is interior, not boundary"
+        );
+    }
+
+    /// An element naming a node the file never declared is a parse error, not a
+    /// panic or a silently dropped triangle.
+    #[test]
+    fn an_undeclared_node_tag_is_an_error() {
+        let text = "$MeshFormat\n2.2 0 8\n$EndMeshFormat\n\
+                    $Nodes\n1\n1 0 0 0\n$EndNodes\n\
+                    $Elements\n1\n1 2 2 0 1 1 7 9\n$EndElements\n";
+
+        let error = load_msh(text).expect_err("undeclared tag");
+        assert!(
+            format!("{error}").contains("undeclared node tag"),
+            "the message names the problem: {error}"
+        );
+    }
+
+    /// A file with nodes but nothing renderable, and a file with no nodes at
+    /// all, both report rather than returning an empty mesh.
+    #[test]
+    fn a_mesh_with_nothing_to_draw_is_an_error() {
+        let no_elements = "$MeshFormat\n2.2 0 8\n$EndMeshFormat\n\
+                           $Nodes\n1\n1 0 0 0\n$EndNodes\n\
+                           $Elements\n0\n$EndElements\n";
+        assert!(load_msh(no_elements).is_err());
+
+        let no_nodes = "$MeshFormat\n2.2 0 8\n$EndMeshFormat\n\
+                        $Nodes\n0\n$EndNodes\n$Elements\n0\n$EndElements\n";
+        assert!(load_msh(no_nodes).is_err());
+    }
+
+    /// Smooth normals are unit length and, for a flat quad in the XY plane,
+    /// all point the same way.
+    #[test]
+    fn smooth_normals_are_unit_length() {
+        let mesh = load_msh(&v2_quad()).expect("decode 2.2");
+        assert_eq!(mesh.normals.len(), mesh.positions.len());
+        for normal in &mesh.normals {
+            let length = glam::Vec3::from(*normal).length();
+            assert!((length - 1.0).abs() < 1e-5, "unit normal, got {length}");
+            assert!(normal[2] > 0.99, "a +Z quad faces +Z, got {normal:?}");
+        }
+    }
+}

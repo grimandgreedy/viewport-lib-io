@@ -748,3 +748,156 @@ fn compute_smooth_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 
     });
     normals
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every PLY scalar type has two spellings in the wild, and files use both.
+    /// Missing one reads the property at the wrong width and desynchronises
+    /// every property after it.
+    #[test]
+    fn both_spellings_of_every_type_are_accepted() {
+        for (a, b, size) in [
+            ("char", "int8", 1),
+            ("uchar", "uint8", 1),
+            ("short", "int16", 2),
+            ("ushort", "uint16", 2),
+            ("int", "int32", 4),
+            ("uint", "uint32", 4),
+            ("float", "float32", 4),
+            ("double", "float64", 8),
+        ] {
+            let first = Ty::from_str(a).unwrap_or_else(|| panic!("{a} is a PLY type"));
+            let second = Ty::from_str(b).unwrap_or_else(|| panic!("{b} is a PLY type"));
+            assert_eq!(first.byte_size(), size, "{a} is {size} bytes");
+            assert_eq!(second.byte_size(), size, "{b} is {size} bytes");
+        }
+
+        assert!(Ty::from_str("float128").is_none());
+        assert!(Ty::from_str("").is_none());
+    }
+
+    /// The same value written either way round reads back the same, which is
+    /// the whole job of the format byte in the header.
+    #[test]
+    fn the_two_byte_orders_read_the_same_value() {
+        let value = -12.25f32;
+        let le = value.to_le_bytes();
+        let be = value.to_be_bytes();
+
+        assert_eq!(read_f32(&le, Ty::Float32, Format::LittleEndian), value);
+        assert_eq!(read_f32(&be, Ty::Float32, Format::BigEndian), value);
+
+        let wide = 1234.5f64;
+        assert_eq!(
+            read_f32(&wide.to_le_bytes(), Ty::Float64, Format::LittleEndian),
+            wide as f32
+        );
+        assert_eq!(
+            read_f32(&wide.to_be_bytes(), Ty::Float64, Format::BigEndian),
+            wide as f32
+        );
+    }
+
+    /// Signedness is not cosmetic: the same byte is 255 or -1 depending on the
+    /// declared type, and getting it wrong turns a coordinate inside out.
+    #[test]
+    fn signed_and_unsigned_types_read_the_same_byte_differently() {
+        assert_eq!(read_f32(&[0xFF], Ty::Uint8, Format::LittleEndian), 255.0);
+        assert_eq!(read_f32(&[0xFF], Ty::Int8, Format::LittleEndian), -1.0);
+
+        let bytes = (-2i16).to_le_bytes();
+        assert_eq!(read_f32(&bytes, Ty::Int16, Format::LittleEndian), -2.0);
+        assert_eq!(
+            read_f32(&bytes, Ty::Uint16, Format::LittleEndian),
+            u16::MAX as f32 - 1.0
+        );
+    }
+
+    /// Index properties come in every integer width a file feels like using.
+    #[test]
+    fn index_reads_cover_every_integer_width() {
+        assert_eq!(read_u32(&[7], Ty::Uint8, Format::LittleEndian), 7);
+        assert_eq!(
+            read_u32(&300u16.to_le_bytes(), Ty::Uint16, Format::LittleEndian),
+            300
+        );
+        assert_eq!(
+            read_u32(&70000u32.to_be_bytes(), Ty::Uint32, Format::BigEndian),
+            70000
+        );
+        assert_eq!(
+            read_u32(&5i32.to_le_bytes(), Ty::Int32, Format::LittleEndian),
+            5
+        );
+        assert_eq!(
+            read_u32(&1.0f32.to_le_bytes(), Ty::Float32, Format::LittleEndian),
+            0,
+            "a float index is not one, and reads as zero rather than garbage"
+        );
+    }
+
+    /// Colours arrive either as bytes or as floats already in 0..1. Only the
+    /// byte form is scaled, and scaling the float form would wash the model out.
+    #[test]
+    fn only_byte_colours_are_scaled() {
+        let parts = ["255", "0.5"];
+        assert_eq!(parse_color_chan_ascii(&parts, 0, true), 1.0);
+        assert_eq!(parse_color_chan_ascii(&parts, 1, false), 0.5);
+        assert!(Ty::Uint8.is_uchar() && Ty::Int8.is_uchar());
+        assert!(!Ty::Float32.is_uchar());
+    }
+
+    /// A missing or unparsable field reads as zero rather than aborting the
+    /// decode, which is how a file with a short vertex line still loads.
+    #[test]
+    fn a_missing_ascii_field_reads_as_zero() {
+        let parts = ["1.5", "not-a-number"];
+        assert_eq!(parse_ascii_f32(&parts, 0), 1.5);
+        assert_eq!(parse_ascii_f32(&parts, 1), 0.0);
+        assert_eq!(parse_ascii_f32(&parts, 9), 0.0);
+    }
+
+    /// Finding `end_header` is how the binary body is located at all.
+    #[test]
+    fn the_header_terminator_is_found_by_bytes() {
+        let bytes = b"ply\nformat ascii 1.0\nend_header\nbody";
+        let at = find_subsequence(bytes, b"end_header").expect("terminator");
+        assert_eq!(&bytes[at..at + 10], b"end_header");
+        assert_eq!(find_subsequence(bytes, b"element vertex"), None);
+    }
+
+    /// Skipping lands just past the n-th newline, and running off the end stops
+    /// there instead of indexing past it.
+    #[test]
+    fn skipping_lines_lands_after_the_newline() {
+        let bytes = b"one\ntwo\nthree\n";
+        assert_eq!(skip_ascii_lines(bytes, 0, 0), 0);
+        assert_eq!(skip_ascii_lines(bytes, 0, 1), 4);
+        assert_eq!(skip_ascii_lines(bytes, 0, 2), 8);
+        assert_eq!(skip_ascii_lines(bytes, 0, 9), bytes.len());
+
+        let unterminated = b"one\ntwo";
+        assert_eq!(skip_ascii_lines(unterminated, 0, 2), unterminated.len());
+    }
+
+    /// Smooth normals are unit length, and a flat quad's all point the same way.
+    #[test]
+    fn smooth_normals_are_unit_length() {
+        let positions = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let normals = compute_smooth_normals(&positions, &[0, 1, 2, 0, 2, 3]);
+
+        assert_eq!(normals.len(), positions.len());
+        for normal in normals {
+            let length = glam::Vec3::from(normal).length();
+            assert!((length - 1.0).abs() < 1e-5, "unit normal, got {length}");
+            assert!(normal[2] > 0.99, "a +Z quad faces +Z, got {normal:?}");
+        }
+    }
+}

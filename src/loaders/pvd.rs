@@ -105,3 +105,109 @@ pub fn read_pvd(path: &Path) -> Result<PvdSeries, ReadError> {
 
     Ok(PvdSeries { timesteps })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use viewport_lib_io_testkit::synth;
+
+    fn collection(entries: &str) -> String {
+        format!(
+            "<?xml version=\"1.0\"?>\n<VTKFile type=\"Collection\">\n  \
+             <Collection>\n{entries}  </Collection>\n</VTKFile>\n"
+        )
+    }
+
+    /// A writer is free to list its timesteps in any order, and several do.
+    /// The series is sorted by time, because every consumer indexes it as a
+    /// timeline.
+    #[test]
+    fn entries_come_back_sorted_by_time() {
+        let path = synth::temp_path("pvd_sorted", "series.pvd");
+        synth::write(
+            &path,
+            collection(
+                "    <DataSet timestep=\"2.5\" file=\"c.vtu\"/>\n\
+                 \x20   <DataSet timestep=\"0.0\" file=\"a.vtu\"/>\n\
+                 \x20   <DataSet timestep=\"1.0\" file=\"b.vtu\"/>\n",
+            ),
+        );
+
+        let series = read_pvd(&path).expect("read pvd");
+        let times: Vec<f64> = series.timesteps.iter().map(|t| t.time).collect();
+        assert_eq!(times, vec![0.0, 1.0, 2.5]);
+
+        let names: Vec<&str> = series
+            .timesteps
+            .iter()
+            .map(|t| t.file.file_name().unwrap().to_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["a.vtu", "b.vtu", "c.vtu"]);
+    }
+
+    /// A relative `file` is resolved against the collection's own directory,
+    /// not the process working directory, so a series opened from anywhere
+    /// still points at its data.
+    #[test]
+    fn relative_paths_resolve_against_the_collection() {
+        let dir = synth::temp_dir("pvd_relative");
+        let path = dir.join("series.pvd");
+        synth::write(
+            &path,
+            collection("    <DataSet timestep=\"0\" file=\"steps/step0.vtu\"/>\n"),
+        );
+
+        let series = read_pvd(&path).expect("read pvd");
+        assert_eq!(series.timesteps[0].file, dir.join("steps/step0.vtu"));
+    }
+
+    /// An absolute `file` is taken as written rather than joined onto the
+    /// collection's directory.
+    #[test]
+    fn absolute_paths_are_left_alone() {
+        let path = synth::temp_path("pvd_absolute", "series.pvd");
+        synth::write(
+            &path,
+            collection("    <DataSet timestep=\"0\" file=\"/data/step0.vtu\"/>\n"),
+        );
+
+        let series = read_pvd(&path).expect("read pvd");
+        assert_eq!(series.timesteps[0].file, PathBuf::from("/data/step0.vtu"));
+    }
+
+    /// An entry missing either attribute names no data at no time, so it is
+    /// skipped rather than landing in the timeline as a zero-time placeholder.
+    #[test]
+    fn incomplete_entries_are_skipped() {
+        let path = synth::temp_path("pvd_incomplete", "series.pvd");
+        synth::write(
+            &path,
+            collection(
+                "    <DataSet timestep=\"0\"/>\n\
+                 \x20   <DataSet file=\"orphan.vtu\"/>\n\
+                 \x20   <DataSet timestep=\"1\" file=\"good.vtu\"/>\n",
+            ),
+        );
+
+        let series = read_pvd(&path).expect("read pvd");
+        assert_eq!(series.timesteps.len(), 1);
+        assert_eq!(series.timesteps[0].time, 1.0);
+    }
+
+    /// A collection with no usable entry reports rather than handing back an
+    /// empty timeline a caller would index into.
+    #[test]
+    fn an_empty_collection_is_an_error() {
+        let path = synth::temp_path("pvd_empty", "series.pvd");
+        synth::write(&path, collection(""));
+
+        assert!(read_pvd(&path).is_err());
+    }
+
+    /// A missing file reports through the same error type as a parse failure.
+    #[test]
+    fn a_missing_file_is_an_error() {
+        let path = synth::temp_path("pvd_missing", "not-here.pvd");
+        assert!(read_pvd(&path).is_err());
+    }
+}

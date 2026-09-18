@@ -247,6 +247,49 @@ pub fn vtk_legacy_quad(field: &str) -> String {
     out
 }
 
+/// A Gmsh 2.2 ASCII `.msh` of the quad, as two triangles. Node tags start at 1
+/// and are deliberately not dense indices, which is what the format allows and
+/// the loader has to remap.
+pub fn msh_v2_quad() -> String {
+    let mut out = String::from("$MeshFormat\n2.2 0 8\n$EndMeshFormat\n");
+    out.push_str(&format!("$Nodes\n{}\n", QUAD_POSITIONS.len()));
+    for (i, p) in QUAD_POSITIONS.iter().enumerate() {
+        out.push_str(&format!("{} {} {} {}\n", i + 1, p[0], p[1], p[2]));
+    }
+    out.push_str("$EndNodes\n");
+    // Element line: tag, type (2 = triangle), tag count, the tags, then nodes.
+    out.push_str("$Elements\n2\n");
+    out.push_str("1 2 2 0 1 1 2 3\n");
+    out.push_str("2 2 2 0 1 1 3 4\n");
+    out.push_str("$EndElements\n");
+    out
+}
+
+/// A Gmsh 4.1 ASCII `.msh` of the same quad. The two versions describe the same
+/// geometry through completely different section layouts, so decoding both and
+/// comparing is a real check rather than a transcript.
+pub fn msh_v4_quad() -> String {
+    let mut out = String::from("$MeshFormat\n4.1 0 8\n$EndMeshFormat\n");
+    // One entity block: 4 nodes, tags 1..4, listed as tags then coordinates.
+    out.push_str(&format!(
+        "$Nodes\n1 {n} 1 {n}\n2 1 0 {n}\n",
+        n = QUAD_POSITIONS.len()
+    ));
+    for i in 0..QUAD_POSITIONS.len() {
+        out.push_str(&format!("{}\n", i + 1));
+    }
+    for p in QUAD_POSITIONS {
+        out.push_str(&format!("{} {} {}\n", p[0], p[1], p[2]));
+    }
+    out.push_str("$EndNodes\n");
+    // One block of two triangles; each element line is its tag then its nodes.
+    out.push_str("$Elements\n1 2 1 2\n2 1 2 2\n");
+    out.push_str("1 1 2 3\n");
+    out.push_str("2 1 3 4\n");
+    out.push_str("$EndElements\n");
+    out
+}
+
 /// Pack glTF JSON and a binary buffer into a self-contained GLB blob, for a
 /// fixture with no external `.bin` on disk.
 ///

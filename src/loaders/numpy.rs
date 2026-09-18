@@ -337,3 +337,105 @@ fn parse_npz_entries(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, IoError> {
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use viewport_lib_io_testkit::synth;
+
+    /// NumPy writes `(nz, ny, nx)`, the renderer wants `[nx, ny, nz]`. Reading
+    /// this the wrong way round transposes the volume without any error.
+    #[test]
+    fn shape_is_reversed_into_render_order() {
+        assert_eq!(dims_from_shape(&[4, 3, 2]).unwrap(), [2, 3, 4]);
+        assert!(dims_from_shape(&[3, 2]).is_err(), "rank 2 is not a volume");
+        assert!(dims_from_shape(&[2, 2, 2, 2]).is_err());
+    }
+
+    #[test]
+    fn the_header_dictionary_is_read_by_key() {
+        let header = "{'descr': '<f4', 'fortran_order': False, 'shape': (2, 3, 4), }";
+        assert_eq!(parse_header_string(header, "'descr'").unwrap(), "<f4");
+        assert!(!parse_header_bool(header, "'fortran_order'").unwrap());
+        assert_eq!(parse_header_shape(header).unwrap(), vec![2, 3, 4]);
+
+        assert!(parse_header_string(header, "'missing'").is_err());
+        assert!(parse_header_shape("{'descr': '<f4'}").is_err());
+        assert!(parse_header_shape("{'shape': (), }").is_err());
+    }
+
+    /// A one-dimensional array's shape is written `(4,)` with a trailing comma,
+    /// which is a tuple in Python and an empty component to a naive split.
+    #[test]
+    fn a_trailing_comma_in_the_shape_is_not_a_dimension() {
+        assert_eq!(parse_header_shape("{'shape': (4,), }").unwrap(), vec![4]);
+    }
+
+    /// Every dtype the loader claims to read becomes the same value as an f32.
+    /// A width read wrong shifts the whole array, not one sample.
+    #[test]
+    fn every_supported_dtype_decodes_to_the_same_value() {
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("<f4", 5.0f32.to_le_bytes().to_vec()),
+            ("<f8", 5.0f64.to_le_bytes().to_vec()),
+            ("<i4", 5i32.to_le_bytes().to_vec()),
+            ("<u4", 5u32.to_le_bytes().to_vec()),
+            ("<i8", 5i64.to_le_bytes().to_vec()),
+            ("<u8", 5u64.to_le_bytes().to_vec()),
+            ("<i2", 5i16.to_le_bytes().to_vec()),
+            ("<u2", 5u16.to_le_bytes().to_vec()),
+            ("|u1", vec![5]),
+            ("|i1", vec![5]),
+        ];
+        for (descr, bytes) in cases {
+            let values = decode_values(&bytes, descr, 1)
+                .unwrap_or_else(|e| panic!("{descr} should decode: {e}"));
+            assert_eq!(values, vec![5.0], "{descr}");
+        }
+
+        // A boolean array is not a number: anything non-zero reads as one.
+        assert_eq!(decode_values(&[0, 7], "|b1", 2).unwrap(), vec![0.0, 1.0]);
+        assert_eq!(decode_values(&[0xFF], "|i1", 1).unwrap(), vec![-1.0]);
+        assert_eq!(decode_values(&[0xFF], "|u1", 1).unwrap(), vec![255.0]);
+    }
+
+    /// A payload shorter than the shape promises is a truncated file, reported
+    /// rather than read past the end.
+    #[test]
+    fn a_truncated_payload_is_an_error() {
+        assert!(decode_values(&[0, 0, 0], "<f4", 1).is_err());
+        assert!(decode_values(&[], "not-a-dtype", 0).is_err());
+    }
+
+    /// Header versions 1 and 2 differ only in the width of the length field, so
+    /// the same array written either way decodes identically.
+    #[test]
+    fn a_v1_header_decodes() {
+        let bytes = synth::npy_f32(&[2, 2, 2], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+        assert_eq!(&bytes[..6], b"\x93NUMPY");
+
+        let array = parse_npy(&bytes).expect("decode npy");
+        assert_eq!(array.shape, vec![2, 2, 2]);
+        assert_eq!(array.values, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+    }
+
+    /// Anything not opening with the magic, and any version beyond 3, is
+    /// refused up front rather than mis-parsed.
+    #[test]
+    fn a_file_that_is_not_an_npy_is_refused() {
+        assert!(parse_npy(b"not numpy at all").is_err());
+        assert!(parse_npy(&[]).is_err());
+
+        let mut bad_version = synth::npy_f32(&[1, 1, 1], &[1.0]);
+        bad_version[6] = 9;
+        assert!(parse_npy(&bad_version).is_err());
+    }
+
+    /// Fortran ordering transposes the array, so it is refused rather than
+    /// loaded with its axes swapped.
+    #[test]
+    fn fortran_ordered_arrays_are_refused() {
+        let header = "{'descr': '<f4', 'fortran_order': True, 'shape': (1, 1, 1), }";
+        assert!(parse_header_bool(header, "'fortran_order'").unwrap());
+    }
+}
