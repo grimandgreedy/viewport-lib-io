@@ -65,3 +65,34 @@ fn the_point_field_survives() {
     });
     assert!(found, "the named point scalar is reachable after decoding");
 }
+
+/// `vtu` and `vtp` are forwards to the same decode, reachable at their own
+/// top-level paths. A consumer naming `loaders::vtu` must keep working whatever
+/// the VTK family looks like internally.
+#[test]
+fn the_family_forwards_reach_the_same_decode() {
+    let path = synth::temp_path("vtk_forwards", "quad.vtk");
+    synth::write(&path, synth::vtk_legacy_quad("density"));
+
+    let count = |sets: Vec<viewport_lib_io::types::DecodedDataSet>| {
+        sets.iter()
+            .map(|d| {
+                (
+                    d.name.clone(),
+                    d.as_surface_mesh().map(|m| m.positions.len()),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let direct = count(vtk::datasets_from_path(&path).expect("decode through vtk"));
+    let through_vtu = count(
+        viewport_lib_io::loaders::vtu::datasets_from_path(&path).expect("decode through vtu"),
+    );
+    let through_vtp = count(
+        viewport_lib_io::loaders::vtp::datasets_from_path(&path).expect("decode through vtp"),
+    );
+
+    assert_eq!(direct, through_vtu);
+    assert_eq!(direct, through_vtp);
+}

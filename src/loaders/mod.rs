@@ -108,11 +108,11 @@ pub mod vtk;
 
 /// XML PolyData dataset decoding.
 #[cfg(feature = "vtk")]
-pub mod vtp;
+pub use vtk::vtp;
 
 /// XML UnstructuredGrid dataset decoding.
 #[cfg(feature = "vtk")]
-pub mod vtu;
+pub use vtk::vtu;
 
 /// XDMF dataset decoding.
 #[cfg(feature = "xdmf")]
