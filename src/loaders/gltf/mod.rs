@@ -153,7 +153,6 @@ mod tests {
     use super::*;
     use viewport_lib_io_testkit::synth::temp_dir;
 
-    #[cfg(feature = "gltf")]
     #[test]
     fn accepts_material_only_required_extensions() {
         let dir = temp_dir("gltf_required_extensions");
@@ -220,7 +219,6 @@ mod tests {
         let _ = std::fs::remove_dir(dir);
     }
 
-    #[cfg(feature = "gltf")]
     #[test]
     fn scene_from_slice_matches_scene_from_path() {
         // Reuse the same fixture-building pattern as the skin test but at a
@@ -280,7 +278,6 @@ mod tests {
         let _ = std::fs::remove_dir(dir);
     }
 
-    #[cfg(feature = "gltf")]
     #[test]
     fn scene_from_slice_without_base_rejects_external_buffer() {
         let json = r#"{

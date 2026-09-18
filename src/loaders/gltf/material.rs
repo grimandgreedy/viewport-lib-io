@@ -450,7 +450,6 @@ mod tests {
     use super::*;
     use viewport_lib_io_testkit::synth::temp_dir;
 
-    #[cfg(feature = "gltf")]
     #[test]
     fn loads_external_base_color_texture() {
         let dir = temp_dir("gltf_external_texture");
@@ -537,7 +536,6 @@ mod tests {
         let _ = std::fs::remove_dir(dir);
     }
 
-    #[cfg(feature = "gltf")]
     #[test]
     fn reads_emissive_alpha_mode_and_double_sided() {
         let dir = temp_dir("gltf_material_render_state");
@@ -625,7 +623,6 @@ mod tests {
         let _ = std::fs::remove_dir(dir);
     }
 
-    #[cfg(feature = "gltf")]
     #[test]
     fn reads_emissive_strength_extension() {
         let dir = temp_dir("gltf_emissive_strength");
@@ -707,7 +704,6 @@ mod tests {
         let _ = std::fs::remove_dir(dir);
     }
 
-    #[cfg(feature = "gltf")]
     #[test]
     fn reads_texture_transforms_and_sampler_state() {
         use crate::types::{MaterialTextureSlot, TextureFilter, TextureSampler, WrapMode};
@@ -866,7 +862,6 @@ mod tests {
         let _ = std::fs::remove_dir(dir);
     }
 
-    #[cfg(feature = "gltf")]
     #[test]
     fn converts_spec_gloss_materials_to_metal_rough() {
         let dir = temp_dir("gltf_spec_gloss");

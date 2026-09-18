@@ -313,7 +313,6 @@ mod tests {
         std::env::temp_dir().join(unique)
     }
 
-    #[cfg(feature = "svg")]
     #[test]
     fn decodes_svg_rgba_pixels() {
         let path = temp_path("svg_decode");
@@ -331,7 +330,6 @@ mod tests {
         assert_eq!(image.rgba, vec![255, 0, 0, 255, 0, 255, 0, 255]);
     }
 
-    #[cfg(feature = "svg")]
     #[test]
     fn invalid_svg_returns_parse_error() {
         let path = temp_path("invalid_svg");
@@ -348,7 +346,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "svg")]
     #[test]
     fn vector_path_with_hole_keeps_two_subpaths() {
         let path = temp_path("svg_vector_hole");
@@ -373,7 +370,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "svg")]
     #[test]
     fn vector_curve_survives_unflattened() {
         let path = temp_path("svg_vector_curve");
@@ -394,7 +390,6 @@ mod tests {
         assert!(has_cubic, "cubic segment should survive without flattening");
     }
 
-    #[cfg(feature = "svg")]
     #[test]
     fn hidden_paths_are_skipped() {
         let path = temp_path("svg_vector_hidden");
@@ -415,7 +410,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "svg")]
     #[test]
     fn group_opacity_folds_into_fill_alpha() {
         let path = temp_path("svg_vector_group_opacity");
@@ -442,7 +436,6 @@ mod tests {
         assert!((own - 0.5).abs() < 1e-5, "fill-opacity is unchanged: {own}");
     }
 
-    #[cfg(feature = "svg")]
     #[test]
     fn stroke_only_path_resolves_a_stroke_and_no_fill() {
         let path = temp_path("svg_stroke_only");
@@ -470,7 +463,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "svg")]
     #[test]
     fn path_with_both_paints_resolves_both() {
         let path = temp_path("svg_fill_and_stroke");
@@ -490,7 +482,6 @@ mod tests {
         assert!(stroke.colour[2] > 0.9, "blue stroke: {:?}", stroke.colour);
     }
 
-    #[cfg(feature = "svg")]
     #[test]
     fn stroke_width_scales_with_the_baked_transform() {
         let path = temp_path("svg_stroke_width_scale");
@@ -526,7 +517,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "svg")]
     #[test]
     fn gradient_stroke_leaves_the_stroke_unset() {
         let path = temp_path("svg_gradient_stroke");
@@ -546,7 +536,6 @@ mod tests {
         assert!(!art.shapes[0].subpaths.is_empty());
     }
 
-    #[cfg(feature = "svg")]
     #[test]
     fn group_opacity_folds_into_stroke_alpha() {
         let path = temp_path("svg_stroke_group_opacity");
@@ -568,7 +557,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "svg")]
     #[test]
     fn bytes_and_path_decode_to_the_same_art() {
         let path = temp_path("svg_vector_bytes");
@@ -587,7 +575,6 @@ mod tests {
         assert!(from_bytes.shapes[1].stroke.is_some(), "stroke survives");
     }
 
-    #[cfg(feature = "svg")]
     #[test]
     fn invalid_svg_bytes_return_a_parse_error() {
         let err = vector_from_bytes(b"<svg").unwrap_err();

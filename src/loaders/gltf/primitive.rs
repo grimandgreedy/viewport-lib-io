@@ -168,7 +168,6 @@ mod tests {
     use super::super::*;
     use viewport_lib_io_testkit::synth::temp_dir;
 
-    #[cfg(feature = "gltf")]
     #[test]
     fn loads_vertex_colours_from_color_0() {
         // Minimal triangle carrying a COLOR_0 (VEC4 f32) attribute.
@@ -246,7 +245,6 @@ mod tests {
         let _ = std::fs::remove_dir(dir);
     }
 
-    #[cfg(feature = "gltf")]
     #[test]
     fn loads_second_uv_set_from_texcoord_1() {
         // Minimal triangle carrying both TEXCOORD_0 and TEXCOORD_1.
@@ -318,7 +316,6 @@ mod tests {
 
     /// One UV set stays one UV set: a mesh without TEXCOORD_1 carries no second
     /// channel rather than a copy of the first.
-    #[cfg(feature = "gltf")]
     #[test]
     fn single_uv_set_leaves_uvs1_absent() {
         let dir = temp_dir("gltf_texcoord0_only");
@@ -374,7 +371,6 @@ mod tests {
         let _ = std::fs::remove_dir(dir);
     }
 
-    #[cfg(feature = "gltf")]
     #[test]
     fn loads_morph_target_deltas_reoriented_to_z_up() {
         // Minimal triangle with one morph target carrying POSITION deltas.

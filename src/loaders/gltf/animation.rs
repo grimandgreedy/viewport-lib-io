@@ -219,7 +219,6 @@ mod tests {
     use super::super::*;
     use viewport_lib_io_testkit::synth::temp_dir;
 
-    #[cfg(feature = "gltf")]
     #[test]
     fn loads_morph_weight_animation() {
         // Triangle with two morph targets and a weights animation over them.

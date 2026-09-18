@@ -73,7 +73,6 @@ mod tests {
         std::env::temp_dir().join(unique)
     }
 
-    #[cfg(feature = "png")]
     #[test]
     fn decodes_png_rgba_pixels() {
         let path = temp_path("png_decode.png");
@@ -94,7 +93,6 @@ mod tests {
         assert_eq!(image.rgba, vec![255, 0, 0, 255]);
     }
 
-    #[cfg(feature = "png")]
     #[test]
     fn from_bytes_matches_from_path() {
         // The in-memory decode must produce exactly what the file decode does, so a
@@ -117,7 +115,6 @@ mod tests {
         assert_eq!(from_bytes.rgba, from_path.rgba);
     }
 
-    #[cfg(feature = "png")]
     #[test]
     fn missing_png_file_returns_parse_error() {
         let path = temp_path("missing.png");

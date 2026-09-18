@@ -153,7 +153,6 @@ mod tests {
     use crate::types::{AnimationChannel, AnimationInterpolation, AnimationTrackValues};
     use viewport_lib_io_testkit::synth::{glb as make_glb, temp_dir};
 
-    #[cfg(feature = "gltf")]
     #[test]
     fn loads_skin_weights_skeleton_and_animation() {
         // Build a minimal skinned glTF: one triangle, two joints (root and
@@ -362,7 +361,6 @@ mod tests {
 
     // --- MAX_JOINTS enforcement ---
 
-    #[cfg(feature = "gltf")]
     #[test]
     fn skin_exceeding_max_joints_is_rejected() {
         // Build a glTF with one mesh and a skin referencing MAX_JOINTS + 1
