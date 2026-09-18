@@ -448,7 +448,7 @@ pub(super) fn to_rgba8(data: &gltf::image::Data) -> Vec<u8> {
 mod tests {
     use super::super::*;
     use super::*;
-    use crate::testkit::synth::temp_dir;
+    use viewport_lib_io_testkit::synth::temp_dir;
 
     #[cfg(feature = "gltf")]
     #[test]

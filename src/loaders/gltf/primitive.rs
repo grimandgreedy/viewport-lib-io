@@ -166,7 +166,7 @@ pub(super) fn compute_vertex_normals(positions: &[[f32; 3]], indices: &[u32]) ->
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use crate::testkit::synth::temp_dir;
+    use viewport_lib_io_testkit::synth::temp_dir;
 
     #[cfg(feature = "gltf")]
     #[test]

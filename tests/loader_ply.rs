@@ -4,7 +4,7 @@
 #![cfg(feature = "ply")]
 
 use viewport_lib_io::loaders::{ply_points, ply_scene};
-use viewport_lib_io::testkit::{conformance, synth};
+use viewport_lib_io_testkit::{conformance, synth};
 
 #[test]
 fn ascii_mesh_conforms() {

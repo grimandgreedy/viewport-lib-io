@@ -10,10 +10,10 @@
 //! assert_eq!(scene.meshes.len(), 1);
 //! ```
 
-use crate::error::IoError;
-use crate::types::{PointSet, SceneData, SurfaceMesh};
+use viewport_lib_io::error::IoError;
+use viewport_lib_io::types::{PointSet, SceneData, SurfaceMesh};
 
-use super::invariants::{check_point_set, check_scene, check_surface_mesh};
+use crate::invariants::{check_point_set, check_scene, check_surface_mesh};
 
 /// One mesh as a consumer addresses it: its name, its size, and what it points
 /// at. Enough to catch a reordered or re-indexed decode, small enough to print.

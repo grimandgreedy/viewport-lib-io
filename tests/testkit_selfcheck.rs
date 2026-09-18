@@ -5,10 +5,8 @@
 //! That the fixture builders produce decodable files is covered where it
 //! belongs, in the per-loader conformance tests.
 
-#![cfg(feature = "testkit")]
-
-use viewport_lib_io::testkit::{check_surface_mesh, synth};
 use viewport_lib_io::types::{SkinWeights, SurfaceMesh};
+use viewport_lib_io_testkit::{check_surface_mesh, synth};
 
 fn quad_mesh() -> SurfaceMesh {
     SurfaceMesh {

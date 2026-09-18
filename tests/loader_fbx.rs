@@ -10,8 +10,8 @@
 use std::path::{Path, PathBuf};
 
 use viewport_lib_io::loaders::fbx;
-use viewport_lib_io::testkit::conformance;
 use viewport_lib_io::types::SceneData;
+use viewport_lib_io_testkit::conformance;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

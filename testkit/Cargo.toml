@@ -1,0 +1,19 @@
+# Deliberately not part of any workspace: the empty table below makes this crate
+# its own root. It depends on the library it tests, and the library dev-depends
+# on it, which is a cycle cargo allows only between separate packages.
+[workspace]
+
+[package]
+name = "viewport-lib-io-testkit"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0-only"
+description = "Shared invariant checks and fixture builders for viewport-lib-io loaders"
+repository = "https://github.com/grimandgreedy/viewport-lib-io"
+publish = false
+
+[dependencies]
+# No format features: the checks read the neutral types, which are always
+# compiled, and the fixture builders only emit bytes.
+viewport-lib-io = { path = "..", version = "0.7", default-features = false }

@@ -45,10 +45,13 @@ netcdf = ["dep:netcdf-reader", "_scientific-common"]
 # format, so it is not in all-formats and is not meant to be enabled directly:
 # the format features above pull it in.
 _scientific-common = ["dep:quick-xml"]
-# Shared invariant checks and in-memory fixture builders for loader tests.
-# Deliberately outside `all-formats`: it is test scaffolding, not a format.
-testkit = []
 all-formats = ["png", "jpeg", "tga", "bmp", "svg", "hdr", "exr", "stl", "obj", "msh", "gltf", "fbx", "bvh", "ply", "csv", "numpy", "raw", "vtk", "xdmf", "exodus", "ensight", "tecplot", "cgns", "netcdf"]
+
+[dev-dependencies]
+# The shared checks and fixture builders, as a crate rather than a feature so a
+# release build never compiles them. It depends back on this crate; cargo allows
+# that cycle for a dev-dependency between packages.
+viewport-lib-io-testkit = { path = "testkit" }
 
 [dependencies]
 anyhow = { version = "1", optional = true }
@@ -103,47 +106,3 @@ required-features = ["fbx"]
 name = "probe-fbx-uv"
 path = "examples/probe_fbx_uv.rs"
 required-features = ["fbx"]
-
-# The conformance tests are external consumers of this crate, so they only see
-# `testkit` when it is enabled: run them with `cargo test --features testkit`.
-# Declaring the requirement means cargo skips these targets when the feature is
-# off, rather than failing to compile them.
-[[test]]
-name = "testkit_selfcheck"
-required-features = ["testkit"]
-
-[[test]]
-name = "loader_obj"
-required-features = ["testkit"]
-
-[[test]]
-name = "loader_stl"
-required-features = ["testkit"]
-
-[[test]]
-name = "loader_ply"
-required-features = ["testkit"]
-
-[[test]]
-name = "loader_csv"
-required-features = ["testkit"]
-
-[[test]]
-name = "loader_vtk"
-required-features = ["testkit"]
-
-[[test]]
-name = "loader_gltf"
-required-features = ["testkit"]
-
-[[test]]
-name = "loader_svg"
-required-features = ["testkit"]
-
-[[test]]
-name = "loader_numpy"
-required-features = ["testkit"]
-
-[[test]]
-name = "loader_fbx"
-required-features = ["testkit"]

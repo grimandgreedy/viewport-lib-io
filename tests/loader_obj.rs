@@ -4,7 +4,7 @@
 #![cfg(feature = "obj")]
 
 use viewport_lib_io::loaders::obj;
-use viewport_lib_io::testkit::{conformance, synth};
+use viewport_lib_io_testkit::{conformance, synth};
 
 #[test]
 fn quad_conforms() {

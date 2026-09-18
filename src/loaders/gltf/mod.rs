@@ -151,7 +151,7 @@ pub fn scene_from_slice(data: &[u8], base: Option<&Path>) -> Result<IoScene, IoE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testkit::synth::temp_dir;
+    use viewport_lib_io_testkit::synth::temp_dir;
 
     #[cfg(feature = "gltf")]
     #[test]

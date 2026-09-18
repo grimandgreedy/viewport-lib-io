@@ -9,13 +9,14 @@
 //! bug that has shipped in some loader somewhere, and none of them needs to
 //! know which format the data came from.
 //!
-//! Off by default and outside `all-formats`, since a release build has no use
-//! for it. Turn it on with `--features testkit`, in this crate's own tests or
-//! from a consumer checking its own asset library:
+//! A separate crate rather than a feature on the library, so the library's own
+//! tests and an outside consumer reach it the same way, and a release build
+//! never compiles it. `viewport-lib-io` dev-depends on this crate, which
+//! depends back on the library: cargo allows that cycle between packages.
 //!
 //! ```ignore
 //! let scene = viewport_lib_io::loaders::gltf::scene_from_path(path)?;
-//! viewport_lib_io::testkit::check_scene("hero.glb", &scene).expect_clean();
+//! viewport_lib_io_testkit::check_scene("hero.glb", &scene).expect_clean();
 //! ```
 
 pub mod conformance;

@@ -4,7 +4,7 @@
 #![cfg(feature = "numpy")]
 
 use viewport_lib_io::loaders::numpy;
-use viewport_lib_io::testkit::synth;
+use viewport_lib_io_testkit::synth;
 
 #[test]
 fn an_f32_array_decodes_as_a_volume() {

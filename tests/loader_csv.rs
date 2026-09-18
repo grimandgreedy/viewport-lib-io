@@ -4,7 +4,7 @@
 #![cfg(feature = "csv")]
 
 use viewport_lib_io::loaders::csv;
-use viewport_lib_io::testkit::{conformance, synth};
+use viewport_lib_io_testkit::{conformance, synth};
 
 #[test]
 fn points_conform() {

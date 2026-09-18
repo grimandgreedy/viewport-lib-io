@@ -5,7 +5,7 @@
 #![cfg(feature = "svg")]
 
 use viewport_lib_io::loaders::svg;
-use viewport_lib_io::testkit::{determinism, synth};
+use viewport_lib_io_testkit::{determinism, synth};
 
 #[test]
 fn a_filled_path_decodes_reproducibly() {

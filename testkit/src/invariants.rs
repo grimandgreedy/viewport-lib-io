@@ -4,7 +4,7 @@
 //! run of a loader tells you everything wrong with its output instead of one
 //! thing at a time.
 
-use crate::types::{
+use viewport_lib_io::types::{
     AnimationTrackValues, AttributeDomain, AttributeValues, PointSet, SceneData, Skeleton,
     SurfaceMesh,
 };
@@ -365,7 +365,7 @@ pub fn check_scene(subject: &str, scene: &SceneData) -> Report {
             // One value per keyframe, or three under cubic-spline (in-tangent,
             // value, out-tangent).
             let per_key = match track.sampler.interpolation {
-                crate::types::AnimationInterpolation::CubicSpline => 3,
+                viewport_lib_io::types::AnimationInterpolation::CubicSpline => 3,
                 _ => 1,
             };
             let values = match &track.sampler.values {

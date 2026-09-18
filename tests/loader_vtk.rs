@@ -5,7 +5,7 @@
 #![cfg(feature = "vtk")]
 
 use viewport_lib_io::loaders::vtk;
-use viewport_lib_io::testkit::{invariants, synth};
+use viewport_lib_io_testkit::{invariants, synth};
 
 #[test]
 fn a_legacy_unstructured_grid_conforms() {

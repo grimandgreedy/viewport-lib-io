@@ -20,9 +20,6 @@ pub mod error;
 pub mod lightmap;
 /// Source-format loaders.
 pub mod loaders;
-/// Shared invariant checks and fixture builders for loader tests.
-#[cfg(any(feature = "testkit", test))]
-pub mod testkit;
 /// Source-agnostic decoded data types.
 pub mod types;
 
