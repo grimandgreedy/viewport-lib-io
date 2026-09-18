@@ -163,6 +163,14 @@ impl UvTransform {
     ///
     /// `scale` and `uv_set` are unchanged; the rotation flips sign and the
     /// offset moves with it. Identical to `self` when `rotation` is 0.0.
+    ///
+    /// **It is its own inverse**, so this one call converts in both directions:
+    /// the rotation negates, and the offset rotates back through the opposite
+    /// angle about the same centre. Call it on a centre-rotation transform to
+    /// get one in this type's convention, which is what an exporter or anything
+    /// else *writing* a [`MaterialData`] needs;
+    /// [`from_centre_rotation`](Self::from_centre_rotation) is the same
+    /// operation under the name that reads correctly at a write site.
     pub fn as_centre_rotation(&self) -> UvTransform {
         let (sin, cos) = (-self.rotation).sin_cos();
         let centred = [self.offset[0] - 0.5, self.offset[1] - 0.5];
@@ -177,6 +185,17 @@ impl UvTransform {
             rotation: -self.rotation,
             uv_set: self.uv_set,
         }
+    }
+
+    /// A transform authored for a consumer that rotates about the texture centre
+    /// after scale and offset, brought into this type's convention (rotation
+    /// about the UV origin, as the file formats define it).
+    ///
+    /// The same operation as [`as_centre_rotation`](Self::as_centre_rotation),
+    /// which is its own inverse; this name exists so a write site does not read
+    /// as though it converts the wrong way.
+    pub fn from_centre_rotation(transform: &UvTransform) -> UvTransform {
+        transform.as_centre_rotation()
     }
 }
 
@@ -1162,6 +1181,33 @@ mod tests {
                 (want[0] - got[0]).abs() < 1e-5 && (want[1] - got[1]).abs() < 1e-5,
                 "uv {uv:?}: {want:?} vs {got:?}"
             );
+        }
+    }
+
+    /// The conversion is an involution, and consumers writing a transform rely
+    /// on that: `from_centre_rotation` is the same call. Nothing else here would
+    /// fail if a change to the rotation convention stopped the round trip
+    /// closing, since the other tests only ever convert one way.
+    #[test]
+    fn centre_rotation_form_is_its_own_inverse() {
+        for rotation in [0.0, 0.7, -1.9, std::f32::consts::FRAC_PI_2, 3.0] {
+            for offset in [[0.0, 0.0], [0.25, -0.1], [1.3, 0.6]] {
+                let source = UvTransform {
+                    offset,
+                    scale: [2.0, 0.5],
+                    rotation,
+                    uv_set: 1,
+                };
+                let round_trip = UvTransform::from_centre_rotation(&source.as_centre_rotation());
+                assert!(
+                    (round_trip.offset[0] - source.offset[0]).abs() < 1e-5
+                        && (round_trip.offset[1] - source.offset[1]).abs() < 1e-5
+                        && (round_trip.rotation - source.rotation).abs() < 1e-5,
+                    "rotation {rotation}, offset {offset:?}: got {round_trip:?}"
+                );
+                assert_eq!(round_trip.scale, source.scale);
+                assert_eq!(round_trip.uv_set, source.uv_set);
+            }
         }
     }
 
