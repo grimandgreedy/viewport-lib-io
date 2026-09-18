@@ -10,21 +10,24 @@ use super::buffers::collect_cells;
 pub(super) fn extract_surface_unstructured(cells: &Cells) -> Vec<u32> {
     let cell_verts = collect_cells(&cells.cell_verts);
     let mut face_counts: HashMap<[u32; 3], usize> = HashMap::new();
-    let mut face_verts: HashMap<[u32; 3], [u32; 3]> = HashMap::new();
 
     for (cell_type, verts) in cells.types.iter().zip(cell_verts.iter()) {
         for tri in cell_faces(*cell_type, verts) {
-            let key = sorted_tri(tri);
-            *face_counts.entry(key).or_insert(0) += 1;
-            face_verts.entry(key).or_insert(tri);
+            *face_counts.entry(sorted_tri(tri)).or_insert(0) += 1;
         }
     }
 
+    // Walk the cells a second time rather than the map. A `HashMap` yields its
+    // keys in an order seeded per process, so collecting the surface straight
+    // out of it gave the same file a different triangle order on every run.
+    // Going back through the cells emits them in the order the file wrote them,
+    // which is both stable and what every other mesh loader here produces.
     let mut indices = Vec::new();
-    for (key, count) in face_counts {
-        if count == 1 {
-            let tri = face_verts[&key];
-            indices.extend_from_slice(&tri);
+    for (cell_type, verts) in cells.types.iter().zip(cell_verts.iter()) {
+        for tri in cell_faces(*cell_type, verts) {
+            if face_counts.get(&sorted_tri(tri)) == Some(&1) {
+                indices.extend_from_slice(&tri);
+            }
         }
     }
     indices
@@ -297,6 +300,27 @@ mod tests {
     fn the_face_key_ignores_winding() {
         assert_eq!(sorted_tri([2, 0, 1]), sorted_tri([0, 1, 2]));
         assert_eq!(sorted_tri([1, 2, 0]), [0, 1, 2]);
+    }
+
+    /// The surface comes back in the order the file wrote its cells. This is
+    /// the guard on the actual bug: collecting the faces out of the counting
+    /// map instead put them in a per-process random order, so the same file
+    /// decoded to a different triangle list on every run.
+    #[test]
+    fn the_surface_keeps_the_order_the_cells_were_written_in() {
+        let cells = Cells {
+            cell_verts: VertexNumbers::Legacy {
+                num_cells: 3,
+                vertices: vec![3, 0, 1, 2, 3, 3, 4, 5, 3, 6, 7, 8],
+            },
+            types: vec![CellType::Triangle; 3],
+        };
+
+        assert_eq!(
+            extract_surface_unstructured(&cells),
+            vec![0, 1, 2, 3, 4, 5, 6, 7, 8],
+            "three unshared faces, in file order"
+        );
     }
 
     /// Surface extraction keeps the faces belonging to one cell and drops the

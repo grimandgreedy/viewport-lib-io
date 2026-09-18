@@ -107,6 +107,14 @@ pub(super) fn convert_animations(
             .map(std::borrow::ToOwned::to_owned)
             .unwrap_or_else(|| format!("animation_{}", animation.index()));
 
+        // Emit in skeleton order. `per_skeleton` is a `HashMap`, so pushing
+        // straight out of it put the clips of an animation that drives more
+        // than one skeleton in a per-process random order, and a consumer
+        // indexing `scene.animations` addressed a different clip on each run.
+        let mut per_skeleton: Vec<(usize, (Vec<AnimationTrack>, f32))> =
+            per_skeleton.into_iter().collect();
+        per_skeleton.sort_by_key(|(skeleton_idx, _)| *skeleton_idx);
+
         for (skeleton_idx, (tracks, duration)) in per_skeleton {
             if tracks.is_empty() {
                 continue;
