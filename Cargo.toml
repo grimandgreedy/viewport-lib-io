@@ -12,7 +12,7 @@ keywords = ["3d", "loader", "visualization", "viewport", "viewport-lib"]
 categories = ["graphics", "parser-implementations", "filesystem"]
 rust-version = "1.85"
 publish = true
-exclude = ["examples/"]
+exclude = ["examples/", "tests/", ".github/", ".gitignore"]
 
 [features]
 default = ["png", "jpeg", "tga", "bmp", "svg", "hdr", "exr", "stl", "obj", "msh", "gltf", "fbx", "bvh", "ply", "csv", "numpy", "raw", "vtk", "xdmf", "exodus", "ensight", "tecplot", "cgns", "netcdf"]
