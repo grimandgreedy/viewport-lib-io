@@ -19,3 +19,6 @@ scripts/
 docs/
 settings.local.json
 CLAUDE.md
+
+# Local-only test asset paths (see the testing notes in CLAUDE.md).
+.env
