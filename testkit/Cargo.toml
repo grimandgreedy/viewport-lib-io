@@ -16,4 +16,4 @@ publish = false
 [dependencies]
 # No format features: the checks read the neutral types, which are always
 # compiled, and the fixture builders only emit bytes.
-viewport-lib-io = { path = "..", version = "0.7", default-features = false }
+viewport-lib-io = { path = "..", version = "0.8", default-features = false }

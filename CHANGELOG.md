@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-19
+
 ### Added
 - **SVG vector paths** - `loaders::svg::vector_from_path` decodes an SVG into neutral vector paths instead of pixels, alongside the unchanged `texture_from_path`. New types `VectorArt`, `VectorShape`, `SubPath`, `PathSegment`, `FillRule`; feed them into `viewport_lib::OverlayShape::Vector`. Curves stay unflattened, each path's transform is baked in, and coordinates are the SVG canvas frame (X right, Y down), not the Z-up scene convention. Gradient and pattern fills leave the colour unset, and `<text>` and image nodes are skipped.
 - **Stroke paint and width on vector art** - `VectorShape::stroke` carries a `VectorStroke { colour, width }`, so stroke-drawn icon and cursor sets import with their paint instead of as unpainted contours. Width scales with the baked transform (averaged under a non-uniform scale) and stroke opacity folds in group opacity. Cap, join, dash, and miter limit are not carried.
