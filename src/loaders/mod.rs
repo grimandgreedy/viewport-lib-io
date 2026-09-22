@@ -78,6 +78,10 @@ pub mod ply_points;
 #[cfg(feature = "ply")]
 pub mod ply_scene;
 
+/// PLY trained gaussian-splat decoding.
+#[cfg(feature = "ply")]
+pub mod ply_splats;
+
 /// PNG image decoding.
 #[cfg(feature = "png")]
 pub mod png;

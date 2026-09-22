@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Trained gaussian splat `.ply` ingestion** - `loaders::ply_splats::splats_from_path` and `splats_from_bytes` decode a 3D Gaussian Splatting trainer's output into a `GaussianSplatSet`. The parse is the point-set loader's; what this adds is the stored units, none of which the file announces: `scale_0..2` are logarithms, `opacity` is a logit, and `rot_0..3` is an unnormalised quaternion written `w` first. A reader that takes the numbers at face value produces a set that loads and draws and is wrong in a way that looks like a bad training run. The spherical-harmonic degree is read from the `f_rest_*` count (none, three per channel, or fifteen), and the file's channel-major layout is transposed into the coefficient-major packed form; a count matching no supported degree is refused rather than flattened to degree zero.
+- **`loaders::ply_points::point_cloud_from_bytes`** - the in-memory sibling of `point_cloud_from_path`, for a PLY that arrived over a network or through a sandbox rather than from a filesystem. It was already the whole implementation of the path form; this makes it reachable.
+
 ## [0.8.0] - 2026-09-19
 
 ### Added

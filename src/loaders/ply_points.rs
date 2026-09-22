@@ -78,7 +78,12 @@ pub fn point_cloud_from_path(path: &Path) -> Result<IoPointCloud, IoError> {
     }
 }
 
-fn point_cloud_from_bytes(bytes: &[u8]) -> Result<IoPointCloud, IoError> {
+/// Decode a PLY file's vertices into a point cloud, from bytes already read.
+///
+/// The same decode as [`point_cloud_from_path`] without the filesystem, which
+/// is what a caller who received the bytes over a network or through a
+/// sandbox has.
+pub fn point_cloud_from_bytes(bytes: &[u8]) -> Result<IoPointCloud, IoError> {
     let end_marker_lf = b"end_header\n";
     let end_marker_crlf = b"end_header\r\n";
 

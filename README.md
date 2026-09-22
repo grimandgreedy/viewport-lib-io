@@ -82,3 +82,14 @@ Point set to gaussian splats:
 let points = viewport_lib_io::loaders::csv::point_cloud_from_path("samples.csv".as_ref())?;
 let splats = points.to_gaussian_splats([0.01, 0.01, 0.01], 1.0);
 ```
+
+Trained gaussian splats:
+
+```rust
+let splats = viewport_lib_io::loaders::ply_splats::splats_from_path("scene.ply".as_ref())?;
+```
+
+The stored units are undone on the way in: scales are logarithms, opacity is a
+logit, and the quaternion is written `w` first and unnormalised. The
+spherical-harmonic degree is read from how many `f_rest_*` properties the file
+carries.
