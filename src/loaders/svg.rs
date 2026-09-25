@@ -436,6 +436,61 @@ mod tests {
         assert!((own - 0.5).abs() < 1e-5, "fill-opacity is unchanged: {own}");
     }
 
+    /// `currentColor` is the ordinary way to author a tintable icon, and usvg resolves it against
+    /// the inherited `color` at parse. Worth pinning: the neutral output carries a literal either
+    /// way, so nothing downstream can vary it per use, and art with no `color` in scope resolves
+    /// to the CSS default of black rather than to nothing, which reads as a missing icon on a dark
+    /// surface.
+    #[test]
+    fn current_colour_resolves_against_the_inherited_colour() {
+        let path = temp_path("svg_current_colour");
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" color="#ff0000">
+  <path d="M0 0 L10 10" fill="none" stroke="currentColor" stroke-width="2"/>
+  <rect x="0" y="0" width="4" height="4" fill="currentColor"/>
+</svg>"##;
+
+        std::fs::write(&path, svg).unwrap();
+        let art = vector_from_path(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(art.shapes.len(), 2);
+        let stroke = art.shapes[0]
+            .stroke
+            .expect("currentColor resolves to a solid stroke");
+        assert!(
+            stroke.colour[0] > 0.9 && stroke.colour[1] < 0.1,
+            "the stroke took the root colour: {:?}",
+            stroke.colour
+        );
+        let fill = art.shapes[1].fill.expect("currentColor resolves to a fill");
+        assert!(
+            fill[0] > 0.9 && fill[1] < 0.1,
+            "the fill took the root colour: {fill:?}"
+        );
+    }
+
+    /// The other half: with no `color` anywhere in scope, `currentColor` is black, not absent.
+    /// Art that looks tintable therefore imports as black art, which is why a caller that wants
+    /// one drawing in several colours tints it rather than relying on this.
+    #[test]
+    fn current_colour_without_a_colour_in_scope_resolves_to_black() {
+        let path = temp_path("svg_current_colour_default");
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+  <path d="M0 0 L10 10" fill="none" stroke="currentColor" stroke-width="2"/>
+</svg>"##;
+
+        std::fs::write(&path, svg).unwrap();
+        let art = vector_from_path(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        let stroke = art.shapes[0].stroke.expect("a stroke is still resolved");
+        assert!(
+            stroke.colour[..3].iter().all(|c| *c < 1e-5),
+            "black, not absent: {:?}",
+            stroke.colour
+        );
+    }
+
     #[test]
     fn stroke_only_path_resolves_a_stroke_and_no_fill() {
         let path = temp_path("svg_stroke_only");
