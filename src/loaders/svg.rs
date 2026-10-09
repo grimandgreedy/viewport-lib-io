@@ -52,7 +52,8 @@ pub fn texture_from_path(path: &Path) -> Result<TextureData, IoError> {
 ///
 /// Walks the parsed path tree and emits one [`VectorShape`] per painted path,
 /// with its subpaths (curves preserved, not flattened), fill rule, and resolved
-/// solid fill and stroke paint. Coordinates are baked into the drawing's user-unit space
+/// solid fill and stroke paint, plus its element id and the ids of the groups
+/// enclosing it. Coordinates are baked into the drawing's user-unit space
 /// (each path's absolute transform is applied), so the output places directly
 /// without further transform bookkeeping. This is the SVG canvas frame: X to
 /// the right, Y *down* from the top-left origin, not the crate's Z-up scene
@@ -126,7 +127,7 @@ fn vector_from_data(bytes: &[u8], options: &resvg::usvg::Options) -> Result<Vect
     let size = tree.size();
     let mut shapes = Vec::new();
     let root = tree.root();
-    collect_shapes(root, root.opacity().get(), &mut shapes);
+    collect_shapes(root, root.opacity().get(), &mut Vec::new(), &mut shapes);
 
     Ok(VectorArt {
         shapes,
@@ -138,15 +139,28 @@ fn vector_from_data(bytes: &[u8], options: &resvg::usvg::Options) -> Result<Vect
 ///
 /// `opacity` is the product of the enclosing groups' opacities, folded into
 /// each shape's fill alpha since the neutral output has no group nesting.
+/// `groups` is the stack of enclosing group ids, for the same reason.
 #[cfg(feature = "svg")]
-fn collect_shapes(group: &resvg::usvg::Group, opacity: f32, out: &mut Vec<VectorShape>) {
+fn collect_shapes(
+    group: &resvg::usvg::Group,
+    opacity: f32,
+    groups: &mut Vec<String>,
+    out: &mut Vec<VectorShape>,
+) {
     for node in group.children() {
         match node {
             resvg::usvg::Node::Group(child) => {
-                collect_shapes(child, opacity * child.opacity().get(), out)
+                let named = !child.id().is_empty();
+                if named {
+                    groups.push(child.id().to_string());
+                }
+                collect_shapes(child, opacity * child.opacity().get(), groups, out);
+                if named {
+                    groups.pop();
+                }
             }
             resvg::usvg::Node::Path(path) => {
-                if let Some(shape) = path_to_shape(path, opacity) {
+                if let Some(shape) = path_to_shape(path, opacity, groups) {
                     out.push(shape);
                 }
             }
@@ -159,7 +173,7 @@ fn collect_shapes(group: &resvg::usvg::Group, opacity: f32, out: &mut Vec<Vector
 
 /// Convert one usvg path into a `VectorShape` in absolute coordinates.
 #[cfg(feature = "svg")]
-fn path_to_shape(path: &resvg::usvg::Path, opacity: f32) -> Option<VectorShape> {
+fn path_to_shape(path: &resvg::usvg::Path, opacity: f32, groups: &[String]) -> Option<VectorShape> {
     // A hidden path is not painted, so it is not part of the drawing.
     if !path.is_visible() {
         return None;
@@ -203,6 +217,10 @@ fn path_to_shape(path: &resvg::usvg::Path, opacity: f32) -> Option<VectorShape> 
         fill_rule,
         fill,
         stroke,
+        id: Some(path.id())
+            .filter(|id| !id.is_empty())
+            .map(str::to_string),
+        groups: groups.to_vec(),
     })
 }
 
@@ -609,6 +627,79 @@ mod tests {
             (stroke.colour[3] - 0.25).abs() < 1e-5,
             "group opacity times stroke-opacity: {}",
             stroke.colour[3]
+        );
+    }
+
+    #[test]
+    fn element_ids_survive_on_shapes() {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+  <path id="NSW" d="M0 0 H4 V4 H0 Z" fill="#ff0000"/>
+  <rect id="" x="5" y="5" width="4" height="4" fill="#ff0000"/>
+  <circle id="dot" cx="5" cy="5" r="1" fill="#0000ff"/>
+</svg>"##;
+
+        let art = vector_from_bytes(svg.as_bytes()).unwrap();
+
+        let ids: Vec<_> = art.shapes.iter().map(|s| s.id.as_deref()).collect();
+        assert_eq!(ids, [Some("NSW"), None, Some("dot")], "empty id is None");
+        assert!(art.shapes.iter().all(|s| s.groups.is_empty()));
+    }
+
+    #[test]
+    fn enclosing_group_ids_list_outermost_first_and_skip_unnamed() {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+  <g id="layer1">
+    <g transform="translate(1 0)">
+      <g id="room-12">
+        <rect x="0" y="0" width="2" height="2" fill="#ff0000"/>
+        <rect x="3" y="0" width="2" height="2" fill="#ff0000"/>
+      </g>
+    </g>
+    <rect id="loose" x="0" y="5" width="2" height="2" fill="#00ff00"/>
+  </g>
+  <rect x="8" y="8" width="1" height="1" fill="#0000ff"/>
+</svg>"##;
+
+        let art = vector_from_bytes(svg.as_bytes()).unwrap();
+
+        assert_eq!(art.shapes.len(), 4);
+        assert_eq!(art.shapes[0].groups, ["layer1", "room-12"]);
+        assert_eq!(art.shapes[1].groups, ["layer1", "room-12"]);
+        assert_eq!(
+            art.shapes[2].groups,
+            ["layer1"],
+            "popped back out of room-12"
+        );
+        assert!(art.shapes[3].groups.is_empty(), "top level has no groups");
+    }
+
+    /// usvg strips ids from the content a `<use>` copies in, so a clone has no id of its own and
+    /// the `<use>` element's id, which lands on its group, is the only key it has.
+    #[test]
+    fn use_clones_have_no_id_and_carry_the_use_id_as_a_group() {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg"
+     xmlns:xlink="http://www.w3.org/1999/xlink" width="10" height="10">
+  <defs><rect id="seat" width="1" height="1" fill="#ff0000"/></defs>
+  <use id="seat-a1" xlink:href="#seat" x="0"/>
+  <use id="seat-a2" xlink:href="#seat" x="2"/>
+</svg>"##;
+
+        let art = vector_from_bytes(svg.as_bytes()).unwrap();
+
+        assert_eq!(art.shapes.len(), 2);
+        for shape in &art.shapes {
+            assert_eq!(
+                shape.id, None,
+                "the referenced element's id is not repeated"
+            );
+        }
+        assert_eq!(
+            art.shapes[0].groups.last().map(String::as_str),
+            Some("seat-a1")
+        );
+        assert_eq!(
+            art.shapes[1].groups.last().map(String::as_str),
+            Some("seat-a2")
         );
     }
 
