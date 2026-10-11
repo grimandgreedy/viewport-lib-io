@@ -20,11 +20,12 @@
 
 use std::path::Path;
 
+use viewport_lib_plugins::item_types::gaussian_splat::{GaussianSplatData, ShDegree};
+
 use crate::error::IoError;
-use crate::types::{GaussianSplatSet, ShDegree};
 
 /// Decode a trained Gaussian splat set from a `.ply` file.
-pub fn splats_from_path(path: &Path) -> Result<GaussianSplatSet, IoError> {
+pub fn splats_from_path(path: &Path) -> Result<GaussianSplatData, IoError> {
     #[cfg(feature = "ply")]
     {
         let bytes = std::fs::read(path)?;
@@ -49,7 +50,7 @@ pub fn splats_from_path(path: &Path) -> Result<GaussianSplatSet, IoError> {
 /// refused rather than loaded at a lower degree, because dropping the
 /// view-dependent terms is a change to how the set looks and a silent one
 /// would be found by someone wondering why their reconstruction went flat.
-pub fn splats_from_bytes(bytes: &[u8]) -> Result<GaussianSplatSet, IoError> {
+pub fn splats_from_bytes(bytes: &[u8]) -> Result<GaussianSplatData, IoError> {
     #[cfg(feature = "ply")]
     {
         let cloud = super::ply_points::point_cloud_from_bytes(bytes)?;
@@ -128,7 +129,7 @@ pub fn splats_from_bytes(bytes: &[u8]) -> Result<GaussianSplatSet, IoError> {
             }
         }
 
-        Ok(GaussianSplatSet {
+        Ok(GaussianSplatData {
             positions: cloud.positions,
             scales,
             rotations,

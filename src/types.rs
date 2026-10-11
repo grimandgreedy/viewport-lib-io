@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use viewport_lib_plugins::item_types::gaussian_splat::{GaussianSplatData, ShDegree};
 use viewport_lib_types::colour::Colour;
 use viewport_lib_types::data::mesh::MeshData;
 use viewport_lib_types::data::texture::TextureData;
@@ -508,65 +509,13 @@ pub struct PointSet {
     pub scalar_attributes: HashMap<String, Vec<f32>>,
 }
 
-/// Spherical-harmonic degree for gaussian splat colour data.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ShDegree {
-    /// Degree-0 SH; three coefficients `[r, g, b]` per splat.
-    Zero,
-    /// Degree-1 SH.
-    One,
-    /// Degree-3 SH.
-    Three,
-}
-
-impl ShDegree {
-    /// Number of RGB coefficients per splat.
-    pub fn coeff_count(self) -> usize {
-        match self {
-            Self::Zero => 3,
-            Self::One => 12,
-            Self::Three => 48,
-        }
-    }
-}
-
-/// Source-agnostic gaussian splat input data.
-#[derive(Clone, Debug)]
-pub struct GaussianSplatSet {
-    /// Object-space center positions, one per splat.
-    pub positions: Vec<[f32; 3]>,
-    /// Scale per splat.
-    pub scales: Vec<[f32; 3]>,
-    /// Rotation per splat as `[x, y, z, w]`.
-    pub rotations: Vec<[f32; 4]>,
-    /// Opacity per splat.
-    pub opacities: Vec<f32>,
-    /// Packed SH coefficients.
-    pub sh_coefficients: Vec<f32>,
-    /// SH degree for this set.
-    pub sh_degree: ShDegree,
-}
-
-impl Default for GaussianSplatSet {
-    fn default() -> Self {
-        Self {
-            positions: Vec::new(),
-            scales: Vec::new(),
-            rotations: Vec::new(),
-            opacities: Vec::new(),
-            sh_coefficients: Vec::new(),
-            sh_degree: ShDegree::Zero,
-        }
-    }
-}
-
 impl PointSet {
     /// Create a degree-0 gaussian splat set from points.
     pub fn to_gaussian_splats(
         &self,
         default_scale: [f32; 3],
         default_opacity: f32,
-    ) -> GaussianSplatSet {
+    ) -> GaussianSplatData {
         let count = self.positions.len();
         let mut sh_coefficients = Vec::with_capacity(count * 3);
         for index in 0..count {
@@ -579,7 +528,7 @@ impl PointSet {
             sh_coefficients.extend_from_slice(&rgb);
         }
 
-        GaussianSplatSet {
+        GaussianSplatData {
             positions: self.positions.clone(),
             scales: vec![default_scale; count],
             rotations: vec![[0.0, 0.0, 0.0, 1.0]; count],
