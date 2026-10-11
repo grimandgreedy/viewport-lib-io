@@ -4,7 +4,7 @@ Source-format loaders and neutral decoded data for applications built on `viewpo
 
 ## Goal
 
-`viewport-lib-io` owns file-format decoding and reusable CPU-side data structures. By design it does not depend on `viewport-lib` runtime or upload structs directly.
+`viewport-lib-io` owns file-format decoding and reusable CPU-side data structures. It returns the shared payload types from `viewport-lib-types` (images, meshes, attributes, vector paths, material leaf types) wherever one fits, so decoded data reaches the renderer without a conversion. It does not depend on `viewport-lib` itself: no GPU stack, no renderer.
 
 This crate should:
 - load source files through `loaders/*`
@@ -20,7 +20,8 @@ This crate should not:
 ## Public Layout
 
 - `loaders/` contains source-format entrypoints
-- `types.rs` contains neutral decoded data models
+- `types.rs` contains the decoded data models this crate owns: scenes, materials, skeletons and animation, point sets, volumes, vector art
+- `viewport_lib_types` is re-exported, so the shared types are reachable without a second dependency
 
 Supported loader modules are listed in `loaders/` with their extension, e.g., `loaders/png.rs`
 

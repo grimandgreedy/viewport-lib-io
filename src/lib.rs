@@ -3,7 +3,10 @@
 //! `viewport-lib`.
 //!
 //! This crate owns file-format decoding and source-agnostic data structures.
-//! It does not depend on `viewport-lib` runtime or upload types directly.
+//! Where `viewport-lib-types` has a payload that says the same thing (an image,
+//! a triangle mesh, a vector path), loaders return that type, so the decoded
+//! data goes to the renderer unchanged. The crate does not depend on
+//! `viewport-lib` itself, so it carries no GPU stack.
 //!
 //! # Coordinate convention
 //!
@@ -24,6 +27,9 @@ pub mod loaders;
 pub mod types;
 
 pub use error::IoError;
+/// The shared payload vocabulary, re-exported so a consumer names the types
+/// these loaders return without depending on it separately.
+pub use viewport_lib_types;
 pub use lightmap::{LightmapData, LightmapEncoding};
 pub use types::{
     AlphaMode, AnimationChannel, AnimationClip, AnimationInterpolation, AnimationSampler,
