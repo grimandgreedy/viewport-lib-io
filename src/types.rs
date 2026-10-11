@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use viewport_lib_types::colour::Colour;
 use viewport_lib_types::data::mesh::MeshData;
 use viewport_lib_types::data::texture::TextureData;
 use viewport_lib_types::material::{
     AlphaMode, MATERIAL_TEXTURE_SLOTS, SamplerKey, TextureFilter, TextureSlot, UvTransform,
     WrapMode,
 };
+use viewport_lib_types::overlay::vector::{FillRule, SubPath};
 
 /// Sentinel used to pad unused slots in fixed-width volumetric cell connectivity.
 pub const CELL_SENTINEL: u32 = u32::MAX;
@@ -763,75 +765,17 @@ pub struct SceneData {
     pub morph_animations: Vec<MorphWeightClip>,
 }
 
-/// One segment of a [`SubPath`]. The start point is implicit: it is the
-/// subpath's `start` for the first segment, and the previous segment's end
-/// point after that. Coordinates are in the source drawing's user units, in the
-/// 2D canvas frame: X right, Y down from the top-left origin. The crate's Z-up
-/// convention covers 3D scene geometry and does not apply here.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PathSegment {
-    /// Straight line to `to`.
-    Line {
-        /// End point.
-        to: [f32; 2],
-    },
-    /// Quadratic Bezier through control point `ctrl` to `to`.
-    Quad {
-        /// Control point.
-        ctrl: [f32; 2],
-        /// End point.
-        to: [f32; 2],
-    },
-    /// Cubic Bezier through control points `ctrl1`, `ctrl2` to `to`.
-    Cubic {
-        /// First control point.
-        ctrl1: [f32; 2],
-        /// Second control point.
-        ctrl2: [f32; 2],
-        /// End point.
-        to: [f32; 2],
-    },
-}
-
-/// A single contour: a start point, a run of segments, and whether it closes
-/// back to the start. Multiple subpaths in one [`VectorShape`] combine under
-/// the shape's [`FillRule`], so the inner loop of a letter "O" is a hole.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct SubPath {
-    /// Start point in the drawing's user units.
-    pub start: [f32; 2],
-    /// Segments in order from `start`.
-    pub segments: Vec<PathSegment>,
-    /// Whether the last point connects back to `start`.
-    pub closed: bool,
-}
-
-/// How overlapping and nested subpaths combine into filled area. Matches the
-/// SVG fill rules.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum FillRule {
-    /// Inside where the signed crossing count is non-zero. The SVG default.
-    #[default]
-    NonZero,
-    /// Inside where the crossing count is odd.
-    EvenOdd,
-}
-
 /// An outline stroke on a [`VectorShape`]: the contours drawn at `width` in the
-/// drawing's user units, in `colour`. Field-for-field the shape of
-/// `viewport_lib_ui::primitives::draw::VectorStroke` (the one on
-/// `DrawCommand::Vector`, which names its paint `colour`; the document-level
-/// `WidgetKind::Vector` stroke names it `paint` instead), so mapping across is a
-/// copy.
+/// drawing's user units, in `colour`.
 ///
 /// Open subpaths stroke as open lines and closed ones stroke their whole
 /// boundary, which is what makes stroke-drawn art (most icon and cursor sets)
 /// readable: those contours are lines, not the outlines of filled blobs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VectorStroke {
-    /// Stroke colour as linear RGBA in `[0, 1]`, alpha carrying the stroke
-    /// opacity multiplied by any enclosing group opacity.
-    pub colour: [f32; 4],
+    /// Stroke colour, alpha carrying the stroke opacity multiplied by any
+    /// enclosing group opacity.
+    pub colour: Colour,
     /// Stroke width in the same user units as the contour coordinates.
     ///
     /// Scaled by the transform baked into the geometry, so it stays in step
@@ -857,14 +801,18 @@ pub struct VectorStroke {
 #[derive(Debug, Clone, PartialEq)]
 pub struct VectorShape {
     /// Contours making up the shape. Curves are preserved, not flattened.
+    ///
+    /// Coordinates are in the source drawing's user units, in the 2D canvas
+    /// frame: X right, Y down from the top-left origin. The crate's Z-up
+    /// convention covers 3D scene geometry and does not apply here.
     pub subpaths: Vec<SubPath>,
     /// How the subpaths combine into filled area.
     pub fill_rule: FillRule,
-    /// Resolved fill colour as linear RGBA in `[0, 1]`, alpha carrying the fill
-    /// opacity multiplied by any enclosing group opacity. `None` when the
+    /// Resolved fill colour, alpha carrying the fill opacity multiplied by any
+    /// enclosing group opacity. `None` when the
     /// source shape has no fill, or a gradient or pattern paint the loader does
     /// not resolve to a single colour.
-    pub fill: Option<[f32; 4]>,
+    pub fill: Option<Colour>,
     /// Resolved outline stroke. `None` when the source shape has no stroke, or
     /// a gradient or pattern stroke paint the loader does not resolve to a
     /// single colour.

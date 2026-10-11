@@ -4,7 +4,11 @@ use viewport_lib_types::data::texture::TextureData;
 
 use crate::error::IoError;
 #[cfg(feature = "svg")]
-use crate::types::{FillRule, PathSegment, SubPath, VectorArt, VectorShape, VectorStroke};
+use crate::types::{VectorArt, VectorShape, VectorStroke};
+#[cfg(feature = "svg")]
+use viewport_lib_types::colour::Colour;
+#[cfg(feature = "svg")]
+use viewport_lib_types::overlay::vector::{FillRule, PathSegment, SubPath};
 
 /// Rasterise an SVG file into an 8-bit RGBA texture labelled sRGB colour, at
 /// the canvas size in pixels.
@@ -222,17 +226,14 @@ fn path_to_shape(path: &resvg::usvg::Path, opacity: f32, groups: &[String]) -> O
     })
 }
 
-/// Resolve a solid paint to linear RGBA at `alpha`. Gradients and patterns are
-/// not reduced to a single colour, so they yield `None`.
+/// Resolve a solid paint to a colour at `alpha`. SVG colours are sRGB. Gradients
+/// and patterns are not reduced to a single colour, so they yield `None`.
 #[cfg(feature = "svg")]
-fn solid_colour(paint: &resvg::usvg::Paint, alpha: f32) -> Option<[f32; 4]> {
+fn solid_colour(paint: &resvg::usvg::Paint, alpha: f32) -> Option<Colour> {
     match paint {
-        resvg::usvg::Paint::Color(c) => Some([
-            srgb_to_linear(c.red),
-            srgb_to_linear(c.green),
-            srgb_to_linear(c.blue),
-            alpha,
-        ]),
+        resvg::usvg::Paint::Color(c) => {
+            Some(Colour::srgb_u8(c.red, c.green, c.blue, 255).with_alpha(alpha))
+        }
         _ => None,
     }
 }
@@ -260,11 +261,7 @@ fn segments_to_subpaths(data: &resvg::tiny_skia::Path) -> Vec<SubPath> {
                 if let Some(sub) = current.take() {
                     out.push(sub);
                 }
-                current = Some(SubPath {
-                    start: [p.x, p.y],
-                    segments: Vec::new(),
-                    closed: false,
-                });
+                current = Some(SubPath::new([p.x, p.y]));
             }
             Ts::LineTo(p) => {
                 if let Some(sub) = current.as_mut() {
@@ -299,18 +296,6 @@ fn segments_to_subpaths(data: &resvg::tiny_skia::Path) -> Vec<SubPath> {
         out.push(sub);
     }
     out
-}
-
-/// Convert an 8-bit sRGB channel to linear `[0, 1]`, matching how overlay fills
-/// interpret their colours.
-#[cfg(feature = "svg")]
-fn srgb_to_linear(c: u8) -> f32 {
-    let s = c as f32 / 255.0;
-    if s <= 0.04045 {
-        s / 12.92
-    } else {
-        ((s + 0.055) / 1.055).powf(2.4)
-    }
 }
 
 #[cfg(test)]
@@ -387,7 +372,10 @@ mod tests {
         let shape = &art.shapes[0];
         assert_eq!(shape.subpaths.len(), 2, "outer contour plus the hole");
         assert_eq!(shape.fill_rule, FillRule::EvenOdd);
-        let fill = shape.fill.expect("solid fill resolves to a colour");
+        let fill = shape
+            .fill
+            .expect("solid fill resolves to a colour")
+            .to_linear_rgba();
         assert!(
             fill[0] > 0.9 && fill[1] < 0.1 && fill[2] < 0.1,
             "red fill: {fill:?}"
@@ -427,7 +415,10 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         assert_eq!(art.shapes.len(), 1, "the hidden rect is not painted");
-        let fill = art.shapes[0].fill.expect("solid fill resolves to a colour");
+        let fill = art.shapes[0]
+            .fill
+            .expect("solid fill resolves to a colour")
+            .to_linear_rgba();
         assert!(
             fill[1] > 0.9 && fill[0] < 0.1,
             "green rect survives: {fill:?}"
@@ -451,12 +442,12 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         assert_eq!(art.shapes.len(), 2);
-        let nested = art.shapes[0].fill.expect("solid fill")[3];
+        let nested = art.shapes[0].fill.expect("solid fill").alpha();
         assert!(
             (nested - 0.25).abs() < 1e-5,
             "nested group opacity multiplies: {nested}"
         );
-        let own = art.shapes[1].fill.expect("solid fill")[3];
+        let own = art.shapes[1].fill.expect("solid fill").alpha();
         assert!((own - 0.5).abs() < 1e-5, "fill-opacity is unchanged: {own}");
     }
 
@@ -482,11 +473,14 @@ mod tests {
             .stroke
             .expect("currentColor resolves to a solid stroke");
         assert!(
-            stroke.colour[0] > 0.9 && stroke.colour[1] < 0.1,
+            stroke.colour.to_linear_rgba()[0] > 0.9 && stroke.colour.to_linear_rgba()[1] < 0.1,
             "the stroke took the root colour: {:?}",
             stroke.colour
         );
-        let fill = art.shapes[1].fill.expect("currentColor resolves to a fill");
+        let fill = art.shapes[1]
+            .fill
+            .expect("currentColor resolves to a fill")
+            .to_linear_rgba();
         assert!(
             fill[0] > 0.9 && fill[1] < 0.1,
             "the fill took the root colour: {fill:?}"
@@ -509,7 +503,9 @@ mod tests {
 
         let stroke = art.shapes[0].stroke.expect("a stroke is still resolved");
         assert!(
-            stroke.colour[..3].iter().all(|c| *c < 1e-5),
+            stroke.colour.to_linear_rgba()[..3]
+                .iter()
+                .all(|c| *c < 1e-5),
             "black, not absent: {:?}",
             stroke.colour
         );
@@ -531,7 +527,7 @@ mod tests {
         assert!(shape.fill.is_none(), "no fill: stroke-only art");
         let stroke = shape.stroke.expect("solid stroke resolves to a colour");
         assert!(
-            stroke.colour[0] > 0.9 && stroke.colour[1] < 0.1,
+            stroke.colour.to_linear_rgba()[0] > 0.9 && stroke.colour.to_linear_rgba()[1] < 0.1,
             "red stroke: {:?}",
             stroke.colour
         );
@@ -555,10 +551,14 @@ mod tests {
 
         assert_eq!(art.shapes.len(), 1);
         let shape = &art.shapes[0];
-        let fill = shape.fill.expect("solid fill");
+        let fill = shape.fill.expect("solid fill").to_linear_rgba();
         assert!(fill[1] > 0.9, "green fill: {fill:?}");
         let stroke = shape.stroke.expect("solid stroke");
-        assert!(stroke.colour[2] > 0.9, "blue stroke: {:?}", stroke.colour);
+        assert!(
+            stroke.colour.to_linear_rgba()[2] > 0.9,
+            "blue stroke: {:?}",
+            stroke.colour
+        );
     }
 
     #[test]
@@ -630,9 +630,9 @@ mod tests {
 
         let stroke = art.shapes[0].stroke.expect("solid stroke");
         assert!(
-            (stroke.colour[3] - 0.25).abs() < 1e-5,
+            (stroke.colour.to_linear_rgba()[3] - 0.25).abs() < 1e-5,
             "group opacity times stroke-opacity: {}",
-            stroke.colour[3]
+            stroke.colour.to_linear_rgba()[3]
         );
     }
 
