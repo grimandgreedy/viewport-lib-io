@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use viewport_lib_types::colour::ColourSpace;
+use viewport_lib_types::data::texture::TextureData;
+
 /// Sentinel used to pad unused slots in fixed-width volumetric cell connectivity.
 pub const CELL_SENTINEL: u32 = u32::MAX;
 
@@ -13,47 +16,17 @@ pub const CELL_SENTINEL: u32 = u32::MAX;
 /// range.
 pub const MAX_JOINTS: usize = 256;
 
-/// CPU-side RGBA8 image data.
-#[derive(Clone, Debug)]
-pub struct RasterImageData {
-    /// Width in pixels.
-    pub width: u32,
-    /// Height in pixels.
-    pub height: u32,
-    /// Row-major RGBA8 pixel data.
-    pub rgba: Vec<u8>,
-}
-
-/// CPU-side RGBA32F image data.
-#[derive(Clone, Debug)]
-pub struct HdrImageData {
-    /// Width in pixels.
-    pub width: u32,
-    /// Height in pixels.
-    pub height: u32,
-    /// Row-major RGBA32F pixel data.
-    pub rgba: Vec<f32>,
-}
-
 /// Where a scene material's texture content comes from.
 #[derive(Clone, Debug)]
 pub enum TextureSource {
-    /// Resolve texture bytes from a file path at the consumer layer.
+    /// A file beside the scene, for the consumer to read when it chooses.
+    /// Decode it for the slot it fills (each image loader has a `_for_slot`
+    /// entrypoint) so it carries the right colour space and role.
     File(PathBuf),
-    /// Use already-decoded pixels directly.
-    Decoded(RasterImageData),
-}
-
-/// The colour space a texture's pixels are in, so a consumer routes the GPU
-/// upload correctly: sRGB colour textures must decode to linear on sample;
-/// linear data textures (normal, metallic-roughness, occlusion) must not.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ColourSpace {
-    /// sRGB-encoded colour (base colour, emissive). Upload so the sampler
-    /// decodes to linear.
-    Srgb,
-    /// Linear data. Upload without any sRGB decode.
-    Linear,
+    /// Pixels the scene embedded, already decoded and labelled for the slot
+    /// they fill: sRGB for base colour and emissive, a normal map for the
+    /// normal slot, linear for the rest.
+    Decoded(TextureData),
 }
 
 /// How many texture slots a material has, so the per-slot arrays on
@@ -101,6 +74,18 @@ impl MaterialTextureSlot {
             MaterialTextureSlot::MetallicRoughness
             | MaterialTextureSlot::Normal
             | MaterialTextureSlot::Occlusion => ColourSpace::Linear,
+        }
+    }
+
+    /// An 8-bit RGBA image labelled for this slot.
+    #[allow(dead_code)]
+    pub(crate) fn texture(self, width: u32, height: u32, rgba: Vec<u8>) -> TextureData {
+        match self {
+            MaterialTextureSlot::Normal => TextureData::normal_map(width, height, rgba),
+            _ => match self.colour_space() {
+                ColourSpace::Srgb => TextureData::srgb(width, height, rgba),
+                ColourSpace::Linear => TextureData::linear(width, height, rgba),
+            },
         }
     }
 }
@@ -311,33 +296,27 @@ pub struct MaterialData {
     /// Whether back faces are drawn, matching glTF `doubleSided`. `false` for
     /// formats without the concept.
     pub double_sided: bool,
-    /// Base colour texture, if present. sRGB colour ([`ColourSpace::Srgb`]):
-    /// upload it so the sampler decodes to linear (build the payload with the
-    /// renderer's `TextureData::srgb`).
+    /// Base colour texture, if present. sRGB colour ([`ColourSpace::Srgb`]).
     pub base_color_texture: Option<TextureSource>,
     /// Combined metallic-roughness (ORM) texture, if present. Matches the glTF
     /// `metallicRoughnessTexture`: G channel is roughness, B channel is metallic.
-    /// Linear data ([`ColourSpace::Linear`]): upload without sRGB decode (build
-    /// the payload with the renderer's `TextureData::linear`).
+    /// Linear data ([`ColourSpace::Linear`]).
     pub metallic_roughness_texture: Option<TextureSource>,
-    /// Normal map, if present. Linear data ([`ColourSpace::Linear`]): upload
-    /// without sRGB decode (`TextureData::normal_map`, which also binds it into
-    /// the normal slot rather than the albedo one).
+    /// Normal map, if present. Linear data with the normal-map role.
     pub normal_map_texture: Option<TextureSource>,
     /// Scales the tangent-space normal read from `normal_map_texture`, matching
     /// glTF `normalScale`. 1.0 leaves the map at authored strength. Files with no
     /// equivalent (OBJ, FBX) leave this at 1.0.
     pub normal_scale: f32,
     /// Ambient-occlusion texture, if present. Linear data
-    /// ([`ColourSpace::Linear`]): upload without sRGB decode (`TextureData::linear`).
+    /// ([`ColourSpace::Linear`]).
     pub ao_texture: Option<TextureSource>,
     /// Strength of the ambient-occlusion contribution, matching glTF
     /// `occlusionStrength`. 1.0 applies the map fully, 0.0 disables it. Files with
     /// no equivalent leave this at 1.0.
     pub occlusion_strength: f32,
     /// Emissive texture, multiplied by `emissive`. Matches glTF `emissiveTexture`.
-    /// sRGB colour ([`ColourSpace::Srgb`]): upload so the sampler decodes to
-    /// linear (`TextureData::srgb`).
+    /// sRGB colour ([`ColourSpace::Srgb`]).
     pub emissive_texture: Option<TextureSource>,
     /// How each slot samples its UVs, indexed by
     /// [`MaterialTextureSlot::index`]. `None` where the source asks for plain
@@ -354,24 +333,15 @@ pub struct MaterialData {
 }
 
 impl MaterialData {
-    /// Every present texture with its slot, so a consumer can route each upload
-    /// by colour space: `slot.colour_space()` is [`ColourSpace::Srgb`] for base
-    /// colour and emissive (upload so the sampler decodes to linear) and
-    /// [`ColourSpace::Linear`] for metallic-roughness, normal, and occlusion
-    /// (upload without decode). Store each returned id back in the matching
-    /// material texture field.
-    ///
-    /// Against viewport-lib that is a `TextureData` per texture:
+    /// Every present texture with its slot. A [`TextureSource::Decoded`] is
+    /// already labelled for its slot and uploads as-is; a
+    /// [`TextureSource::File`] is decoded for the slot it fills:
     ///
     /// ```ignore
     /// for (slot, source) in material.textures() {
-    ///     let (w, h, pixels) = decode(source);
-    ///     let data = match slot.colour_space() {
-    ///         ColourSpace::Srgb => TextureData::srgb(w, h, pixels),
-    ///         ColourSpace::Linear if slot == MaterialTextureSlot::Normal => {
-    ///             TextureData::normal_map(w, h, pixels)
-    ///         }
-    ///         ColourSpace::Linear => TextureData::linear(w, h, pixels),
+    ///     let data = match source {
+    ///         TextureSource::Decoded(data) => data.clone(),
+    ///         TextureSource::File(path) => png::texture_from_path_for_slot(path, slot)?,
     ///     };
     ///     let id = res.upload_texture(&device, &queue, data)?;
     /// }
@@ -1131,10 +1101,6 @@ pub struct VectorArt {
 // disabled (the default build enables only some); the allow keeps that from
 // warning without gating each alias on the union of loader features.
 #[allow(dead_code)]
-pub(crate) type TextureData = RasterImageData;
-#[allow(dead_code)]
-pub(crate) type HdrTextureData = HdrImageData;
-#[allow(dead_code)]
 pub(crate) type IoMaterial = MaterialData;
 #[allow(dead_code)]
 pub(crate) type IoMesh = SceneMesh;
@@ -1156,6 +1122,35 @@ pub(crate) type IoScene = SceneData;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_material_slot_labels_its_texture() {
+        use viewport_lib_types::data::texture::TextureRole;
+        let label = |slot: MaterialTextureSlot| {
+            let texture = slot.texture(1, 1, vec![128, 128, 255, 255]);
+            (texture.colour_space(), texture.role())
+        };
+        assert_eq!(
+            label(MaterialTextureSlot::BaseColour),
+            (ColourSpace::Srgb, TextureRole::Image)
+        );
+        assert_eq!(
+            label(MaterialTextureSlot::Emissive),
+            (ColourSpace::Srgb, TextureRole::Image)
+        );
+        assert_eq!(
+            label(MaterialTextureSlot::Normal),
+            (ColourSpace::Linear, TextureRole::NormalMap)
+        );
+        assert_eq!(
+            label(MaterialTextureSlot::Occlusion),
+            (ColourSpace::Linear, TextureRole::Image)
+        );
+        assert_eq!(
+            label(MaterialTextureSlot::MetallicRoughness),
+            (ColourSpace::Linear, TextureRole::Image)
+        );
+    }
 
     /// The glTF mapping: scale, then rotate about the UV origin, then offset.
     fn sample_gltf(t: &UvTransform, uv: [f32; 2]) -> [f32; 2] {

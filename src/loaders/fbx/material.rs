@@ -2,7 +2,7 @@
 //! with.
 
 use crate::types::{
-    AlphaMode, IoMaterial, MATERIAL_TEXTURE_SLOTS, MaterialTextureSlot, TextureData, TextureFilter,
+    AlphaMode, IoMaterial, MATERIAL_TEXTURE_SLOTS, MaterialTextureSlot, TextureFilter,
     TextureSampler, TextureSource, UvTransform, WrapMode,
 };
 use std::path::Path;
@@ -79,11 +79,11 @@ pub(super) fn convert_material(
 
     let base_color_texture = material.diffuse_texture().and_then(|texture| {
         read_slot(&texture, MaterialTextureSlot::BaseColour);
-        extract_texture(&texture, parent_dir)
+        extract_texture(&texture, MaterialTextureSlot::BaseColour, parent_dir)
     });
     let normal_map_texture = material.normal_map_texture().and_then(|texture| {
         read_slot(&texture, MaterialTextureSlot::Normal);
-        extract_texture(&texture, parent_dir)
+        extract_texture(&texture, MaterialTextureSlot::Normal, parent_dir)
     });
 
     ConvertedMaterial {
@@ -207,8 +207,11 @@ pub(super) fn texture_slot_state(
     )
 }
 
+/// Resolve an FBX texture node to a [`TextureSource`]: embedded content
+/// decoded and labelled for `slot`, or a file beside the scene.
 pub(super) fn extract_texture(
     texture: &fbxcel_dom::v7400::object::texture::TextureHandle<'_>,
+    slot: MaterialTextureSlot,
     parent_dir: &Path,
 ) -> Option<TextureSource> {
     if let Some(clip) = texture.video_clip() {
@@ -217,11 +220,11 @@ pub(super) fn extract_texture(
                 if let Ok(image) = image::load_from_memory(content) {
                     let rgba = image.to_rgba8();
                     let (width, height) = rgba.dimensions();
-                    return Some(TextureSource::Decoded(TextureData {
+                    return Some(TextureSource::Decoded(slot.texture(
                         width,
                         height,
-                        rgba: rgba.into_raw(),
-                    }));
+                        rgba.into_raw(),
+                    )));
                 }
             }
         }

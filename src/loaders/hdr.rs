@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::error::IoError;
-use crate::types::HdrTextureData;
+use viewport_lib_types::data::texture::TextureData;
 
 /// Caps applied to the `image` decoder when loading an HDR file.
 ///
@@ -42,12 +42,13 @@ impl DecodeLimits {
     }
 }
 
-/// Decode a Radiance HDR file into RGBA32F pixel data.
+/// Decode a Radiance HDR file into a float RGBA texture (`TextureData::hdr`,
+/// always linear).
 ///
 /// Decodes without an allocation cap so production-sized HDR panoramas
 /// (8K and above) load successfully. Use
 /// [`texture_from_path_with_limits`] to apply a custom cap.
-pub fn texture_from_path(path: &Path) -> Result<HdrTextureData, IoError> {
+pub fn texture_from_path(path: &Path) -> Result<TextureData, IoError> {
     texture_from_path_with_limits(path, DecodeLimits::unlimited())
 }
 
@@ -61,7 +62,7 @@ pub fn texture_from_path(path: &Path) -> Result<HdrTextureData, IoError> {
 pub fn texture_from_path_with_limits(
     path: &Path,
     limits: DecodeLimits,
-) -> Result<HdrTextureData, IoError> {
+) -> Result<TextureData, IoError> {
     #[cfg(feature = "hdr")]
     {
         use image::ImageReader;
@@ -92,11 +93,7 @@ pub fn texture_from_path_with_limits(
             rgba.push(1.0);
         }
 
-        Ok(HdrTextureData {
-            width,
-            height,
-            rgba,
-        })
+        Ok(TextureData::hdr(width, height, rgba))
     }
 
     #[cfg(not(feature = "hdr"))]
@@ -112,7 +109,7 @@ pub fn texture_from_path_with_limits(
 /// Decode a Radiance HDR from in-memory bytes into RGBA32F pixels. The in-memory
 /// sibling of [`texture_from_path`], for an environment served from a cooked bundle
 /// or fetched over the network rather than read from a file.
-pub fn texture_from_bytes(bytes: &[u8]) -> Result<HdrTextureData, IoError> {
+pub fn texture_from_bytes(bytes: &[u8]) -> Result<TextureData, IoError> {
     texture_from_bytes_with_limits(bytes, DecodeLimits::unlimited())
 }
 
@@ -121,7 +118,7 @@ pub fn texture_from_bytes(bytes: &[u8]) -> Result<HdrTextureData, IoError> {
 pub fn texture_from_bytes_with_limits(
     bytes: &[u8],
     limits: DecodeLimits,
-) -> Result<HdrTextureData, IoError> {
+) -> Result<TextureData, IoError> {
     #[cfg(feature = "hdr")]
     {
         use image::ImageReader;
@@ -152,11 +149,7 @@ pub fn texture_from_bytes_with_limits(
             rgba.push(1.0);
         }
 
-        Ok(HdrTextureData {
-            width,
-            height,
-            rgba,
-        })
+        Ok(TextureData::hdr(width, height, rgba))
     }
 
     #[cfg(not(feature = "hdr"))]

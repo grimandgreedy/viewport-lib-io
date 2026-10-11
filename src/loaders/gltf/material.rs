@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use crate::types::{
-    AlphaMode, IoMaterial, MATERIAL_TEXTURE_SLOTS, MaterialTextureSlot, TextureData, TextureFilter,
+    AlphaMode, IoMaterial, MATERIAL_TEXTURE_SLOTS, MaterialTextureSlot, TextureFilter,
     TextureSampler, TextureSource, UvTransform, WrapMode,
 };
 
@@ -47,7 +47,12 @@ pub(super) fn convert_material(
             // roughness. There is no metallic-roughness texture on this path.
             let texture = sg.diffuse_texture().and_then(|info| {
                 record_info(&mut slots, MaterialTextureSlot::BaseColour, &info);
-                image_to_texture_source(&info.texture(), images, parent_dir)
+                image_to_texture_source(
+                    &info.texture(),
+                    MaterialTextureSlot::BaseColour,
+                    images,
+                    parent_dir,
+                )
             });
             (
                 rgb,
@@ -62,11 +67,21 @@ pub(super) fn convert_material(
             let base_color_factor = pbr.base_color_factor();
             let texture = pbr.base_color_texture().and_then(|info| {
                 record_info(&mut slots, MaterialTextureSlot::BaseColour, &info);
-                image_to_texture_source(&info.texture(), images, parent_dir)
+                image_to_texture_source(
+                    &info.texture(),
+                    MaterialTextureSlot::BaseColour,
+                    images,
+                    parent_dir,
+                )
             });
             let mr_texture = pbr.metallic_roughness_texture().and_then(|info| {
                 record_info(&mut slots, MaterialTextureSlot::MetallicRoughness, &info);
-                image_to_texture_source(&info.texture(), images, parent_dir)
+                image_to_texture_source(
+                    &info.texture(),
+                    MaterialTextureSlot::MetallicRoughness,
+                    images,
+                    parent_dir,
+                )
             });
             (
                 [
@@ -88,7 +103,12 @@ pub(super) fn convert_material(
     let emissive_strength = material.emissive_strength().unwrap_or(1.0);
     let emissive_texture = material.emissive_texture().and_then(|info| {
         record_info(&mut slots, MaterialTextureSlot::Emissive, &info);
-        image_to_texture_source(&info.texture(), images, parent_dir)
+        image_to_texture_source(
+            &info.texture(),
+            MaterialTextureSlot::Emissive,
+            images,
+            parent_dir,
+        )
     });
 
     let alpha_mode = match material.alpha_mode() {
@@ -110,7 +130,12 @@ pub(super) fn convert_material(
             info.extension_value(TEXTURE_TRANSFORM),
             &info.texture(),
         );
-        image_to_texture_source(&info.texture(), images, parent_dir)
+        image_to_texture_source(
+            &info.texture(),
+            MaterialTextureSlot::Normal,
+            images,
+            parent_dir,
+        )
     });
 
     let occlusion_texture = material.occlusion_texture();
@@ -123,7 +148,12 @@ pub(super) fn convert_material(
             info.extension_value(TEXTURE_TRANSFORM),
             &info.texture(),
         );
-        image_to_texture_source(&info.texture(), images, parent_dir)
+        image_to_texture_source(
+            &info.texture(),
+            MaterialTextureSlot::Occlusion,
+            images,
+            parent_dir,
+        )
     });
 
     IoMaterial {
@@ -311,10 +341,12 @@ pub(super) fn spec_gloss_to_metal_rough(diffuse: [f32; 3], specular: [f32; 3]) -
 /// Resolve the image behind a texture to a [`TextureSource`].
 ///
 /// An image the document embedded (a GLB chunk or a data URI) comes back as
-/// decoded pixels; one stored beside the file comes back as a path resolved
-/// against `parent_dir`, so the caller can decide when to read it.
+/// decoded pixels labelled for `slot`; one stored beside the file comes back as
+/// a path resolved against `parent_dir`, so the caller can decide when to read
+/// it.
 pub(super) fn image_to_texture_source(
     texture: &gltf::Texture,
+    slot: MaterialTextureSlot,
     images: &[gltf::image::Data],
     parent_dir: &Path,
 ) -> Option<TextureSource> {
@@ -322,11 +354,11 @@ pub(super) fn image_to_texture_source(
     let index = source.index();
 
     if let Some(data) = images.get(index) {
-        return Some(TextureSource::Decoded(TextureData {
-            width: data.width,
-            height: data.height,
-            rgba: to_rgba8(data),
-        }));
+        return Some(TextureSource::Decoded(slot.texture(
+            data.width,
+            data.height,
+            to_rgba8(data),
+        )));
     }
 
     match source.source() {
@@ -489,8 +521,10 @@ mod tests {
   }],
   "materials": [{
     "pbrMetallicRoughness": {
-      "baseColorTexture": { "index": 0 }
-    }
+      "baseColorTexture": { "index": 0 },
+      "metallicRoughnessTexture": { "index": 0 }
+    },
+    "normalTexture": { "index": 0 }
   }],
   "textures": [{ "sampler": 0, "source": 0 }],
   "samplers": [{}],
@@ -523,12 +557,36 @@ mod tests {
         let material = scene.materials.first().unwrap();
         match material.base_color_texture.as_ref() {
             Some(TextureSource::Decoded(image)) => {
-                assert_eq!(image.width, 1);
-                assert_eq!(image.height, 1);
-                assert_eq!(image.rgba, vec![255, 0, 0, 255]);
+                assert_eq!(image.width(), 1);
+                assert_eq!(image.height(), 1);
+                assert!(matches!(
+                    image.payload(),
+                    viewport_lib_types::data::texture::TexturePayload::Rgba8(bytes)
+                        if bytes == &[255, 0, 0, 255]
+                ));
+                assert_eq!(
+                    image.colour_space(),
+                    viewport_lib_types::colour::ColourSpace::Srgb
+                );
             }
             other => panic!("expected decoded external texture, got {other:?}"),
         }
+
+        // The same image in three slots comes back labelled for each.
+        use viewport_lib_types::colour::ColourSpace;
+        use viewport_lib_types::data::texture::TextureRole;
+        let label = |source: Option<&TextureSource>| match source {
+            Some(TextureSource::Decoded(image)) => (image.colour_space(), image.role()),
+            other => panic!("expected a decoded texture, got {other:?}"),
+        };
+        assert_eq!(
+            label(material.normal_map_texture.as_ref()),
+            (ColourSpace::Linear, TextureRole::NormalMap)
+        );
+        assert_eq!(
+            label(material.metallic_roughness_texture.as_ref()),
+            (ColourSpace::Linear, TextureRole::Image)
+        );
 
         let _ = std::fs::remove_file(gltf_path);
         let _ = std::fs::remove_file(bin_path);

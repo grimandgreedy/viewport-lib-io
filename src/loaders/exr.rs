@@ -1,15 +1,19 @@
 use std::path::Path;
 
 use crate::error::IoError;
-use crate::types::TextureData;
+use viewport_lib_types::data::texture::TextureData;
 
-/// Decode an OpenEXR file into RGBA8 pixels.
+/// Decode an OpenEXR file into an 8-bit RGBA texture labelled linear.
 ///
 /// EXR is an HDR float format. For consumers that drive a non-HDR
 /// pipeline (the typical case for an albedo texture), values are
 /// clamped into `0..=1` and quantised to 8-bit. Authored HDRP albedos
 /// usually already sit in that range, so the clamp is rarely active in
 /// practice.
+///
+/// EXR stores linear values and the quantisation applies no transfer curve,
+/// so the bytes are linear and the texture says so, whatever slot it is for.
+/// Sampling it as sRGB would darken it.
 pub fn texture_from_path(path: &Path) -> Result<TextureData, IoError> {
     #[cfg(feature = "exr")]
     {
@@ -28,11 +32,7 @@ pub fn texture_from_path(path: &Path) -> Result<TextureData, IoError> {
         // crate calls "linear", which clamps + scales each channel.
         let rgba = image.to_rgba8();
         let (width, height) = rgba.dimensions();
-        Ok(TextureData {
-            width,
-            height,
-            rgba: rgba.into_raw(),
-        })
+        Ok(TextureData::linear(width, height, rgba.into_raw()))
     }
 
     #[cfg(not(feature = "exr"))]
@@ -45,7 +45,7 @@ pub fn texture_from_path(path: &Path) -> Result<TextureData, IoError> {
     }
 }
 
-/// Decode an EXR from in-memory bytes into RGBA8 pixels. The in-memory sibling of
+/// Decode an EXR from in-memory bytes into an 8-bit RGBA texture labelled linear. The in-memory sibling of
 /// [`texture_from_path`], for an image served from a cooked bundle or fetched over
 /// the network rather than read from a file.
 pub fn texture_from_bytes(bytes: &[u8]) -> Result<TextureData, IoError> {
@@ -64,11 +64,7 @@ pub fn texture_from_bytes(bytes: &[u8]) -> Result<TextureData, IoError> {
 
         let rgba = image.to_rgba8();
         let (width, height) = rgba.dimensions();
-        Ok(TextureData {
-            width,
-            height,
-            rgba: rgba.into_raw(),
-        })
+        Ok(TextureData::linear(width, height, rgba.into_raw()))
     }
 
     #[cfg(not(feature = "exr"))]

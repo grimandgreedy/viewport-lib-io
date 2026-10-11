@@ -36,8 +36,17 @@ let mesh = viewport_lib_io::loaders::stl::mesh_from_path("part.stl".as_ref())?;
 Image:
 
 ```rust
+use viewport_lib_io::viewport_lib_types::material::TextureSlot;
+
+// A `TextureData`, labelled sRGB colour.
 let image = viewport_lib_io::loaders::png::texture_from_path("albedo.png".as_ref())?;
 let icon = viewport_lib_io::loaders::svg::texture_from_path("icon.svg".as_ref())?;
+
+// Labelled for the material slot it fills: a normal map, linear.
+let normal = viewport_lib_io::loaders::png::texture_from_path_for_slot(
+    "normal.png".as_ref(),
+    TextureSlot::Normal,
+)?;
 ```
 
 Scene (glTF, OBJ, FBX, PLY):

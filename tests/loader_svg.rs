@@ -36,9 +36,14 @@ fn the_raster_entrypoint_still_works_on_the_same_file() {
     );
 
     let texture = svg::texture_from_path(&path).expect("rasterize");
+    let viewport_lib_io::viewport_lib_types::data::texture::TexturePayload::Rgba8(bytes) =
+        texture.payload()
+    else {
+        panic!("expected an 8-bit payload");
+    };
     assert_eq!(
-        texture.rgba.len(),
-        (texture.width * texture.height) as usize * 4,
+        bytes.len(),
+        (texture.width() * texture.height()) as usize * 4,
         "four channels per pixel"
     );
 }

@@ -1,11 +1,13 @@
 use std::path::Path;
 
+use viewport_lib_types::data::texture::TextureData;
+
 use crate::error::IoError;
-use crate::types::TextureData;
 #[cfg(feature = "svg")]
 use crate::types::{FillRule, PathSegment, SubPath, VectorArt, VectorShape, VectorStroke};
 
-/// Decode an SVG file into RGBA8 pixels.
+/// Rasterise an SVG file into an 8-bit RGBA texture labelled sRGB colour, at
+/// the canvas size in pixels.
 pub fn texture_from_path(path: &Path) -> Result<TextureData, IoError> {
     #[cfg(feature = "svg")]
     {
@@ -31,11 +33,7 @@ pub fn texture_from_path(path: &Path) -> Result<TextureData, IoError> {
             rgba.extend_from_slice(&[color.red(), color.green(), color.blue(), color.alpha()]);
         }
 
-        Ok(TextureData {
-            width: size.width(),
-            height: size.height(),
-            rgba,
-        })
+        Ok(TextureData::srgb(size.width(), size.height(), rgba))
     }
 
     #[cfg(not(feature = "svg"))]
@@ -343,9 +341,17 @@ mod tests {
         let image = texture_from_path(&path).unwrap();
         let _ = std::fs::remove_file(&path);
 
-        assert_eq!(image.width, 2);
-        assert_eq!(image.height, 1);
-        assert_eq!(image.rgba, vec![255, 0, 0, 255, 0, 255, 0, 255]);
+        assert_eq!(image.width(), 2);
+        assert_eq!(image.height(), 1);
+        assert_eq!(
+            image.colour_space(),
+            viewport_lib_types::colour::ColourSpace::Srgb
+        );
+        assert!(matches!(
+            image.payload(),
+            viewport_lib_types::data::texture::TexturePayload::Rgba8(bytes)
+                if bytes == &[255, 0, 0, 255, 0, 255, 0, 255]
+        ));
     }
 
     #[test]
