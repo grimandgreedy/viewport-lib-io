@@ -9,11 +9,12 @@ use vtkio::model::{CellType, Cells, DataSet, PolyDataPiece, UnstructuredGridPiec
 
 use viewport_lib_types::data::attribute::AttributeData;
 use viewport_lib_types::data::mesh::MeshData;
+use viewport_lib_types::data::volume_mesh::CELL_SENTINEL;
 
 use crate::error::IoError;
 use crate::types::{
-    CELL_SENTINEL, IoDataSet, IoPointCloud, IoSparseVolume, IoVolume, IoVolumeGeometry,
-    IoVolumeMesh, smooth_normals,
+    IoDataSet, IoPointCloud, IoSparseVolume, IoVolume, IoVolumeGeometry, IoVolumeMesh,
+    smooth_normals,
 };
 
 use super::attributes::extract_attributes;
@@ -363,7 +364,6 @@ pub(super) fn build_image_data_volume_mesh(
 
     let vid = |i: usize, j: usize, k: usize| -> usize { i + j * ni + k * ni * nj };
     let mut cells: Vec<[u32; 8]> = Vec::with_capacity(num_cells);
-    let mut cell_vids: Vec<[usize; 8]> = Vec::with_capacity(num_cells);
     for ck in 0..nck {
         for cj in 0..ncj {
             for ci in 0..nci {
@@ -378,7 +378,6 @@ pub(super) fn build_image_data_volume_mesh(
                     vid(ci, cj + 1, ck + 1),
                 ];
                 cells.push(v.map(|index| index as u32));
-                cell_vids.push(v);
             }
         }
     }
@@ -386,25 +385,8 @@ pub(super) fn build_image_data_volume_mesh(
     let mut volume_mesh = IoVolumeMesh::default();
     volume_mesh.positions = positions;
     volume_mesh.cells = cells;
-    for (name, values) in cell_data {
-        volume_mesh.cell_fields.insert(name.clone(), values.clone());
-    }
-    for (name, values) in point_data {
-        if volume_mesh.cell_fields.contains_key(name) {
-            continue;
-        }
-        let averaged = cell_vids
-            .iter()
-            .map(|verts| {
-                verts
-                    .iter()
-                    .map(|&vi| values.get(vi).copied().unwrap_or(0.0))
-                    .sum::<f32>()
-                    / 8.0
-            })
-            .collect();
-        volume_mesh.cell_fields.insert(name.clone(), averaged);
-    }
+    volume_mesh.cell_scalars = cell_data.clone();
+    volume_mesh.node_scalars = point_data.clone();
     Some(volume_mesh)
 }
 
@@ -482,36 +464,17 @@ pub(super) fn build_volume_mesh_data(
     let mut volume_mesh = IoVolumeMesh::default();
     volume_mesh.positions = positions.to_vec();
     volume_mesh.cells = vm_cells;
+    // Cell fields follow the cells kept; cells of a kind the volume mesh does
+    // not carry (surface cells in a mixed grid) are dropped along with theirs.
     for (name, values) in cell_data {
         let mapped = original_indices
             .iter()
             .map(|&index| values.get(index).copied().unwrap_or(0.0))
             .collect();
-        volume_mesh.cell_fields.insert(name.clone(), mapped);
+        volume_mesh.cell_scalars.insert(name.clone(), mapped);
     }
-    for (name, values) in point_data {
-        if volume_mesh.cell_fields.contains_key(name) {
-            continue;
-        }
-        let averaged = volume_mesh
-            .cells
-            .iter()
-            .map(|cell| {
-                let mut sum = 0.0;
-                let mut count = 0;
-                for &vi in cell {
-                    if vi != CELL_SENTINEL {
-                        if let Some(&value) = values.get(vi as usize) {
-                            sum += value;
-                            count += 1;
-                        }
-                    }
-                }
-                if count > 0 { sum / count as f32 } else { 0.0 }
-            })
-            .collect();
-        volume_mesh.cell_fields.insert(name.clone(), averaged);
-    }
+    // Point fields are per node, so they carry across as the file stores them.
+    volume_mesh.node_scalars = point_data.clone();
     Some(volume_mesh)
 }
 

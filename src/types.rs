@@ -4,14 +4,12 @@ use std::path::PathBuf;
 use viewport_lib_types::colour::Colour;
 use viewport_lib_types::data::mesh::MeshData;
 use viewport_lib_types::data::texture::TextureData;
+use viewport_lib_types::data::volume_mesh::VolumeMeshData;
 use viewport_lib_types::material::{
     AlphaMode, MATERIAL_TEXTURE_SLOTS, SamplerKey, TextureFilter, TextureSlot, UvTransform,
     WrapMode,
 };
 use viewport_lib_types::overlay::vector::{FillRule, SubPath};
-
-/// Sentinel used to pad unused slots in fixed-width volumetric cell connectivity.
-pub const CELL_SENTINEL: u32 = u32::MAX;
 
 /// Maximum number of joints permitted in a single skeleton.
 ///
@@ -691,19 +689,6 @@ pub struct SparseGrid {
     pub cell_colors: HashMap<String, Vec<[f32; 4]>>,
 }
 
-/// Unstructured volumetric mesh data.
-#[derive(Clone, Debug, Default)]
-pub struct VolumeMesh {
-    /// Vertex positions in local space.
-    pub positions: Vec<[f32; 3]>,
-    /// Cell connectivity; unused slots are padded with [`CELL_SENTINEL`].
-    pub cells: Vec<[u32; 8]>,
-    /// Named per-cell scalar fields.
-    pub cell_fields: HashMap<String, Vec<f32>>,
-    /// Named per-cell RGBA colours.
-    pub cell_colors: HashMap<String, Vec<[f32; 4]>>,
-}
-
 /// A decoded scientific/container dataset that may expose several representations.
 #[derive(Clone, Debug, Default)]
 pub struct DecodedDataSet {
@@ -718,7 +703,10 @@ pub struct DecodedDataSet {
     /// Optional sparse regular grid.
     pub sparse_grid: Option<Box<SparseGrid>>,
     /// Optional unstructured volume mesh.
-    pub volume_mesh: Option<Box<VolumeMesh>>,
+    ///
+    /// Per-cell fields are in `cell_scalars`, per-node fields in `node_scalars`
+    /// as the file stores them (not averaged onto cells).
+    pub volume_mesh: Option<Box<VolumeMeshData>>,
 }
 
 impl DecodedDataSet {
@@ -743,7 +731,7 @@ impl DecodedDataSet {
     }
 
     /// Return the dataset as a volume mesh when available.
-    pub fn as_volume_mesh(&self) -> Option<&VolumeMesh> {
+    pub fn as_volume_mesh(&self) -> Option<&VolumeMeshData> {
         self.volume_mesh.as_deref()
     }
 }
@@ -865,7 +853,7 @@ pub(crate) type IoVolume = StructuredVolume;
 #[allow(dead_code)]
 pub(crate) type IoSparseVolume = SparseGrid;
 #[allow(dead_code)]
-pub(crate) type IoVolumeMesh = VolumeMesh;
+pub(crate) type IoVolumeMesh = VolumeMeshData;
 #[allow(dead_code)]
 pub(crate) type IoDataSet = DecodedDataSet;
 #[allow(dead_code)]

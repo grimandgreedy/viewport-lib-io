@@ -4,7 +4,7 @@ use viewport_lib_types::data::attribute::AttributeData;
 use viewport_lib_types::data::mesh::MeshData;
 
 use crate::types::{
-    DecodedDataSet, PointSet, SparseGrid, StructuredVolume, VolumeGridGeometry, VolumeMesh,
+    DecodedDataSet, IoVolumeMesh, PointSet, SparseGrid, StructuredVolume, VolumeGridGeometry,
     smooth_normals,
 };
 
@@ -147,7 +147,7 @@ pub struct Dataset {
     /// Optional structured volume representation.
     pub volume: Option<VolumeGrid>,
     /// Optional unstructured volume mesh.
-    pub volume_mesh: Option<Box<VolumeMesh>>,
+    pub volume_mesh: Option<Box<IoVolumeMesh>>,
 }
 
 impl Dataset {

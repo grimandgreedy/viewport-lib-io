@@ -96,3 +96,31 @@ fn the_family_forwards_reach_the_same_decode() {
     assert_eq!(direct, through_vtu);
     assert_eq!(direct, through_vtp);
 }
+
+/// An unstructured grid of volume cells becomes a volume mesh. Point data is
+/// per node and arrives as the file stores it, not averaged onto the cells;
+/// cell data stays per cell.
+#[test]
+fn a_tetrahedral_grid_keeps_node_and_cell_fields_apart() {
+    let path = synth::temp_path("vtk_tet", "tet.vtk");
+    synth::write(
+        &path,
+        "# vtk DataFile Version 3.0\ntet\nASCII\nDATASET UNSTRUCTURED_GRID\n\
+         POINTS 4 float\n0 0 0\n1 0 0\n0 1 0\n0 0 1\n\
+         CELLS 1 5\n4 0 1 2 3\nCELL_TYPES 1\n10\n\
+         POINT_DATA 4\nSCALARS temperature float 1\nLOOKUP_TABLE default\n1\n2\n3\n4\n\
+         CELL_DATA 1\nSCALARS pressure float 1\nLOOKUP_TABLE default\n7\n",
+    );
+
+    let datasets = vtk::datasets_from_path(&path).expect("decode vtk");
+    let volume = datasets
+        .iter()
+        .find_map(|d| d.as_volume_mesh())
+        .expect("a tet grid decodes to a volume mesh");
+
+    assert_eq!(volume.positions.len(), 4);
+    assert_eq!(volume.cells.len(), 1);
+    assert_eq!(volume.node_scalars["temperature"], vec![1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(volume.cell_scalars["pressure"], vec![7.0]);
+    assert!(!volume.cell_scalars.contains_key("temperature"));
+}
