@@ -3,8 +3,8 @@
 
 use crate::error::IoError;
 use crate::types::{
-    AttributeData, AttributeDomain, IoMaterial, IoMesh, IoScene, MaterialTextureSlot, MorphTarget,
-    Skeleton, SkinWeights, SurfaceMesh, UvTransform,
+    AttributeData, AttributeDomain, IoMaterial, IoMesh, IoScene, MorphTarget, Skeleton,
+    SkinWeights, SurfaceMesh,
 };
 use fbxcel_dom::any::AnyDocument;
 use fbxcel_dom::v7400::Document;
@@ -13,6 +13,7 @@ use fbxcel_dom::v7400::object::TypedObjectHandle;
 use fbxcel_dom::v7400::object::model::TypedModelHandle;
 use std::collections::HashMap;
 use std::path::Path;
+use viewport_lib_types::material::{TextureSlot, UvTransform};
 
 use super::animation::{extract_animations, extract_morph_weight_clips};
 use super::blendshape::extract_blend_shapes;
@@ -101,7 +102,7 @@ pub(super) fn build_fbx_scene(
     // layers is UV0 and which is UV1. Neither knows about the other while it is
     // being read, so the names are collected from both sides and matched up
     // once every object has been walked.
-    let mut pending_uv_sets: Vec<(usize, MaterialTextureSlot, String)> = Vec::new();
+    let mut pending_uv_sets: Vec<(usize, TextureSlot, String)> = Vec::new();
     let mut uv_set_indices: HashMap<String, u32> = HashMap::new();
 
     // Diagnostics for the UV pick. Read once rather than once per mesh.
@@ -240,7 +241,7 @@ fn resolve_model_materials(
     parent_dir: &Path,
     materials: &mut Vec<IoMaterial>,
     material_map: &mut HashMap<i64, usize>,
-    pending_uv_sets: &mut Vec<(usize, MaterialTextureSlot, String)>,
+    pending_uv_sets: &mut Vec<(usize, TextureSlot, String)>,
 ) -> Vec<usize> {
     let model_materials: Vec<usize> = mesh_model
         .materials()
@@ -840,7 +841,7 @@ fn push_model_meshes(meshes: &mut Vec<IoMesh>, model: DecodedModel<'_>, log_uv: 
 /// layer this decode did not carry, and UV0 is the set every consumer has.
 fn apply_uv_set_names(
     materials: &mut [IoMaterial],
-    pending_uv_sets: Vec<(usize, MaterialTextureSlot, String)>,
+    pending_uv_sets: Vec<(usize, TextureSlot, String)>,
     uv_set_indices: &HashMap<String, u32>,
 ) {
     for (material_index, slot, uv_set_name) in pending_uv_sets {

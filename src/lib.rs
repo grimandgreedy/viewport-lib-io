@@ -29,13 +29,12 @@ pub mod types;
 pub use error::IoError;
 pub use lightmap::{LightmapData, LightmapEncoding};
 pub use types::{
-    AlphaMode, AnimationChannel, AnimationClip, AnimationInterpolation, AnimationSampler,
-    AnimationTrack, AnimationTrackValues, AttributeData, AttributeDomain, AttributeValues,
-    CELL_SENTINEL, DecodedDataSet, FillRule, GaussianSplatSet, Joint, MATERIAL_TEXTURE_SLOTS,
-    MAX_JOINTS, MaterialData, MaterialTextureSlot, PathSegment, PointSet, SceneData, SceneMesh,
-    ShDegree, Skeleton, SkinWeights, SparseGrid, StructuredVolume, SubPath, SurfaceMesh,
-    TextureFilter, TextureSampler, TextureSource, UvTransform, VectorArt, VectorShape,
-    VectorStroke, VolumeGridGeometry, VolumeMesh, WrapMode,
+    AnimationChannel, AnimationClip, AnimationInterpolation, AnimationSampler, AnimationTrack,
+    AnimationTrackValues, AttributeData, AttributeDomain, AttributeValues, CELL_SENTINEL,
+    DecodedDataSet, FillRule, GaussianSplatSet, Joint, MAX_JOINTS, MaterialData, PathSegment,
+    PointSet, SceneData, SceneMesh, ShDegree, Skeleton, SkinWeights, SparseGrid, StructuredVolume,
+    SubPath, SurfaceMesh, TextureSampler, TextureSource, VectorArt, VectorShape, VectorStroke,
+    VolumeGridGeometry, VolumeMesh,
 };
 /// The shared payload vocabulary, re-exported so a consumer names the types
 /// these loaders return without depending on it separately.

@@ -1,10 +1,12 @@
 //! Materials and their texture slots, including the UV placement each slot samples
 //! with.
 
-use crate::types::{
-    AlphaMode, IoMaterial, MATERIAL_TEXTURE_SLOTS, MaterialTextureSlot, TextureFilter,
-    TextureSampler, TextureSource, UvTransform, WrapMode,
+use viewport_lib_types::data::texture::TextureData;
+use viewport_lib_types::material::{
+    AlphaMode, MATERIAL_TEXTURE_SLOTS, TextureFilter, TextureSlot, UvTransform, WrapMode,
 };
+
+use crate::types::{IoMaterial, TextureSampler, TextureSource, uv_transform_from_origin_rotation};
 use std::path::Path;
 
 /// Interpret an FBX `TransparencyFactor` into an opacity and alpha mode.
@@ -29,7 +31,7 @@ pub(super) fn opacity_from_transparency(transparency: f32) -> (f32, AlphaMode) {
 /// the meshes are decoded.
 pub(super) struct ConvertedMaterial {
     pub(super) material: IoMaterial,
-    pub(super) uv_set_names: Vec<(MaterialTextureSlot, String)>,
+    pub(super) uv_set_names: Vec<(TextureSlot, String)>,
 }
 
 pub(super) fn convert_material(
@@ -68,7 +70,7 @@ pub(super) fn convert_material(
     // Each textured slot carries its own placement and wrap state on the FBX
     // texture node, read here into the neutral per-slot records.
     let mut read_slot = |texture: &fbxcel_dom::v7400::object::texture::TextureHandle<'_>,
-                         slot: MaterialTextureSlot| {
+                         slot: TextureSlot| {
         let (transform, sampler, uv_set_name) = texture_slot_state(texture);
         uv_transforms[slot.index()] = transform;
         samplers[slot.index()] = sampler;
@@ -78,12 +80,12 @@ pub(super) fn convert_material(
     };
 
     let base_color_texture = material.diffuse_texture().and_then(|texture| {
-        read_slot(&texture, MaterialTextureSlot::BaseColour);
-        extract_texture(&texture, MaterialTextureSlot::BaseColour, parent_dir)
+        read_slot(&texture, TextureSlot::Albedo);
+        extract_texture(&texture, TextureSlot::Albedo, parent_dir)
     });
     let normal_map_texture = material.normal_map_texture().and_then(|texture| {
-        read_slot(&texture, MaterialTextureSlot::Normal);
-        extract_texture(&texture, MaterialTextureSlot::Normal, parent_dir)
+        read_slot(&texture, TextureSlot::Normal);
+        extract_texture(&texture, TextureSlot::Normal, parent_dir)
     });
 
     ConvertedMaterial {
@@ -125,6 +127,9 @@ pub(super) fn convert_material(
 /// along with the rotated scale. With no rotation this is just
 /// `v_offset = 1 - translation.v - scaling.v`, and a transform that only tiles
 /// (`translation` zero, `scaling` one) comes out unchanged.
+///
+/// The result is then re-expressed in the renderer's centre-rotation form,
+/// which is what [`UvTransform`] holds.
 #[cfg(feature = "fbx")]
 pub(super) fn uv_transform_from_placement(
     translation: [f32; 2],
@@ -132,15 +137,15 @@ pub(super) fn uv_transform_from_placement(
     rotation: f32,
 ) -> UvTransform {
     let (sin, cos) = rotation.sin_cos();
-    UvTransform {
-        offset: [
+    uv_transform_from_origin_rotation(
+        [
             translation[0] + sin * scaling[1],
             1.0 - translation[1] - cos * scaling[1],
         ],
-        scale: scaling,
-        rotation: -rotation,
-        uv_set: 0,
-    }
+        scaling,
+        -rotation,
+        0,
+    )
 }
 
 /// How one FBX texture samples: its UV placement, its wrap modes, and the name
@@ -149,8 +154,8 @@ pub(super) fn uv_transform_from_placement(
 /// FBX composes placement as translation, rotation and scaling about the
 /// texture's rotation and scaling pivots. With the pivots at their default
 /// origin, that is translate after rotate after scale about the UV origin,
-/// which is [`UvTransform`]'s own convention, so the three properties map
-/// across directly. A file setting a non-default pivot is not represented:
+/// the same convention glTF uses, so the three properties map across directly
+/// before the conversion to centre rotation. A file setting a non-default pivot is not represented:
 /// there is nowhere to put it, and approximating it silently would be worse
 /// than leaving the placement where the pivot-free reading puts it. `UVSwap` is
 /// not carried either.
@@ -201,7 +206,7 @@ pub(super) fn texture_slot_state(
         .map(std::borrow::ToOwned::to_owned);
 
     (
-        (!transform.is_identity()).then_some(transform),
+        (transform != UvTransform::IDENTITY).then_some(transform),
         (sampler != TextureSampler::default()).then_some(sampler),
         uv_set_name,
     )
@@ -211,7 +216,7 @@ pub(super) fn texture_slot_state(
 /// decoded and labelled for `slot`, or a file beside the scene.
 pub(super) fn extract_texture(
     texture: &fbxcel_dom::v7400::object::texture::TextureHandle<'_>,
-    slot: MaterialTextureSlot,
+    slot: TextureSlot,
     parent_dir: &Path,
 ) -> Option<TextureSource> {
     if let Some(clip) = texture.video_clip() {
@@ -220,10 +225,11 @@ pub(super) fn extract_texture(
                 if let Ok(image) = image::load_from_memory(content) {
                     let rgba = image.to_rgba8();
                     let (width, height) = rgba.dimensions();
-                    return Some(TextureSource::Decoded(slot.texture(
+                    return Some(TextureSource::Decoded(TextureData::for_slot(
                         width,
                         height,
                         rgba.into_raw(),
+                        slot,
                     )));
                 }
             }
@@ -282,15 +288,16 @@ mod tests {
                 translation[1] - sin * p[0] + cos * p[1],
             ]
         };
-        // What a consumer applies to the UVs this loader emits.
+        // What the renderer applies to the UVs this loader emits: scale and
+        // offset, then rotate about the texture centre.
         let converted = uv_transform_from_placement(translation, scaling, rotation);
         let ours = |uv: [f32; 2]| {
             let (sin, cos) = converted.rotation.sin_cos();
-            let p = [uv[0] * converted.scale[0], uv[1] * converted.scale[1]];
-            [
-                converted.offset[0] + cos * p[0] + sin * p[1],
-                converted.offset[1] - sin * p[0] + cos * p[1],
-            ]
+            let p = [
+                uv[0] * converted.scale[0] + converted.offset[0] - 0.5,
+                uv[1] * converted.scale[1] + converted.offset[1] - 0.5,
+            ];
+            [cos * p[0] - sin * p[1] + 0.5, sin * p[0] + cos * p[1] + 0.5]
         };
 
         for uv in [[0.0, 0.0], [1.0, 1.0], [0.25, 0.8], [0.6, 0.1]] {

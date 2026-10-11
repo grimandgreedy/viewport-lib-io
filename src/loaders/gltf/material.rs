@@ -2,10 +2,12 @@
 
 use std::path::Path;
 
-use crate::types::{
-    AlphaMode, IoMaterial, MATERIAL_TEXTURE_SLOTS, MaterialTextureSlot, TextureFilter,
-    TextureSampler, TextureSource, UvTransform, WrapMode,
+use viewport_lib_types::data::texture::TextureData;
+use viewport_lib_types::material::{
+    AlphaMode, MATERIAL_TEXTURE_SLOTS, TextureFilter, TextureSlot, UvTransform, WrapMode,
 };
+
+use crate::types::{IoMaterial, TextureSampler, TextureSource, uv_transform_from_origin_rotation};
 
 /// The per-slot sampling state a material is built up with: how each slot
 /// transforms its UVs and what sampler its texture names.
@@ -46,13 +48,8 @@ pub(super) fn convert_material(
             // variation is dropped and only the factors steer metallic and
             // roughness. There is no metallic-roughness texture on this path.
             let texture = sg.diffuse_texture().and_then(|info| {
-                record_info(&mut slots, MaterialTextureSlot::BaseColour, &info);
-                image_to_texture_source(
-                    &info.texture(),
-                    MaterialTextureSlot::BaseColour,
-                    images,
-                    parent_dir,
-                )
+                record_info(&mut slots, TextureSlot::Albedo, &info);
+                image_to_texture_source(&info.texture(), TextureSlot::Albedo, images, parent_dir)
             });
             (
                 rgb,
@@ -66,19 +63,14 @@ pub(super) fn convert_material(
             let pbr = material.pbr_metallic_roughness();
             let base_color_factor = pbr.base_color_factor();
             let texture = pbr.base_color_texture().and_then(|info| {
-                record_info(&mut slots, MaterialTextureSlot::BaseColour, &info);
-                image_to_texture_source(
-                    &info.texture(),
-                    MaterialTextureSlot::BaseColour,
-                    images,
-                    parent_dir,
-                )
+                record_info(&mut slots, TextureSlot::Albedo, &info);
+                image_to_texture_source(&info.texture(), TextureSlot::Albedo, images, parent_dir)
             });
             let mr_texture = pbr.metallic_roughness_texture().and_then(|info| {
-                record_info(&mut slots, MaterialTextureSlot::MetallicRoughness, &info);
+                record_info(&mut slots, TextureSlot::MetallicRoughness, &info);
                 image_to_texture_source(
                     &info.texture(),
-                    MaterialTextureSlot::MetallicRoughness,
+                    TextureSlot::MetallicRoughness,
                     images,
                     parent_dir,
                 )
@@ -102,13 +94,8 @@ pub(super) fn convert_material(
     // default of 1.0 leaves the emission at the authored factor.
     let emissive_strength = material.emissive_strength().unwrap_or(1.0);
     let emissive_texture = material.emissive_texture().and_then(|info| {
-        record_info(&mut slots, MaterialTextureSlot::Emissive, &info);
-        image_to_texture_source(
-            &info.texture(),
-            MaterialTextureSlot::Emissive,
-            images,
-            parent_dir,
-        )
+        record_info(&mut slots, TextureSlot::Emissive, &info);
+        image_to_texture_source(&info.texture(), TextureSlot::Emissive, images, parent_dir)
     });
 
     let alpha_mode = match material.alpha_mode() {
@@ -125,17 +112,12 @@ pub(super) fn convert_material(
     let normal_map_texture = normal_texture.and_then(|info| {
         record_slot(
             &mut slots,
-            MaterialTextureSlot::Normal,
+            TextureSlot::Normal,
             info.tex_coord(),
             info.extension_value(TEXTURE_TRANSFORM),
             &info.texture(),
         );
-        image_to_texture_source(
-            &info.texture(),
-            MaterialTextureSlot::Normal,
-            images,
-            parent_dir,
-        )
+        image_to_texture_source(&info.texture(), TextureSlot::Normal, images, parent_dir)
     });
 
     let occlusion_texture = material.occlusion_texture();
@@ -143,17 +125,12 @@ pub(super) fn convert_material(
     let ao_texture = occlusion_texture.and_then(|info| {
         record_slot(
             &mut slots,
-            MaterialTextureSlot::Occlusion,
+            TextureSlot::Ao,
             info.tex_coord(),
             info.extension_value(TEXTURE_TRANSFORM),
             &info.texture(),
         );
-        image_to_texture_source(
-            &info.texture(),
-            MaterialTextureSlot::Occlusion,
-            images,
-            parent_dir,
-        )
+        image_to_texture_source(&info.texture(), TextureSlot::Ao, images, parent_dir)
     });
 
     IoMaterial {
@@ -186,7 +163,7 @@ const TEXTURE_TRANSFORM: &str = "KHR_texture_transform";
 
 /// Record how a `textureInfo` slot samples: its `texCoord` set and its
 /// KHR_texture_transform, plus the sampler its texture names.
-fn record_info(slots: &mut SlotState, slot: MaterialTextureSlot, info: &gltf::texture::Info) {
+fn record_info(slots: &mut SlotState, slot: TextureSlot, info: &gltf::texture::Info) {
     let mut transform = UvTransform {
         uv_set: info.tex_coord(),
         ..UvTransform::IDENTITY
@@ -208,7 +185,7 @@ fn record_info(slots: &mut SlotState, slot: MaterialTextureSlot, info: &gltf::te
 /// extension is read from the raw extension map instead.
 fn record_slot(
     slots: &mut SlotState,
-    slot: MaterialTextureSlot,
+    slot: TextureSlot,
     tex_coord: u32,
     transform: Option<&serde_json::Value>,
     texture: &gltf::Texture,
@@ -238,14 +215,22 @@ fn record_slot(
 /// beyond the neutral default: a consumer reads `None` as "sample UV0 plainly"
 /// and "use your default sampler", so recording the default would only cost it
 /// per-slot work.
+///
+/// `transform` arrives as glTF defines it, rotating about the UV origin, and is
+/// stored in the renderer's centre-rotation form.
 fn store(
     slots: &mut SlotState,
-    slot: MaterialTextureSlot,
+    slot: TextureSlot,
     transform: UvTransform,
     texture: &gltf::Texture,
 ) {
-    if !transform.is_identity() {
-        slots.uv_transforms[slot.index()] = Some(transform);
+    if transform != UvTransform::IDENTITY {
+        slots.uv_transforms[slot.index()] = Some(uv_transform_from_origin_rotation(
+            transform.offset,
+            transform.scale,
+            transform.rotation,
+            transform.uv_set,
+        ));
     }
     slots.samplers[slot.index()] = sampler_from_texture(texture);
 }
@@ -346,7 +331,7 @@ pub(super) fn spec_gloss_to_metal_rough(diffuse: [f32; 3], specular: [f32; 3]) -
 /// it.
 pub(super) fn image_to_texture_source(
     texture: &gltf::Texture,
-    slot: MaterialTextureSlot,
+    slot: TextureSlot,
     images: &[gltf::image::Data],
     parent_dir: &Path,
 ) -> Option<TextureSource> {
@@ -354,10 +339,11 @@ pub(super) fn image_to_texture_source(
     let index = source.index();
 
     if let Some(data) = images.get(index) {
-        return Some(TextureSource::Decoded(slot.texture(
+        return Some(TextureSource::Decoded(TextureData::for_slot(
             data.width,
             data.height,
             to_rgba8(data),
+            slot,
         )));
     }
 
@@ -667,13 +653,13 @@ mod tests {
         assert!(
             close(m.emissive[0], 0.1) && close(m.emissive[1], 0.2) && close(m.emissive[2], 0.3)
         );
-        assert_eq!(m.alpha_mode, crate::types::AlphaMode::Mask(0.7));
+        assert_eq!(m.alpha_mode, AlphaMode::Mask(0.7));
         assert!(m.double_sided);
 
         // A plain material keeps the neutral defaults.
         let p = &scene.materials[1];
         assert_eq!(p.emissive, [0.0, 0.0, 0.0]);
-        assert_eq!(p.alpha_mode, crate::types::AlphaMode::Opaque);
+        assert_eq!(p.alpha_mode, AlphaMode::Opaque);
         assert!(!p.double_sided);
 
         let _ = std::fs::remove_file(gltf_path);
@@ -764,7 +750,8 @@ mod tests {
 
     #[test]
     fn reads_texture_transforms_and_sampler_state() {
-        use crate::types::{MaterialTextureSlot, TextureFilter, TextureSampler, WrapMode};
+        use crate::types::TextureSampler;
+        use viewport_lib_types::material::{TextureFilter, TextureSlot, WrapMode};
 
         let dir = temp_dir("gltf_texture_transform");
         let gltf_path = dir.join("scene.gltf");
@@ -871,17 +858,41 @@ mod tests {
         let atlas = &scene.materials[0];
 
         let base = atlas
-            .uv_transform(MaterialTextureSlot::BaseColour)
+            .uv_transform(TextureSlot::Albedo)
             .expect("base colour carries KHR_texture_transform");
-        assert_eq!(base.offset, [0.5, 0.25]);
         assert_eq!(base.scale, [4.0, 4.0]);
-        assert!((base.rotation - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
         assert_eq!(base.uv_set, 0);
+        // Authored as offset [0.5, 0.25], rotation pi/2 about the UV origin, and
+        // decoded into the renderer's centre-rotation form. Sampled with the
+        // renderer's formula it has to land on the texel glTF's formula picks.
+        let authored = |uv: [f32; 2]| {
+            let (sin, cos) = 1.5707963_f32.sin_cos();
+            let p = [uv[0] * 4.0, uv[1] * 4.0];
+            [
+                0.5 + cos * p[0] + sin * p[1],
+                0.25 - sin * p[0] + cos * p[1],
+            ]
+        };
+        let decoded = |uv: [f32; 2]| {
+            let (sin, cos) = base.rotation.sin_cos();
+            let p = [
+                uv[0] * base.scale[0] + base.offset[0] - 0.5,
+                uv[1] * base.scale[1] + base.offset[1] - 0.5,
+            ];
+            [cos * p[0] - sin * p[1] + 0.5, sin * p[0] + cos * p[1] + 0.5]
+        };
+        for uv in [[0.0, 0.0], [1.0, 0.0], [0.3, 0.7]] {
+            let (want, got) = (authored(uv), decoded(uv));
+            assert!(
+                (want[0] - got[0]).abs() < 1e-4 && (want[1] - got[1]).abs() < 1e-4,
+                "uv {uv:?}: glTF {want:?} vs decoded {got:?}"
+            );
+        }
 
         // The normal slot is not a `textureInfo` in the gltf crate's model, so
         // its transform comes out of the raw extension map.
         let normal = atlas
-            .uv_transform(MaterialTextureSlot::Normal)
+            .uv_transform(TextureSlot::Normal)
             .expect("normal map carries KHR_texture_transform");
         assert_eq!(normal.offset, [0.5, 0.25]);
         assert_eq!(normal.scale, [4.0, 4.0]);
@@ -890,13 +901,13 @@ mod tests {
         // A plain texCoord with no transform still has to survive: it is the
         // only thing telling a consumer which UV set to sample.
         let occlusion = atlas
-            .uv_transform(MaterialTextureSlot::Occlusion)
+            .uv_transform(TextureSlot::Ao)
             .expect("occlusion samples the second UV set");
         assert_eq!(occlusion.uv_set, 1);
         assert_eq!(occlusion.scale, [1.0, 1.0]);
 
         assert_eq!(
-            atlas.sampler(MaterialTextureSlot::BaseColour),
+            atlas.sampler(TextureSlot::Albedo),
             Some(TextureSampler {
                 wrap_u: WrapMode::ClampToEdge,
                 wrap_v: WrapMode::MirrorRepeat,
@@ -905,14 +916,11 @@ mod tests {
         );
         // The occlusion texture names a sampler, but one that says exactly what
         // the consumer would have done anyway.
-        assert_eq!(atlas.sampler(MaterialTextureSlot::Occlusion), None);
+        assert_eq!(atlas.sampler(TextureSlot::Ao), None);
 
         let plain = &scene.materials[1];
-        assert_eq!(
-            plain.uv_transforms,
-            [None; crate::types::MATERIAL_TEXTURE_SLOTS]
-        );
-        assert_eq!(plain.samplers, [None; crate::types::MATERIAL_TEXTURE_SLOTS]);
+        assert_eq!(plain.uv_transforms, [None; MATERIAL_TEXTURE_SLOTS]);
+        assert_eq!(plain.samplers, [None; MATERIAL_TEXTURE_SLOTS]);
 
         let _ = std::fs::remove_file(gltf_path);
         let _ = std::fs::remove_file(bin_path);

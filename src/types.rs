@@ -1,8 +1,11 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use viewport_lib_types::colour::ColourSpace;
 use viewport_lib_types::data::texture::TextureData;
+use viewport_lib_types::material::{
+    AlphaMode, MATERIAL_TEXTURE_SLOTS, SamplerKey, TextureFilter, TextureSlot, UvTransform,
+    WrapMode,
+};
 
 /// Sentinel used to pad unused slots in fixed-width volumetric cell connectivity.
 pub const CELL_SENTINEL: u32 = u32::MAX;
@@ -29,196 +32,13 @@ pub enum TextureSource {
     Decoded(TextureData),
 }
 
-/// How many texture slots a material has, so the per-slot arrays on
-/// [`MaterialData`] can be indexed by [`MaterialTextureSlot::index`].
-pub const MATERIAL_TEXTURE_SLOTS: usize = 5;
-
-/// Which material texture slot a [`TextureSource`] fills.
-///
-/// The discriminants match viewport-lib's `TextureSlot`, so
-/// [`index`](Self::index) indexes the renderer's per-slot arrays as well as the
-/// ones here.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MaterialTextureSlot {
-    /// Base colour (albedo). sRGB.
-    BaseColour = 0,
-    /// Tangent-space normal map. Linear data.
-    Normal = 1,
-    /// Ambient occlusion. Linear data.
-    Occlusion = 2,
-    /// Combined metallic-roughness (ORM). Linear data.
-    MetallicRoughness = 3,
-    /// Emissive. sRGB.
-    Emissive = 4,
-}
-
-impl MaterialTextureSlot {
-    /// Every slot, in discriminant order.
-    pub const ALL: [MaterialTextureSlot; MATERIAL_TEXTURE_SLOTS] = [
-        MaterialTextureSlot::BaseColour,
-        MaterialTextureSlot::Normal,
-        MaterialTextureSlot::Occlusion,
-        MaterialTextureSlot::MetallicRoughness,
-        MaterialTextureSlot::Emissive,
-    ];
-
-    /// This slot's position in the per-slot arrays on [`MaterialData`].
-    pub fn index(self) -> usize {
-        self as usize
-    }
-
-    /// The colour space this slot's pixels are in.
-    pub fn colour_space(self) -> ColourSpace {
-        match self {
-            MaterialTextureSlot::BaseColour | MaterialTextureSlot::Emissive => ColourSpace::Srgb,
-            MaterialTextureSlot::MetallicRoughness
-            | MaterialTextureSlot::Normal
-            | MaterialTextureSlot::Occlusion => ColourSpace::Linear,
-        }
-    }
-
-    /// An 8-bit RGBA image labelled for this slot.
-    #[allow(dead_code)]
-    pub(crate) fn texture(self, width: u32, height: u32, rgba: Vec<u8>) -> TextureData {
-        match self {
-            MaterialTextureSlot::Normal => TextureData::normal_map(width, height, rgba),
-            _ => match self.colour_space() {
-                ColourSpace::Srgb => TextureData::srgb(width, height, rgba),
-                ColourSpace::Linear => TextureData::linear(width, height, rgba),
-            },
-        }
-    }
-}
-
-/// How one texture slot samples its UVs: tiling, offset, rotation, and which UV
-/// set to read.
-///
-/// This carries glTF `KHR_texture_transform` (and the per-map `_ST` a Unity or
-/// Unreal export writes) and maps onto a viewport-lib `UvTransform` field for
-/// field. The mapping is
-///
-/// ```text
-/// uv' = offset + rotate(rotation) * (uv * scale)
-/// ```
-///
-/// with the rotation about the UV origin and positive `rotation` turning the UV
-/// axes anticlockwise, which is what the glTF extension defines. A consumer that
-/// instead rotates about the texture centre after applying scale and offset
-/// (viewport-lib does) wants [`as_centre_rotation`](Self::as_centre_rotation),
-/// which re-expresses the same mapping in that form. The two agree exactly when
-/// `rotation` is 0.0, which covers every pure tile-and-offset material.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct UvTransform {
-    /// UV offset, added after scale and rotation.
-    pub offset: [f32; 2],
-    /// UV scale (tiling).
-    pub scale: [f32; 2],
-    /// Rotation in radians about the UV origin, anticlockwise.
-    pub rotation: f32,
-    /// Which UV set to sample, matching glTF `texCoord`: 0 is
-    /// [`SurfaceMesh::uvs`] and 1 is [`SurfaceMesh::uvs1`]. What a consumer does
-    /// with a slot naming a set the mesh does not carry is its own business, and
-    /// is not always a fallback to UV0: viewport-lib samples `(0, 0)` there.
-    /// Sets above 1 are not decoded, so the value is 0 or 1 today.
-    pub uv_set: u32,
-}
-
-impl UvTransform {
-    /// Passes UVs through unchanged, reading UV0.
-    pub const IDENTITY: UvTransform = UvTransform {
-        offset: [0.0, 0.0],
-        scale: [1.0, 1.0],
-        rotation: 0.0,
-        uv_set: 0,
-    };
-
-    /// Whether this is [`IDENTITY`](Self::IDENTITY): the texture samples UV0
-    /// untransformed, so a consumer can skip it.
-    pub fn is_identity(&self) -> bool {
-        *self == UvTransform::IDENTITY
-    }
-
-    /// The same mapping expressed for a consumer that rotates about the texture
-    /// centre `(0.5, 0.5)` after scale and offset, and treats positive rotation
-    /// as turning the sampled image anticlockwise:
-    ///
-    /// ```text
-    /// uv' = rotate(rotation) * (uv * scale + offset - 0.5) + 0.5
-    /// ```
-    ///
-    /// `scale` and `uv_set` are unchanged; the rotation flips sign and the
-    /// offset moves with it. Identical to `self` when `rotation` is 0.0.
-    ///
-    /// **It is its own inverse**, so this one call converts in both directions:
-    /// the rotation negates, and the offset rotates back through the opposite
-    /// angle about the same centre. Call it on a centre-rotation transform to
-    /// get one in this type's convention, which is what an exporter or anything
-    /// else *writing* a [`MaterialData`] needs;
-    /// [`from_centre_rotation`](Self::from_centre_rotation) is the same
-    /// operation under the name that reads correctly at a write site.
-    pub fn as_centre_rotation(&self) -> UvTransform {
-        let (sin, cos) = (-self.rotation).sin_cos();
-        let centred = [self.offset[0] - 0.5, self.offset[1] - 0.5];
-        UvTransform {
-            // Undo the centre rotation the consumer will apply to the offset, so
-            // the composed mapping lands where the source asked.
-            offset: [
-                cos * centred[0] + sin * centred[1] + 0.5,
-                -sin * centred[0] + cos * centred[1] + 0.5,
-            ],
-            scale: self.scale,
-            rotation: -self.rotation,
-            uv_set: self.uv_set,
-        }
-    }
-
-    /// A transform authored for a consumer that rotates about the texture centre
-    /// after scale and offset, brought into this type's convention (rotation
-    /// about the UV origin, as the file formats define it).
-    ///
-    /// The same operation as [`as_centre_rotation`](Self::as_centre_rotation),
-    /// which is its own inverse; this name exists so a write site does not read
-    /// as though it converts the wrong way.
-    pub fn from_centre_rotation(transform: &UvTransform) -> UvTransform {
-        transform.as_centre_rotation()
-    }
-}
-
-impl Default for UvTransform {
-    fn default() -> Self {
-        UvTransform::IDENTITY
-    }
-}
-
-/// How a sampler treats UVs outside `[0, 1]`, matching the glTF sampler wrap
-/// modes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum WrapMode {
-    /// Tile the texture (glTF `REPEAT`). The default.
-    #[default]
-    Repeat,
-    /// Clamp to the nearest edge texel (glTF `CLAMP_TO_EDGE`).
-    ClampToEdge,
-    /// Mirror on each repeat (glTF `MIRRORED_REPEAT`).
-    MirrorRepeat,
-}
-
-/// How a sampler blends texels, matching the glTF sampler filters.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum TextureFilter {
-    /// Nearest-neighbour: crisp and blocky under magnification.
-    Nearest,
-    /// Linear. The default.
-    #[default]
-    Linear,
-}
-
 /// Sampler state for one texture slot: wrap modes and filtering, as the source
 /// file specifies them.
 ///
-/// Maps onto a viewport-lib `SamplerKey`, whose remaining fields (anisotropy,
-/// LOD bias) are renderer policy rather than anything a scene file carries, so
-/// they keep their defaults.
+/// Narrower than the renderer's [`SamplerKey`], whose remaining fields
+/// (anisotropy, LOD bias) are renderer policy rather than anything a scene file
+/// carries. Convert with `SamplerKey::from`, which leaves those at their
+/// defaults.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct TextureSampler {
     /// Wrap mode for the U (glTF `wrapS`) axis.
@@ -230,20 +50,54 @@ pub struct TextureSampler {
     pub filter: TextureFilter,
 }
 
-/// How a material's alpha channel is interpreted, matching glTF `alphaMode`.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum AlphaMode {
-    /// Fully opaque; the alpha channel is ignored.
-    Opaque,
-    /// Alpha-tested: fragments with alpha below the cutoff are discarded.
-    Mask(f32),
-    /// Alpha-blended over the background.
-    Blend,
+impl From<TextureSampler> for SamplerKey {
+    fn from(sampler: TextureSampler) -> Self {
+        SamplerKey {
+            wrap_u: sampler.wrap_u,
+            wrap_v: sampler.wrap_v,
+            filter: sampler.filter,
+            ..SamplerKey::default()
+        }
+    }
 }
 
-impl Default for AlphaMode {
-    fn default() -> Self {
-        Self::Opaque
+/// A UV transform authored the way the file formats define it, rotating about
+/// the UV origin:
+///
+/// ```text
+/// uv' = offset + rotate(rotation) * (uv * scale)
+/// ```
+///
+/// with positive `rotation` turning the UV axes anticlockwise (glTF
+/// `KHR_texture_transform`, and an FBX placement with its pivots at the
+/// origin), re-expressed in the convention [`UvTransform`] uses, which scales
+/// and offsets first and then rotates about the texture centre:
+///
+/// ```text
+/// uv' = rotate(rotation') * (uv * scale + offset' - 0.5) + 0.5
+/// ```
+///
+/// `scale` and `uv_set` carry across; the rotation negates and the offset moves
+/// with it. With no rotation the two forms are the same.
+#[allow(dead_code)]
+pub(crate) fn uv_transform_from_origin_rotation(
+    offset: [f32; 2],
+    scale: [f32; 2],
+    rotation: f32,
+    uv_set: u32,
+) -> UvTransform {
+    let (sin, cos) = (-rotation).sin_cos();
+    let centred = [offset[0] - 0.5, offset[1] - 0.5];
+    UvTransform {
+        // Undo the centre rotation the renderer applies to the offset, so the
+        // composed mapping lands where the source asked.
+        offset: [
+            cos * centred[0] + sin * centred[1] + 0.5,
+            -sin * centred[0] + cos * centred[1] + 0.5,
+        ],
+        scale,
+        rotation: -rotation,
+        uv_set,
     }
 }
 
@@ -296,11 +150,11 @@ pub struct MaterialData {
     /// Whether back faces are drawn, matching glTF `doubleSided`. `false` for
     /// formats without the concept.
     pub double_sided: bool,
-    /// Base colour texture, if present. sRGB colour ([`ColourSpace::Srgb`]).
+    /// Base colour texture, if present. sRGB colour ([`ColourSpace::Srgb`](viewport_lib_types::colour::ColourSpace::Srgb)).
     pub base_color_texture: Option<TextureSource>,
     /// Combined metallic-roughness (ORM) texture, if present. Matches the glTF
     /// `metallicRoughnessTexture`: G channel is roughness, B channel is metallic.
-    /// Linear data ([`ColourSpace::Linear`]).
+    /// Linear data ([`ColourSpace::Linear`](viewport_lib_types::colour::ColourSpace::Linear)).
     pub metallic_roughness_texture: Option<TextureSource>,
     /// Normal map, if present. Linear data with the normal-map role.
     pub normal_map_texture: Option<TextureSource>,
@@ -309,26 +163,28 @@ pub struct MaterialData {
     /// equivalent (OBJ, FBX) leave this at 1.0.
     pub normal_scale: f32,
     /// Ambient-occlusion texture, if present. Linear data
-    /// ([`ColourSpace::Linear`]).
+    /// ([`ColourSpace::Linear`](viewport_lib_types::colour::ColourSpace::Linear)).
     pub ao_texture: Option<TextureSource>,
     /// Strength of the ambient-occlusion contribution, matching glTF
     /// `occlusionStrength`. 1.0 applies the map fully, 0.0 disables it. Files with
     /// no equivalent leave this at 1.0.
     pub occlusion_strength: f32,
     /// Emissive texture, multiplied by `emissive`. Matches glTF `emissiveTexture`.
-    /// sRGB colour ([`ColourSpace::Srgb`]).
+    /// sRGB colour ([`ColourSpace::Srgb`](viewport_lib_types::colour::ColourSpace::Srgb)).
     pub emissive_texture: Option<TextureSource>,
-    /// How each slot samples its UVs, indexed by
-    /// [`MaterialTextureSlot::index`]. `None` where the source asks for plain
-    /// UV0 sampling, which is most materials. Read one with
-    /// [`uv_transform`](Self::uv_transform); maps onto viewport-lib
-    /// `Material::texture_transforms`.
+    /// How each slot samples its UVs, indexed by [`TextureSlot::index`]. `None`
+    /// where the source asks for plain UV0 sampling, which is most materials.
+    /// Read one with [`uv_transform`](Self::uv_transform).
+    ///
+    /// Already in the renderer's convention (scale and offset, then rotation
+    /// about the texture centre), converted from the file's at decode, so it
+    /// copies straight into viewport-lib's `Material::texture_transforms`.
     pub uv_transforms: [Option<UvTransform>; MATERIAL_TEXTURE_SLOTS],
-    /// Sampler state per slot, indexed by [`MaterialTextureSlot::index`].
+    /// Sampler state per slot, indexed by [`TextureSlot::index`].
     /// `None` where the source specifies none, or specifies exactly the neutral
     /// default (repeat on both axes, linear filtering), so a consumer reads
     /// `None` as "your default sampler". Read one with
-    /// [`sampler`](Self::sampler); maps onto viewport-lib `Material::sampler`.
+    /// [`sampler`](Self::sampler); converts to the renderer's [`SamplerKey`].
     pub samplers: [Option<TextureSampler>; MATERIAL_TEXTURE_SLOTS],
 }
 
@@ -346,16 +202,16 @@ impl MaterialData {
     ///     let id = res.upload_texture(&device, &queue, data)?;
     /// }
     /// ```
-    pub fn textures(&self) -> Vec<(MaterialTextureSlot, &TextureSource)> {
+    pub fn textures(&self) -> Vec<(TextureSlot, &TextureSource)> {
         [
-            (MaterialTextureSlot::BaseColour, &self.base_color_texture),
+            (TextureSlot::Albedo, &self.base_color_texture),
             (
-                MaterialTextureSlot::MetallicRoughness,
+                TextureSlot::MetallicRoughness,
                 &self.metallic_roughness_texture,
             ),
-            (MaterialTextureSlot::Normal, &self.normal_map_texture),
-            (MaterialTextureSlot::Occlusion, &self.ao_texture),
-            (MaterialTextureSlot::Emissive, &self.emissive_texture),
+            (TextureSlot::Normal, &self.normal_map_texture),
+            (TextureSlot::Ao, &self.ao_texture),
+            (TextureSlot::Emissive, &self.emissive_texture),
         ]
         .into_iter()
         .filter_map(|(slot, src)| src.as_ref().map(|s| (slot, s)))
@@ -364,13 +220,13 @@ impl MaterialData {
 
     /// How one slot samples its UVs, or `None` when it samples UV0
     /// untransformed.
-    pub fn uv_transform(&self, slot: MaterialTextureSlot) -> Option<UvTransform> {
+    pub fn uv_transform(&self, slot: TextureSlot) -> Option<UvTransform> {
         self.uv_transforms[slot.index()]
     }
 
     /// Sampler state for one slot, or `None` when the source specifies nothing
     /// beyond the neutral default.
-    pub fn sampler(&self, slot: MaterialTextureSlot) -> Option<TextureSampler> {
+    pub fn sampler(&self, slot: TextureSlot) -> Option<TextureSampler> {
         self.samplers[slot.index()]
     }
 }
@@ -1123,47 +979,19 @@ pub(crate) type IoScene = SceneData;
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_material_slot_labels_its_texture() {
-        use viewport_lib_types::data::texture::TextureRole;
-        let label = |slot: MaterialTextureSlot| {
-            let texture = slot.texture(1, 1, vec![128, 128, 255, 255]);
-            (texture.colour_space(), texture.role())
-        };
-        assert_eq!(
-            label(MaterialTextureSlot::BaseColour),
-            (ColourSpace::Srgb, TextureRole::Image)
-        );
-        assert_eq!(
-            label(MaterialTextureSlot::Emissive),
-            (ColourSpace::Srgb, TextureRole::Image)
-        );
-        assert_eq!(
-            label(MaterialTextureSlot::Normal),
-            (ColourSpace::Linear, TextureRole::NormalMap)
-        );
-        assert_eq!(
-            label(MaterialTextureSlot::Occlusion),
-            (ColourSpace::Linear, TextureRole::Image)
-        );
-        assert_eq!(
-            label(MaterialTextureSlot::MetallicRoughness),
-            (ColourSpace::Linear, TextureRole::Image)
-        );
-    }
-
-    /// The glTF mapping: scale, then rotate about the UV origin, then offset.
-    fn sample_gltf(t: &UvTransform, uv: [f32; 2]) -> [f32; 2] {
-        let (sin, cos) = t.rotation.sin_cos();
-        let p = [uv[0] * t.scale[0], uv[1] * t.scale[1]];
+    /// The file formats' mapping: scale, then rotate about the UV origin, then
+    /// offset.
+    fn sample_origin(offset: [f32; 2], scale: [f32; 2], rotation: f32, uv: [f32; 2]) -> [f32; 2] {
+        let (sin, cos) = rotation.sin_cos();
+        let p = [uv[0] * scale[0], uv[1] * scale[1]];
         [
-            t.offset[0] + cos * p[0] + sin * p[1],
-            t.offset[1] - sin * p[0] + cos * p[1],
+            offset[0] + cos * p[0] + sin * p[1],
+            offset[1] - sin * p[0] + cos * p[1],
         ]
     }
 
-    /// The consumer-side mapping: scale and offset, then rotate about the
-    /// texture centre.
+    /// The renderer's mapping: scale and offset, then rotate about the texture
+    /// centre.
     fn sample_centre(t: &UvTransform, uv: [f32; 2]) -> [f32; 2] {
         let (sin, cos) = t.rotation.sin_cos();
         let p = [
@@ -1174,19 +1002,14 @@ mod tests {
     }
 
     #[test]
-    fn centre_rotation_form_samples_the_same_texels() {
-        let source = UvTransform {
-            offset: [0.25, -0.1],
-            scale: [2.0, 3.0],
-            rotation: 0.7,
-            uv_set: 1,
-        };
-        let converted = source.as_centre_rotation();
-        assert_eq!(converted.scale, source.scale);
-        assert_eq!(converted.uv_set, source.uv_set);
+    fn origin_rotation_converts_to_the_same_texels() {
+        let (offset, scale, rotation) = ([0.25, -0.1], [2.0, 3.0], 0.7);
+        let converted = uv_transform_from_origin_rotation(offset, scale, rotation, 1);
+        assert_eq!(converted.scale, scale);
+        assert_eq!(converted.uv_set, 1);
 
         for uv in [[0.0, 0.0], [1.0, 1.0], [0.3, 0.8], [-0.4, 0.2]] {
-            let want = sample_gltf(&source, uv);
+            let want = sample_origin(offset, scale, rotation, uv);
             let got = sample_centre(&converted, uv);
             assert!(
                 (want[0] - got[0]).abs() < 1e-5 && (want[1] - got[1]).abs() < 1e-5,
@@ -1195,56 +1018,27 @@ mod tests {
         }
     }
 
-    /// The conversion is an involution, and consumers writing a transform rely
-    /// on that: `from_centre_rotation` is the same call. Nothing else here would
-    /// fail if a change to the rotation convention stopped the round trip
-    /// closing, since the other tests only ever convert one way.
     #[test]
-    fn centre_rotation_form_is_its_own_inverse() {
-        for rotation in [0.0, 0.7, -1.9, std::f32::consts::FRAC_PI_2, 3.0] {
-            for offset in [[0.0, 0.0], [0.25, -0.1], [1.3, 0.6]] {
-                let source = UvTransform {
-                    offset,
-                    scale: [2.0, 0.5],
-                    rotation,
-                    uv_set: 1,
-                };
-                let round_trip = UvTransform::from_centre_rotation(&source.as_centre_rotation());
-                assert!(
-                    (round_trip.offset[0] - source.offset[0]).abs() < 1e-5
-                        && (round_trip.offset[1] - source.offset[1]).abs() < 1e-5
-                        && (round_trip.rotation - source.rotation).abs() < 1e-5,
-                    "rotation {rotation}, offset {offset:?}: got {round_trip:?}"
-                );
-                assert_eq!(round_trip.scale, source.scale);
-                assert_eq!(round_trip.uv_set, source.uv_set);
-            }
-        }
-    }
-
-    #[test]
-    fn centre_rotation_form_is_a_no_op_without_rotation() {
-        let source = UvTransform {
-            offset: [0.25, -0.1],
-            scale: [2.0, 3.0],
-            rotation: 0.0,
-            uv_set: 0,
-        };
-        let converted = source.as_centre_rotation();
-        assert!((converted.offset[0] - source.offset[0]).abs() < 1e-6);
-        assert!((converted.offset[1] - source.offset[1]).abs() < 1e-6);
+    fn origin_rotation_is_unchanged_without_rotation() {
+        let converted = uv_transform_from_origin_rotation([0.25, -0.1], [2.0, 3.0], 0.0, 0);
+        assert!((converted.offset[0] - 0.25).abs() < 1e-6);
+        assert!((converted.offset[1] + 0.1).abs() < 1e-6);
         assert_eq!(converted.rotation, 0.0);
     }
 
     #[test]
-    fn slot_indices_are_stable() {
-        assert_eq!(MaterialTextureSlot::BaseColour.index(), 0);
-        assert_eq!(MaterialTextureSlot::Normal.index(), 1);
-        assert_eq!(MaterialTextureSlot::Occlusion.index(), 2);
-        assert_eq!(MaterialTextureSlot::MetallicRoughness.index(), 3);
-        assert_eq!(MaterialTextureSlot::Emissive.index(), 4);
-        for (i, slot) in MaterialTextureSlot::ALL.iter().enumerate() {
-            assert_eq!(slot.index(), i);
-        }
+    fn a_sampler_converts_with_renderer_defaults_for_the_rest() {
+        let sampler = TextureSampler {
+            wrap_u: WrapMode::ClampToEdge,
+            wrap_v: WrapMode::MirrorRepeat,
+            filter: TextureFilter::Nearest,
+        };
+        let key = SamplerKey::from(sampler);
+        assert_eq!(key.wrap_u, WrapMode::ClampToEdge);
+        assert_eq!(key.wrap_v, WrapMode::MirrorRepeat);
+        assert_eq!(key.filter, TextureFilter::Nearest);
+        let default = SamplerKey::default();
+        assert_eq!(key.anisotropy, default.anisotropy);
+        assert_eq!(key.lod_bias, default.lod_bias);
     }
 }
