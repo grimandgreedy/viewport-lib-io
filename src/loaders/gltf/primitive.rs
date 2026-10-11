@@ -1,6 +1,8 @@
-//! One glTF primitive to one `SurfaceMesh`.
+//! One glTF primitive to one `SceneMesh`.
 
-use crate::types::{IoMesh, MorphTarget, SkinWeights, SurfaceMesh};
+use viewport_lib_types::data::mesh::MeshData;
+
+use crate::types::{IoMesh, MorphTarget, SkinWeights, smooth_normals};
 
 use super::skin::normalise_skin_weights;
 
@@ -31,7 +33,7 @@ pub(super) fn convert_primitive(
     let normals = reader
         .read_normals()
         .map(|iter| iter.collect())
-        .unwrap_or_else(|| compute_vertex_normals(&positions, &indices));
+        .unwrap_or_else(|| smooth_normals(&positions, &indices));
 
     let uvs = reader
         .read_tex_coords(0)
@@ -111,56 +113,23 @@ pub(super) fn convert_primitive(
         base_name
     };
 
-    let mut mesh_data = SurfaceMesh::default();
-    mesh_data.positions = positions;
-    mesh_data.normals = normals;
-    mesh_data.indices = indices;
+    let mut mesh_data = MeshData::new(positions, normals, indices);
     mesh_data.uvs = uvs;
     mesh_data.uvs1 = uvs1;
     mesh_data.tangents = tangents;
-    mesh_data.colours = colours;
-    mesh_data.skin_weights = skin_weights;
-    mesh_data.morph_targets = morph_targets;
+    mesh_data.vertex_colours = colours;
 
     Some(IoMesh {
         name,
         mesh: mesh_data,
+        skin_weights,
+        morph_targets,
         material_index,
         transform: glam::Mat4::IDENTITY,
         two_sided: primitive.material().double_sided(),
         parent_index: None,
         ..IoMesh::default()
     })
-}
-
-/// Area-weighted vertex normals, for a primitive that ships without them.
-///
-/// Each face contributes its unnormalised cross product, so larger triangles
-/// pull harder, then each vertex normal is normalised at the end.
-pub(super) fn compute_vertex_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
-    let mut normals = vec![glam::Vec3::ZERO; positions.len()];
-    for triangle in indices.chunks_exact(3) {
-        let (i0, i1, i2) = (
-            triangle[0] as usize,
-            triangle[1] as usize,
-            triangle[2] as usize,
-        );
-        let v0 = glam::Vec3::from_array(positions[i0]);
-        let v1 = glam::Vec3::from_array(positions[i1]);
-        let v2 = glam::Vec3::from_array(positions[i2]);
-        let n = (v1 - v0).cross(v2 - v0);
-        normals[i0] += n;
-        normals[i1] += n;
-        normals[i2] += n;
-    }
-
-    normals
-        .into_iter()
-        .map(|n| {
-            let n = n.normalize_or_zero();
-            [n.x, n.y, n.z]
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -227,7 +196,7 @@ mod tests {
 
         let scene = scene_from_path(&gltf_path).unwrap();
         let mesh = scene.meshes.first().expect("mesh missing");
-        let got = mesh.mesh.colours.as_ref().expect("colours missing");
+        let got = mesh.mesh.vertex_colours.as_ref().expect("colours missing");
         assert_eq!(got.len(), 3);
         // Colours are direction-independent, so the Z-up reorientation leaves
         // them exactly as authored.
@@ -430,8 +399,8 @@ mod tests {
 
         let scene = scene_from_path(&gltf_path).unwrap();
         let mesh = scene.meshes.first().expect("mesh missing");
-        assert_eq!(mesh.mesh.morph_targets.len(), 1, "one target expected");
-        let target = &mesh.mesh.morph_targets[0];
+        assert_eq!(mesh.morph_targets.len(), 1, "one target expected");
+        let target = &mesh.morph_targets[0];
         assert_eq!(target.name, "target_0");
         assert!(target.normal_deltas.is_none());
         assert!(target.tangent_deltas.is_none());

@@ -1,7 +1,10 @@
 use std::path::Path;
 
+use viewport_lib_types::data::attribute::AttributeData;
+use viewport_lib_types::data::mesh::MeshData;
+
 use crate::error::IoError;
-use crate::types::{AttributeData, AttributeDomain, IoMesh, IoPointCloud, IoScene, SurfaceMesh};
+use crate::types::{IoMesh, IoPointCloud, IoScene, smooth_normals};
 
 /// Decode a PLY file into a CPU-side scene.
 pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
@@ -423,20 +426,16 @@ fn load_ply(bytes: &[u8]) -> Result<IoScene, IoError> {
     let normals = if has_normals {
         stored_normals
     } else {
-        compute_smooth_normals(&positions, &indices)
+        smooth_normals(&positions, &indices)
     };
 
     // Store extra scalar attributes in MeshData.
-    let mut mesh_data = SurfaceMesh::default();
-    mesh_data.positions = positions;
-    mesh_data.normals = normals;
-    mesh_data.indices = indices;
+    let mut mesh_data = MeshData::new(positions, normals, indices);
     for (buf, (_, prop)) in scalar_bufs.iter().zip(extra_props.iter()) {
         if !buf.is_empty() {
-            mesh_data.attributes.insert(
-                prop.name.clone(),
-                AttributeData::scalars(AttributeDomain::Point, buf.clone()),
-            );
+            mesh_data
+                .attributes
+                .insert(prop.name.clone(), AttributeData::Vertex(buf.clone()));
         }
     }
 
@@ -721,34 +720,6 @@ fn skip_ascii_lines(bytes: &[u8], mut offset: usize, n: usize) -> usize {
     offset
 }
 
-/// Accumulate face normals at each vertex and normalise for smooth shading.
-fn compute_smooth_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
-    let mut normals = vec![[0.0f32; 3]; positions.len()];
-    for tri in indices.chunks_exact(3) {
-        let a = glam::Vec3::from(positions[tri[0] as usize]);
-        let b = glam::Vec3::from(positions[tri[1] as usize]);
-        let c = glam::Vec3::from(positions[tri[2] as usize]);
-        let face_normal = (b - a).cross(c - a);
-        for &v in tri {
-            let n = &mut normals[v as usize];
-            n[0] += face_normal.x;
-            n[1] += face_normal.y;
-            n[2] += face_normal.z;
-        }
-    }
-    normals.iter_mut().for_each(|n| {
-        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-        if len > 1e-6 {
-            n[0] /= len;
-            n[1] /= len;
-            n[2] /= len;
-        } else {
-            *n = [0.0, 1.0, 0.0];
-        }
-    });
-    normals
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -880,24 +851,5 @@ mod tests {
 
         let unterminated = b"one\ntwo";
         assert_eq!(skip_ascii_lines(unterminated, 0, 2), unterminated.len());
-    }
-
-    /// Smooth normals are unit length, and a flat quad's all point the same way.
-    #[test]
-    fn smooth_normals_are_unit_length() {
-        let positions = vec![
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [1.0, 1.0, 0.0],
-            [0.0, 1.0, 0.0],
-        ];
-        let normals = compute_smooth_normals(&positions, &[0, 1, 2, 0, 2, 3]);
-
-        assert_eq!(normals.len(), positions.len());
-        for normal in normals {
-            let length = glam::Vec3::from(normal).length();
-            assert!((length - 1.0).abs() < 1e-5, "unit normal, got {length}");
-            assert!(normal[2] > 0.99, "a +Z quad faces +Z, got {normal:?}");
-        }
     }
 }

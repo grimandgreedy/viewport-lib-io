@@ -1,8 +1,11 @@
 use std::collections::HashMap;
 
+use viewport_lib_types::data::attribute::AttributeData;
+use viewport_lib_types::data::mesh::MeshData;
+
 use crate::types::{
-    AttributeData, AttributeDomain, DecodedDataSet, PointSet, SparseGrid, StructuredVolume,
-    SurfaceMesh, VolumeGridGeometry, VolumeMesh,
+    DecodedDataSet, PointSet, SparseGrid, StructuredVolume, VolumeGridGeometry, VolumeMesh,
+    smooth_normals,
 };
 
 /// Structured scalar volume data for scientific dataset loaders.
@@ -170,38 +173,28 @@ impl Dataset {
         None
     }
 
-    fn to_surface_mesh(&self) -> SurfaceMesh {
-        let mut attributes = HashMap::new();
+    fn to_surface_mesh(&self) -> MeshData {
+        // A loader that computed no normals, or not one per vertex, gets smooth
+        // ones here, so every decoded surface uploads as it is.
+        let normals = if self.normals.len() == self.positions.len() {
+            self.normals.clone()
+        } else {
+            smooth_normals(&self.positions, &self.indices)
+        };
+        let mut mesh = MeshData::new(self.positions.clone(), normals, self.indices.clone());
         for (name, values) in &self.point_data {
-            attributes.insert(
-                name.clone(),
-                AttributeData::scalars(AttributeDomain::Point, values.clone()),
-            );
+            mesh.attributes
+                .insert(name.clone(), AttributeData::Vertex(values.clone()));
         }
         for (name, values) in &self.cell_data {
-            attributes.insert(
-                name.clone(),
-                AttributeData::scalars(AttributeDomain::Cell, values.clone()),
-            );
+            mesh.attributes
+                .insert(name.clone(), AttributeData::Cell(values.clone()));
         }
         for (name, values) in &self.edge_data {
-            attributes.insert(
-                name.clone(),
-                AttributeData::scalars(AttributeDomain::Halfedge, values.clone()),
-            );
+            mesh.attributes
+                .insert(name.clone(), AttributeData::Halfedge(values.clone()));
         }
-        SurfaceMesh {
-            positions: self.positions.clone(),
-            normals: self.normals.clone(),
-            indices: self.indices.clone(),
-            uvs: None,
-            uvs1: None,
-            tangents: None,
-            colours: None,
-            attributes,
-            skin_weights: None,
-            morph_targets: Vec::new(),
-        }
+        mesh
     }
 
     pub fn into_io_dataset(self) -> DecodedDataSet {
@@ -556,15 +549,20 @@ mod tests {
         let decoded = mesh.into_io_dataset();
         let surface = decoded.surface_mesh.expect("a surface");
         assert!(decoded.point_set.is_none());
-        assert_eq!(
-            surface.attributes["per_vertex"].domain,
-            AttributeDomain::Point
-        );
-        assert_eq!(surface.attributes["per_face"].domain, AttributeDomain::Cell);
-        assert_eq!(
-            surface.attributes["per_halfedge"].domain,
-            AttributeDomain::Halfedge
-        );
+        assert!(matches!(
+            surface.attributes["per_vertex"],
+            AttributeData::Vertex(_)
+        ));
+        assert!(matches!(
+            surface.attributes["per_face"],
+            AttributeData::Cell(_)
+        ));
+        assert!(matches!(
+            surface.attributes["per_halfedge"],
+            AttributeData::Halfedge(_)
+        ));
+        // The dataset carried no normals, so the surface got smooth ones.
+        assert_eq!(surface.normals.len(), surface.positions.len());
 
         let mut cloud = empty_dataset();
         cloud.positions = vec![[0.0; 3], [1.0; 3]];

@@ -127,7 +127,7 @@ pub(super) fn rigidly_attach_to_joint(
     }
 
     let count = imported.mesh.positions.len();
-    imported.mesh.skin_weights = Some(SkinWeights {
+    imported.skin_weights = Some(SkinWeights {
         joint_indices: vec![[joint_index as u8, 0, 0, 0]; count],
         joint_weights: vec![[1.0, 0.0, 0.0, 0.0]; count],
     });

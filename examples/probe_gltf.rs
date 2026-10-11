@@ -49,7 +49,7 @@ fn main() {
     let mut static_meshes = 0usize;
     for (i, m) in scene.meshes.iter().enumerate() {
         let sm = &m.mesh;
-        let skin = sm.skin_weights.is_some();
+        let skin = m.skin_weights.is_some();
         let skel = m.skeleton_index;
         let class = match (skin, skel) {
             (true, Some(_)) => {

@@ -91,7 +91,7 @@ fn legacy_arkit_rig_imports_its_blend_shapes() {
     let with_targets: Vec<_> = scene
         .meshes
         .iter()
-        .filter(|m| !m.mesh.morph_targets.is_empty())
+        .filter(|m| !m.morph_targets.is_empty())
         .collect();
     assert!(
         !with_targets.is_empty(),
@@ -102,7 +102,7 @@ fn legacy_arkit_rig_imports_its_blend_shapes() {
     // actually moves its mesh. Nothing here depends on how the rig splits its
     // face across meshes, or on what those meshes are called.
     for m in &with_targets {
-        for t in &m.mesh.morph_targets {
+        for t in &m.morph_targets {
             assert_eq!(
                 t.position_deltas.len(),
                 m.mesh.positions.len(),
@@ -124,7 +124,7 @@ fn legacy_arkit_rig_imports_its_blend_shapes() {
     // over head, teeth, and eyes, and both are correct.
     let all_names: std::collections::HashSet<&str> = with_targets
         .iter()
-        .flat_map(|m| m.mesh.morph_targets.iter())
+        .flat_map(|m| m.morph_targets.iter())
         .map(|t| t.name.as_str())
         .collect();
     let present = ARKIT_BLEND_SHAPES

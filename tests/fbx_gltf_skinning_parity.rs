@@ -57,7 +57,7 @@ fn skinned_mesh(scene: &SceneData) -> &SceneMesh {
     scene
         .meshes
         .iter()
-        .find(|m| m.skeleton_index.is_some() && m.mesh.skin_weights.is_some())
+        .find(|m| m.skeleton_index.is_some() && m.skin_weights.is_some())
         .expect("scene has no skinned mesh")
 }
 
@@ -185,7 +185,7 @@ fn posed_worlds(skel: &Skeleton, clip_skel: &Skeleton, clip: &AnimationClip, t: 
 /// node transform that carries the axis/unit conversion; glTF vertices are
 /// already in scene space, so it passes identity).
 fn skin_positions(mesh: &SceneMesh, skel: &Skeleton, worlds: &[Mat4], pre: Mat4) -> Vec<Vec3> {
-    let sw = mesh.mesh.skin_weights.as_ref().expect("skin weights");
+    let sw = mesh.skin_weights.as_ref().expect("skin weights");
     let skin_mats: Vec<Mat4> = worlds
         .iter()
         .zip(&skel.joints)

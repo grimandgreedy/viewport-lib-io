@@ -18,7 +18,7 @@ fn a_legacy_unstructured_grid_conforms() {
     for (i, dataset) in datasets.iter().enumerate() {
         let label = format!("quad.vtk / dataset[{i}]");
         if let Some(mesh) = dataset.as_surface_mesh() {
-            invariants::check_surface_mesh(&label, mesh).expect_clean();
+            invariants::check_mesh(&label, mesh).expect_clean();
         }
         if let Some(points) = dataset.as_point_set() {
             invariants::check_point_set(&label, points).expect_clean();

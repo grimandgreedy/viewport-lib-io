@@ -4,7 +4,10 @@ use std::path::Path;
 use super::common::Dataset;
 use super::error::ReadError;
 use super::pvd::{PvdSeries, TimestepEntry};
-use crate::{error::IoError, types::IoDataSet};
+use crate::{
+    error::IoError,
+    types::{IoDataSet, smooth_normals},
+};
 
 /// Decode a Tecplot file into one or more scientific datasets.
 pub fn datasets_from_path(path: &Path) -> Result<Vec<IoDataSet>, IoError> {
@@ -576,7 +579,7 @@ fn zone_to_dataset(zone: TecplotZone, variables: &[String]) -> Result<Dataset, R
         triangulate_structured(zone.i_dim, zone.j_dim, zone.k_dim)
     };
 
-    let normals = compute_normals(&positions, &indices);
+    let normals = smooth_normals(&positions, &indices);
 
     // Collect scalar variables (everything except X, Y, Z).
     let mut point_data = HashMap::new();
@@ -703,30 +706,6 @@ fn triangulate_structured(i_dim: usize, j_dim: usize, _k_dim: usize) -> Vec<u32>
 // ---------------------------------------------------------------------------
 // Geometry helpers
 // ---------------------------------------------------------------------------
-
-fn compute_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
-    let mut normals = vec![[0.0; 3]; positions.len()];
-    for tri in indices.chunks_exact(3) {
-        if tri[0] as usize >= positions.len()
-            || tri[1] as usize >= positions.len()
-            || tri[2] as usize >= positions.len()
-        {
-            continue;
-        }
-        let a = glam::Vec3::from_array(positions[tri[0] as usize]);
-        let b = glam::Vec3::from_array(positions[tri[1] as usize]);
-        let c = glam::Vec3::from_array(positions[tri[2] as usize]);
-        let n = (b - a).cross(c - a);
-        for &idx in tri {
-            let acc = glam::Vec3::from_array(normals[idx as usize]) + n;
-            normals[idx as usize] = acc.to_array();
-        }
-    }
-    for n in &mut normals {
-        *n = glam::Vec3::from_array(*n).normalize_or_zero().to_array();
-    }
-    normals
-}
 
 #[cfg(test)]
 mod tests {

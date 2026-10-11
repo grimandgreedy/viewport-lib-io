@@ -2,10 +2,7 @@
 //! skins, blend shapes, and animation.
 
 use crate::error::IoError;
-use crate::types::{
-    AttributeData, AttributeDomain, IoMaterial, IoMesh, IoScene, MorphTarget, Skeleton,
-    SkinWeights, SurfaceMesh,
-};
+use crate::types::{IoMaterial, IoMesh, IoScene, MorphTarget, Skeleton, SkinWeights};
 use fbxcel_dom::any::AnyDocument;
 use fbxcel_dom::v7400::Document;
 use fbxcel_dom::v7400::data::mesh::layer::TypedLayerElementHandle;
@@ -13,6 +10,8 @@ use fbxcel_dom::v7400::object::TypedObjectHandle;
 use fbxcel_dom::v7400::object::model::TypedModelHandle;
 use std::collections::HashMap;
 use std::path::Path;
+use viewport_lib_types::data::attribute::AttributeData;
+use viewport_lib_types::data::mesh::MeshData;
 use viewport_lib_types::material::{TextureSlot, UvTransform};
 
 use super::animation::{extract_animations, extract_morph_weight_clips};
@@ -208,17 +207,8 @@ pub(super) fn build_fbx_scene(
     let mesh_targets: Vec<(usize, Vec<String>)> = meshes
         .iter()
         .enumerate()
-        .filter(|(_, m)| !m.mesh.morph_targets.is_empty())
-        .map(|(i, m)| {
-            (
-                i,
-                m.mesh
-                    .morph_targets
-                    .iter()
-                    .map(|t| t.name.clone())
-                    .collect(),
-            )
-        })
+        .filter(|(_, m)| !m.morph_targets.is_empty())
+        .map(|(i, m)| (i, m.morph_targets.iter().map(|t| t.name.clone()).collect()))
         .collect();
     let morph_animations = extract_morph_weight_clips(&document, &mesh_targets);
 
@@ -744,23 +734,17 @@ fn push_model_meshes(meshes: &mut Vec<IoMesh>, model: DecodedModel<'_>, log_uv: 
                     })
                     .collect();
 
-                let mut mesh_data = SurfaceMesh::default();
-                mesh_data.positions = sub_positions;
-                mesh_data.normals = sub_normals;
-                mesh_data.indices = sub_indices;
+                let mut mesh_data = MeshData::new(sub_positions, sub_normals, sub_indices);
                 mesh_data.uvs = sub_uvs;
                 mesh_data.uvs1 = sub_uvs1;
                 for (name, values) in leftover_layers.iter() {
                     mesh_data.attributes.insert(
                         name.clone(),
-                        AttributeData::vectors(
-                            AttributeDomain::Point,
+                        AttributeData::VertexVector(
                             vertex_indices.iter().map(|&i| values[i]).collect(),
                         ),
                     );
                 }
-                mesh_data.skin_weights = sub_skin;
-                mesh_data.morph_targets = sub_morphs;
 
                 let parent_index = if meshes.len() > first_mesh_index {
                     Some(first_mesh_index)
@@ -771,6 +755,8 @@ fn push_model_meshes(meshes: &mut Vec<IoMesh>, model: DecodedModel<'_>, log_uv: 
                 meshes.push(IoMesh {
                     name: format!("{model_name}.mat{local_material_index}"),
                     mesh: mesh_data,
+                    skin_weights: sub_skin,
+                    morph_targets: sub_morphs,
                     material_index: model_materials.get(local_material_index).copied(),
                     transform: node_transform,
                     two_sided: false,
@@ -783,20 +769,16 @@ fn push_model_meshes(meshes: &mut Vec<IoMesh>, model: DecodedModel<'_>, log_uv: 
         }
     }
 
-    let mut mesh_data = SurfaceMesh::default();
-    mesh_data.positions = positions;
-    mesh_data.normals = normals;
-    mesh_data.indices = (0..mesh_data.positions.len() as u32).collect();
+    let indices = (0..positions.len() as u32).collect();
+    let mut mesh_data = MeshData::new(positions, normals, indices);
     mesh_data.uvs = uvs_vec;
     mesh_data.uvs1 = uvs1_vec;
     for (name, values) in leftover_layers.iter() {
-        mesh_data.attributes.insert(
-            name.clone(),
-            AttributeData::vectors(AttributeDomain::Point, values.clone()),
-        );
+        mesh_data
+            .attributes
+            .insert(name.clone(), AttributeData::VertexVector(values.clone()));
     }
-    mesh_data.skin_weights = skin_per_vertex;
-    mesh_data.morph_targets = full_morph_targets
+    let morph_targets = full_morph_targets
         .into_iter()
         .map(|(name, position_deltas)| MorphTarget {
             name,
@@ -827,6 +809,8 @@ fn push_model_meshes(meshes: &mut Vec<IoMesh>, model: DecodedModel<'_>, log_uv: 
     meshes.push(IoMesh {
         name: model_name,
         mesh: mesh_data,
+        skin_weights: skin_per_vertex,
+        morph_targets,
         material_index: model_materials.first().copied(),
         transform: node_transform,
         two_sided: false,

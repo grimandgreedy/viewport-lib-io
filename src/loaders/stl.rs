@@ -1,10 +1,11 @@
 use std::path::Path;
 
+use viewport_lib_types::data::mesh::MeshData;
+
 use crate::error::IoError;
-use crate::types::SurfaceMesh;
 
 /// Decode an STL file into neutral surface mesh data.
-pub fn mesh_from_path(path: &Path) -> Result<SurfaceMesh, IoError> {
+pub fn mesh_from_path(path: &Path) -> Result<MeshData, IoError> {
     #[cfg(feature = "stl")]
     {
         let file = std::fs::File::open(path)?;
@@ -13,7 +14,7 @@ pub fn mesh_from_path(path: &Path) -> Result<SurfaceMesh, IoError> {
             .map_err(|error| IoError::Parse(format!("stl: {error}")))?;
 
         let triangle_count = indexed.faces.len();
-        let mut mesh_data = SurfaceMesh::default();
+        let mut mesh_data = MeshData::default();
         mesh_data.positions = Vec::with_capacity(triangle_count * 3);
         mesh_data.normals = Vec::with_capacity(triangle_count * 3);
         mesh_data.indices = Vec::with_capacity(triangle_count * 3);

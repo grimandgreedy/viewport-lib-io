@@ -76,7 +76,7 @@ pub(super) fn reorient_mesh_z_up(mesh: &mut IoMesh) {
     // they rotate by the same Y-up to Z-up transform. The rotation is linear,
     // so a displacement reorients exactly like a position. Tangent deltas are
     // xyz-only (no bitangent sign), so reuse the vec3 rotation.
-    for target in &mut mesh.mesh.morph_targets {
+    for target in &mut mesh.morph_targets {
         for d in &mut target.position_deltas {
             *d = reorient_vec3(*d);
         }

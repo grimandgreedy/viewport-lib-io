@@ -21,14 +21,10 @@ fn morph_cube_carries_two_targets_and_a_weight_clip() {
     let mesh = scene
         .meshes
         .iter()
-        .find(|m| !m.mesh.morph_targets.is_empty())
+        .find(|m| !m.morph_targets.is_empty())
         .expect("a mesh with morph targets");
-    assert_eq!(
-        mesh.mesh.morph_targets.len(),
-        2,
-        "cube has two blend shapes"
-    );
-    for t in &mesh.mesh.morph_targets {
+    assert_eq!(mesh.morph_targets.len(), 2, "cube has two blend shapes");
+    for t in &mesh.morph_targets {
         assert_eq!(
             t.position_deltas.len(),
             mesh.mesh.positions.len(),

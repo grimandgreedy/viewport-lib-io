@@ -11,9 +11,10 @@
 //! ```
 
 use viewport_lib_io::error::IoError;
-use viewport_lib_io::types::{PointSet, SceneData, SurfaceMesh};
+use viewport_lib_io::types::{PointSet, SceneData};
+use viewport_lib_io::viewport_lib_types::data::mesh::MeshData;
 
-use crate::invariants::{check_point_set, check_scene, check_surface_mesh};
+use crate::invariants::{check_mesh, check_point_set, check_scene};
 
 /// One mesh as a consumer addresses it: its name, its size, and what it points
 /// at. Enough to catch a reordered or re-indexed decode, small enough to print.
@@ -85,17 +86,17 @@ where
 
 /// Decode a single mesh twice, check the invariants, and hand back the first.
 #[track_caller]
-pub fn mesh<F>(label: &str, decode: F) -> SurfaceMesh
+pub fn mesh<F>(label: &str, decode: F) -> MeshData
 where
-    F: Fn() -> Result<SurfaceMesh, IoError>,
+    F: Fn() -> Result<MeshData, IoError>,
 {
     let first = decode().unwrap_or_else(|e| panic!("{label} failed to decode: {e}"));
-    check_surface_mesh(label, &first).expect_clean();
+    check_mesh(label, &first).expect_clean();
 
     let second = decode().unwrap_or_else(|e| panic!("{label} failed to decode a second time: {e}"));
     assert!(
-        first.positions == second.positions && first.indices == second.indices,
-        "{label} decoded different geometry the second time"
+        first == second,
+        "{label} decoded a different mesh the second time"
     );
 
     first

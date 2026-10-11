@@ -33,6 +33,27 @@ fn material_library_is_read() {
 }
 
 #[test]
+fn a_file_without_normals_gets_ones_that_follow_the_winding() {
+    let dir = synth::temp_dir("obj_no_normals");
+    let path = dir.join("quad.obj");
+    let mut text = String::new();
+    for p in synth::QUAD_POSITIONS {
+        text.push_str(&format!("v {} {} {}\n", p[0], p[1], p[2]));
+    }
+    text.push_str("f 1 2 3\nf 1 3 4\n");
+    synth::write(&path, text);
+
+    let scene = conformance::scene("quad.obj without vn", || obj::scene_from_path(&path));
+
+    // The quad winds anticlockwise seen from +Z, so that is where it faces.
+    let mesh = &scene.meshes[0].mesh;
+    assert_eq!(mesh.normals.len(), mesh.positions.len());
+    for n in &mesh.normals {
+        assert!((n[2] - 1.0).abs() < 1e-5, "expected +Z, got {n:?}");
+    }
+}
+
+#[test]
 fn a_missing_file_is_an_error_not_an_empty_scene() {
     let path = synth::temp_dir("obj_missing").join("absent.obj");
     assert!(obj::scene_from_path(&path).is_err());

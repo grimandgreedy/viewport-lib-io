@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use viewport_lib_types::data::mesh::MeshData;
+
 use crate::error::IoError;
-use crate::types::SurfaceMesh;
+use crate::types::smooth_normals;
 
 /// Decode a Gmsh `.msh` file into neutral surface mesh data.
-pub fn mesh_from_path(path: &Path) -> Result<SurfaceMesh, IoError> {
+pub fn mesh_from_path(path: &Path) -> Result<MeshData, IoError> {
     let text = std::fs::read_to_string(path)?;
     load_msh(&text)
 }
@@ -13,7 +15,7 @@ pub fn mesh_from_path(path: &Path) -> Result<SurfaceMesh, IoError> {
 /// Nodes indexed by their Gmsh tag. Tags are arbitrary integers, not dense indices.
 type NodeMap = HashMap<u64, [f64; 3]>;
 
-fn load_msh(text: &str) -> Result<SurfaceMesh, IoError> {
+fn load_msh(text: &str) -> Result<MeshData, IoError> {
     let version = parse_version(text)?;
 
     let nodes = if version < 4.0 {
@@ -68,13 +70,8 @@ fn load_msh(text: &str) -> Result<SurfaceMesh, IoError> {
         }
     }
 
-    let normals = compute_smooth_normals(&positions, &indices);
-
-    let mut mesh_data = SurfaceMesh::default();
-    mesh_data.positions = positions;
-    mesh_data.normals = normals;
-    mesh_data.indices = indices;
-    Ok(mesh_data)
+    let normals = smooth_normals(&positions, &indices);
+    Ok(MeshData::new(positions, normals, indices))
 }
 
 fn parse_version(text: &str) -> Result<f32, IoError> {
@@ -349,27 +346,6 @@ fn extract_tet_boundary(tets: &[[u64; 4]]) -> Vec<[u64; 3]> {
         .into_values()
         .filter(|(count, _)| *count == 1)
         .map(|(_, face)| face)
-        .collect()
-}
-
-fn compute_smooth_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
-    let mut normals = vec![glam::Vec3::ZERO; positions.len()];
-    for triangle in indices.chunks_exact(3) {
-        let a = glam::Vec3::from(positions[triangle[0] as usize]);
-        let b = glam::Vec3::from(positions[triangle[1] as usize]);
-        let c = glam::Vec3::from(positions[triangle[2] as usize]);
-        let face_normal = (b - a).cross(c - a);
-        for &vertex in triangle {
-            normals[vertex as usize] += face_normal;
-        }
-    }
-
-    normals
-        .iter()
-        .map(|normal| {
-            let normal = normal.normalize_or_zero();
-            [normal.x, normal.y, normal.z]
-        })
         .collect()
 }
 

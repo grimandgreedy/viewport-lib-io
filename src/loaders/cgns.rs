@@ -6,7 +6,10 @@ use hdf5::File as Hdf5File;
 use super::common::{Dataset, VolumeGeometry, VolumeGrid};
 use super::error::ReadError;
 use super::pvd::{PvdSeries, TimestepEntry};
-use crate::{error::IoError, types::IoDataSet};
+use crate::{
+    error::IoError,
+    types::{IoDataSet, smooth_normals},
+};
 
 /// Decode a CGNS file into one or more scientific datasets.
 pub fn datasets_from_path(path: &Path) -> Result<Vec<IoDataSet>, IoError> {
@@ -219,7 +222,7 @@ fn read_structured_zone(
             &cell_data,
         );
         let indices = structured_surface_indices(ni as usize, nj as usize, nk as usize);
-        let normals = compute_normals(&positions, &indices);
+        let normals = smooth_normals(&positions, &indices);
         Ok(Dataset {
             positions,
             indices,
@@ -237,7 +240,7 @@ fn read_structured_zone(
         if indices.is_empty() || positions.is_empty() {
             return Err(ReadError::Empty);
         }
-        let normals = compute_normals(&positions, &indices);
+        let normals = smooth_normals(&positions, &indices);
         Ok(Dataset {
             positions,
             indices,
@@ -273,7 +276,7 @@ fn read_unstructured_zone(
         return Err(ReadError::Empty);
     }
 
-    let normals = compute_normals(&positions, &indices);
+    let normals = smooth_normals(&positions, &indices);
     let (point_data, cell_data) = read_flow_solutions(zone, solution_name)?;
 
     Ok(Dataset {
@@ -910,24 +913,6 @@ fn quad_grid_indices(nx: usize, ny: usize) -> Vec<u32> {
         }
     }
     indices
-}
-
-fn compute_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
-    let mut normals = vec![[0.0; 3]; positions.len()];
-    for tri in indices.chunks_exact(3) {
-        let a = glam::Vec3::from_array(positions[tri[0] as usize]);
-        let b = glam::Vec3::from_array(positions[tri[1] as usize]);
-        let c = glam::Vec3::from_array(positions[tri[2] as usize]);
-        let n = (b - a).cross(c - a);
-        for &idx in tri {
-            let acc = glam::Vec3::from_array(normals[idx as usize]) + n;
-            normals[idx as usize] = acc.to_array();
-        }
-    }
-    for n in &mut normals {
-        *n = glam::Vec3::from_array(*n).normalize_or_zero().to_array();
-    }
-    normals
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 //! Per-point and per-cell fields, read off a VTK attribute set into the neutral
-//! attribute types, plus the normals a surface needs when the file carries none.
+//! attribute types.
 
 use std::collections::HashMap;
 
@@ -124,24 +124,4 @@ pub(super) fn emit_scalar_arrays(
         mags.push(chunk.iter().map(|value| value * value).sum::<f32>().sqrt());
     }
     out.insert(format!("{name}_mag"), mags);
-}
-
-pub(super) fn compute_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
-    let mut normals = vec![[0.0f32; 3]; positions.len()];
-    for tri in indices.chunks_exact(3) {
-        let (i0, i1, i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
-        let p0 = glam::Vec3::from(positions[i0]);
-        let p1 = glam::Vec3::from(positions[i1]);
-        let p2 = glam::Vec3::from(positions[i2]);
-        let normal = (p1 - p0).cross(p2 - p0);
-        for index in [i0, i1, i2] {
-            normals[index][0] += normal.x;
-            normals[index][1] += normal.y;
-            normals[index][2] += normal.z;
-        }
-    }
-    for normal in &mut normals {
-        *normal = glam::Vec3::from(*normal).normalize_or_zero().into();
-    }
-    normals
 }

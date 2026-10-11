@@ -12,16 +12,16 @@ fn main() {
         .unwrap_or_else(|e| panic!("decode {path}: {e:?}"));
 
     for mesh in &scene.meshes {
-        if mesh.mesh.morph_targets.is_empty() {
+        if mesh.morph_targets.is_empty() {
             continue;
         }
         println!(
             "mesh '{}': {} verts, {} morph targets",
             mesh.name,
             mesh.mesh.positions.len(),
-            mesh.mesh.morph_targets.len(),
+            mesh.morph_targets.len(),
         );
-        for t in &mesh.mesh.morph_targets {
+        for t in &mesh.morph_targets {
             let moved = t
                 .position_deltas
                 .iter()

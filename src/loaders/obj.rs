@@ -1,9 +1,10 @@
 use std::path::Path;
 
+use viewport_lib_types::data::mesh::MeshData;
 use viewport_lib_types::material::AlphaMode;
 
 use crate::error::IoError;
-use crate::types::{IoMaterial, IoMesh, IoScene, SurfaceMesh, TextureSource};
+use crate::types::{IoMaterial, IoMesh, IoScene, TextureSource, smooth_normals};
 
 /// Decode an OBJ file into a CPU-side scene.
 pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
@@ -65,7 +66,7 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
             .into_iter()
             .map(|model| {
                 let mesh = model.mesh;
-                let mut mesh_data = SurfaceMesh::default();
+                let mut mesh_data = MeshData::default();
 
                 mesh_data.positions = mesh
                     .positions
@@ -75,7 +76,7 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
                 mesh_data.indices = mesh.indices;
 
                 if mesh.normals.is_empty() {
-                    mesh_data.normals = vec![[0.0, 1.0, 0.0]; mesh_data.positions.len()];
+                    mesh_data.normals = smooth_normals(&mesh_data.positions, &mesh_data.indices);
                 } else {
                     mesh_data.normals = mesh
                         .normals

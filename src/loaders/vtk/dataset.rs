@@ -7,13 +7,16 @@ use std::path::Path;
 use vtkio::Vtk;
 use vtkio::model::{CellType, Cells, DataSet, PolyDataPiece, UnstructuredGridPiece};
 
+use viewport_lib_types::data::attribute::AttributeData;
+use viewport_lib_types::data::mesh::MeshData;
+
 use crate::error::IoError;
 use crate::types::{
-    AttributeData, AttributeDomain, CELL_SENTINEL, IoDataSet, IoPointCloud, IoSparseVolume,
-    IoVolume, IoVolumeGeometry, IoVolumeMesh, SurfaceMesh,
+    CELL_SENTINEL, IoDataSet, IoPointCloud, IoSparseVolume, IoVolume, IoVolumeGeometry,
+    IoVolumeMesh, smooth_normals,
 };
 
-use super::attributes::{compute_normals, extract_attributes};
+use super::attributes::extract_attributes;
 use super::buffers::{collect_cells, iobuf_to_f32_vec, iobuf_to_positions};
 use super::topology::{
     extract_surface_unstructured, image_data_positions, rectilinear_positions,
@@ -60,7 +63,7 @@ pub(super) fn datasets_from_vtk(vtk: Vtk, source: &Path) -> Result<Vec<IoDataSet
                 }
                 let [ni, nj, nk] = vtk_extent_to_dims(piece.extent);
                 let indices = structured_surface_indices(ni, nj, nk);
-                let normals = compute_normals(&positions, &indices);
+                let normals = smooth_normals(&positions, &indices);
                 let (point_data, cell_data, edge_data) =
                     extract_attributes(&piece.data, positions.len(), indices.len() / 3, true);
                 Ok(IoDataSet {
@@ -85,7 +88,7 @@ pub(super) fn datasets_from_vtk(vtk: Vtk, source: &Path) -> Result<Vec<IoDataSet
                 let zs = iobuf_to_f32_vec(piece.coords.z)?;
                 let positions = rectilinear_positions(&xs, &ys, &zs);
                 let indices = structured_surface_indices(ni, nj, nk);
-                let normals = compute_normals(&positions, &indices);
+                let normals = smooth_normals(&positions, &indices);
                 let (point_data, cell_data, edge_data) =
                     extract_attributes(&piece.data, positions.len(), indices.len() / 3, false);
                 Ok(IoDataSet {
@@ -137,7 +140,7 @@ pub(super) fn datasets_from_vtk(vtk: Vtk, source: &Path) -> Result<Vec<IoDataSet
                 if is_2d {
                     let positions = image_data_positions(ni, nj, nk, origin, spacing);
                     let indices = structured_surface_indices(ni, nj, nk);
-                    let normals = compute_normals(&positions, &indices);
+                    let normals = smooth_normals(&positions, &indices);
                     return Ok(IoDataSet {
                         name: format!("image_data_piece_{index}"),
                         surface_mesh: Some(build_mesh_data(
@@ -206,7 +209,7 @@ pub(super) fn from_polydata(piece: PolyDataPiece, name: String) -> Result<IoData
     }
 
     let num_tris = indices.len() / 3;
-    let normals = compute_normals(&positions, &indices);
+    let normals = smooth_normals(&positions, &indices);
     let (point_data, cell_data, edge_data) =
         extract_attributes(&piece.data, positions.len(), num_tris, true);
     Ok(IoDataSet {
@@ -265,7 +268,7 @@ pub(super) fn from_unstructured(
 
     let num_cells = piece.cells.types.len();
     let num_tris = indices.len() / 3;
-    let normals = compute_normals(&positions, &indices);
+    let normals = smooth_normals(&positions, &indices);
     let (point_data, cell_data, edge_data) =
         extract_attributes(&piece.data, positions.len(), num_tris, true);
     let (raw_point_data, raw_cell_data, _) =
@@ -290,24 +293,17 @@ pub(super) fn build_mesh_data(
     point_data: HashMap<String, Vec<f32>>,
     cell_data: HashMap<String, Vec<f32>>,
     edge_data: HashMap<String, Vec<f32>>,
-) -> SurfaceMesh {
-    let mut mesh = SurfaceMesh::default();
-    mesh.positions = positions;
-    mesh.normals = normals;
-    mesh.indices = indices;
+) -> MeshData {
+    let mut mesh = MeshData::new(positions, normals, indices);
     for (name, values) in point_data {
-        mesh.attributes
-            .insert(name, AttributeData::scalars(AttributeDomain::Point, values));
+        mesh.attributes.insert(name, AttributeData::Vertex(values));
     }
     for (name, values) in cell_data {
-        mesh.attributes
-            .insert(name, AttributeData::scalars(AttributeDomain::Cell, values));
+        mesh.attributes.insert(name, AttributeData::Cell(values));
     }
     for (name, values) in edge_data {
-        mesh.attributes.insert(
-            name,
-            AttributeData::scalars(AttributeDomain::Halfedge, values),
-        );
+        mesh.attributes
+            .insert(name, AttributeData::Halfedge(values));
     }
     mesh
 }

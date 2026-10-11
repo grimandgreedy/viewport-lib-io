@@ -27,7 +27,7 @@ Supported loader modules are listed in `loaders/` with their extension, e.g., `l
 
 ## Usage
 
-Surface mesh:
+Surface mesh, as the renderer's `MeshData` (normals always present):
 
 ```rust
 let mesh = viewport_lib_io::loaders::stl::mesh_from_path("part.stl".as_ref())?;
@@ -60,7 +60,7 @@ for mesh in &scene.meshes {
     let indices   = &mesh.mesh.indices;
 
     // Skin weights (present on skinned meshes)
-    if let Some(skin) = &mesh.mesh.skin_weights {
+    if let Some(skin) = &mesh.skin_weights {
         let joint_indices = &skin.joint_indices; // Vec<[u8; 4]> per vertex
         let joint_weights = &skin.joint_weights; // Vec<[f32; 4]> per vertex, sum to 1
     }

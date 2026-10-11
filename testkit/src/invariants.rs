@@ -4,10 +4,9 @@
 //! run of a loader tells you everything wrong with its output instead of one
 //! thing at a time.
 
-use viewport_lib_io::types::{
-    AnimationTrackValues, AttributeDomain, AttributeValues, PointSet, SceneData, Skeleton,
-    SurfaceMesh,
-};
+use viewport_lib_io::types::{AnimationTrackValues, PointSet, SceneData, SceneMesh, Skeleton};
+use viewport_lib_io::viewport_lib_types::data::attribute::AttributeData;
+use viewport_lib_io::viewport_lib_types::data::mesh::MeshData;
 
 /// One broken invariant: what was being checked, which rule it broke, and the
 /// numbers that show it.
@@ -69,12 +68,12 @@ impl Report {
     }
 }
 
-/// Check one mesh in isolation: index bounds, per-vertex array lengths, unit
-/// normals, and the skin and morph data hanging off it.
+/// Check one mesh's geometry in isolation: index bounds, per-vertex array
+/// lengths, normals present and unit length, and per-vertex attribute lengths.
 ///
 /// `subject` names the mesh in any violation, so pass something that locates it
 /// in the file (`"hero.glb / mesh[2]"` rather than `"mesh"`).
-pub fn check_surface_mesh(subject: &str, mesh: &SurfaceMesh) -> Report {
+pub fn check_mesh(subject: &str, mesh: &MeshData) -> Report {
     let mut report = Report::default();
     let vertices = mesh.positions.len();
 
@@ -106,14 +105,15 @@ pub fn check_surface_mesh(subject: &str, mesh: &SurfaceMesh) -> Report {
     if let Some(tangents) = &mesh.tangents {
         parallel.push(("tangents", tangents.len()));
     }
-    if let Some(colours) = &mesh.colours {
-        parallel.push(("colours", colours.len()));
+    if let Some(colours) = &mesh.vertex_colours {
+        parallel.push(("vertex_colours", colours.len()));
     }
+    if let Some(extension) = &mesh.extension_attributes {
+        parallel.push(("extension_attributes", extension.len()));
+    }
+    // Normals are required: the renderer uploads them as they are, so a decode
+    // with none has to have generated them.
     for (name, len) in parallel {
-        // Normals are allowed to be absent entirely; a partial set is not.
-        if name == "normals" && len == 0 {
-            continue;
-        }
         report.check(
             len == vertices,
             subject,
@@ -133,6 +133,32 @@ pub fn check_surface_mesh(subject: &str, mesh: &SurfaceMesh) -> Report {
             break; // one example is enough to act on
         }
     }
+
+    for (name, attribute) in &mesh.attributes {
+        // Only per-vertex attributes are checked. Cell and halfedge values from
+        // a scientific source count source cells, which match the triangle
+        // count only when the surface was all triangles to begin with.
+        let len = match attribute {
+            AttributeData::Vertex(v) => v.len(),
+            AttributeData::VertexVector(v) => v.len(),
+            _ => continue,
+        };
+        report.check(
+            len == vertices,
+            subject,
+            "attribute_length",
+            format!("vertex attribute '{name}' has {len} values for {vertices} vertices"),
+        );
+    }
+
+    report
+}
+
+/// Check one scene mesh: its geometry (see [`check_mesh`]) and the skin and
+/// morph data that hang off it, parallel to its vertices.
+pub fn check_scene_mesh(subject: &str, mesh: &SceneMesh) -> Report {
+    let mut report = check_mesh(subject, &mesh.mesh);
+    let vertices = mesh.mesh.positions.len();
 
     if let Some(skin) = &mesh.skin_weights {
         report.check(
@@ -199,26 +225,6 @@ pub fn check_surface_mesh(subject: &str, mesh: &SurfaceMesh) -> Report {
         }
     }
 
-    for (name, attribute) in &mesh.attributes {
-        // Only point-domain attributes are parallel to vertices; cell, face,
-        // and corner attributes are counted against topology this check does
-        // not reconstruct.
-        if attribute.domain != AttributeDomain::Point {
-            continue;
-        }
-        let len = match &attribute.values {
-            AttributeValues::Scalars(v) => v.len(),
-            AttributeValues::Colors(v) => v.len(),
-            AttributeValues::Vectors(v) => v.len(),
-        };
-        report.check(
-            len == vertices,
-            subject,
-            "attribute_length",
-            format!("point attribute '{name}' has {len} values for {vertices} vertices"),
-        );
-    }
-
     report
 }
 
@@ -258,7 +264,7 @@ pub fn check_scene(subject: &str, scene: &SceneData) -> Report {
 
     for (i, mesh) in scene.meshes.iter().enumerate() {
         let mesh_subject = format!("{subject} / mesh[{i}] '{}'", mesh.name);
-        report.merge(check_surface_mesh(&mesh_subject, &mesh.mesh));
+        report.merge(check_scene_mesh(&mesh_subject, mesh));
 
         if let Some(material) = mesh.material_index {
             report.check(
@@ -291,7 +297,7 @@ pub fn check_scene(subject: &str, scene: &SceneData) -> Report {
             );
             // A skinned mesh's joint indices have to address that skeleton.
             if let (Some(skin), Some(skeleton)) =
-                (&mesh.mesh.skin_weights, scene.skeletons.get(skeleton_index))
+                (&mesh.skin_weights, scene.skeletons.get(skeleton_index))
             {
                 let joints = skeleton.joints.len();
                 if let Some(max) = skin.joint_indices.iter().flatten().max() {

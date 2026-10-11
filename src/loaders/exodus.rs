@@ -6,7 +6,10 @@ use hdf5::File as Hdf5File;
 use super::common::Dataset;
 use super::error::ReadError;
 use super::pvd::{PvdSeries, TimestepEntry};
-use crate::{error::IoError, types::IoDataSet};
+use crate::{
+    error::IoError,
+    types::{IoDataSet, smooth_normals},
+};
 
 /// Decode an Exodus II file into one or more scientific datasets.
 pub fn datasets_from_path(path: &Path) -> Result<Vec<IoDataSet>, IoError> {
@@ -178,7 +181,7 @@ fn read_element_block(
         return Err(ReadError::Empty);
     }
 
-    let normals = compute_normals(&positions, &indices);
+    let normals = smooth_normals(&positions, &indices);
 
     // Map nodal variables to local node ordering.
     let mut point_data = HashMap::new();
@@ -560,24 +563,6 @@ fn read_dataset_i32(ds: &hdf5::Dataset) -> Result<Vec<i32>, ReadError> {
 // ---------------------------------------------------------------------------
 // Geometry helpers
 // ---------------------------------------------------------------------------
-
-fn compute_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
-    let mut normals = vec![[0.0; 3]; positions.len()];
-    for tri in indices.chunks_exact(3) {
-        let a = glam::Vec3::from_array(positions[tri[0] as usize]);
-        let b = glam::Vec3::from_array(positions[tri[1] as usize]);
-        let c = glam::Vec3::from_array(positions[tri[2] as usize]);
-        let n = (b - a).cross(c - a);
-        for &idx in tri {
-            let acc = glam::Vec3::from_array(normals[idx as usize]) + n;
-            normals[idx as usize] = acc.to_array();
-        }
-    }
-    for n in &mut normals {
-        *n = glam::Vec3::from_array(*n).normalize_or_zero().to_array();
-    }
-    normals
-}
 
 #[cfg(test)]
 mod tests {

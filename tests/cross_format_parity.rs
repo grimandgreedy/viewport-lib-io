@@ -22,13 +22,13 @@
 use std::path::Path;
 
 use viewport_lib_io::loaders::{msh, obj, ply_scene, stl, vtk};
-use viewport_lib_io::types::SurfaceMesh;
+use viewport_lib_io::viewport_lib_types::data::mesh::MeshData;
 use viewport_lib_io_testkit::synth;
 
 /// A mesh flattened to its triangle soup: three positions per triangle, in
 /// emitted order. This is the form every format can be compared in, indexed or
 /// not.
-fn triangles(mesh: &SurfaceMesh) -> Vec<[[f32; 3]; 3]> {
+fn triangles(mesh: &MeshData) -> Vec<[[f32; 3]; 3]> {
     mesh.indices
         .chunks_exact(3)
         .map(|t| {
@@ -42,7 +42,7 @@ fn triangles(mesh: &SurfaceMesh) -> Vec<[[f32; 3]; 3]> {
 }
 
 /// Write the quad in every format and decode each one back.
-fn decode_every_format() -> Vec<(&'static str, SurfaceMesh)> {
+fn decode_every_format() -> Vec<(&'static str, MeshData)> {
     let dir = synth::temp_dir("cross_format_parity");
     let write = |name: &str, bytes: &[u8]| {
         let path = dir.join(name);

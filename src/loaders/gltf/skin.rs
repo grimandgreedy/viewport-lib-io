@@ -272,11 +272,7 @@ mod tests {
         // Skin weights round-tripped onto the mesh.
         let mesh = scene.meshes.first().expect("mesh missing");
         assert_eq!(mesh.skeleton_index, Some(0));
-        let sw = mesh
-            .mesh
-            .skin_weights
-            .as_ref()
-            .expect("skin weights missing");
+        let sw = mesh.skin_weights.as_ref().expect("skin weights missing");
         assert_eq!(sw.joint_indices.len(), 3);
         assert_eq!(sw.joint_weights.len(), 3);
         for ji in &sw.joint_indices {

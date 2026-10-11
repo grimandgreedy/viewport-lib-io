@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use viewport_lib_types::data::mesh::MeshData;
 use viewport_lib_types::data::texture::TextureData;
 use viewport_lib_types::material::{
     AlphaMode, MATERIAL_TEXTURE_SLOTS, SamplerKey, TextureFilter, TextureSlot, UvTransform,
@@ -99,6 +100,31 @@ pub(crate) fn uv_transform_from_origin_rotation(
         rotation: -rotation,
         uv_set,
     }
+}
+
+/// Area-weighted smooth vertex normals, for a mesh whose source carries none.
+///
+/// Each triangle adds its unnormalised face normal to its three vertices, so
+/// larger triangles pull harder, and each sum is then normalised. A vertex no
+/// triangle touches, or one whose faces cancel or are all degenerate, gets +Z,
+/// which is up in this crate's frame, so every normal is unit length.
+#[allow(dead_code)]
+pub(crate) fn smooth_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
+    let mut sums = vec![glam::Vec3::ZERO; positions.len()];
+    for triangle in indices.chunks_exact(3) {
+        let [a, b, c] = [triangle[0], triangle[1], triangle[2]].map(|i| i as usize);
+        if a >= positions.len() || b >= positions.len() || c >= positions.len() {
+            continue;
+        }
+        let pa = glam::Vec3::from(positions[a]);
+        let face = (glam::Vec3::from(positions[b]) - pa).cross(glam::Vec3::from(positions[c]) - pa);
+        sums[a] += face;
+        sums[b] += face;
+        sums[c] += face;
+    }
+    sums.into_iter()
+        .map(|n| n.try_normalize().unwrap_or(glam::Vec3::Z).to_array())
+        .collect()
 }
 
 /// Material data extracted from a scene file.
@@ -256,69 +282,6 @@ impl Default for MaterialData {
     }
 }
 
-/// Domain on which an attribute is defined.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AttributeDomain {
-    /// One value per point or vertex.
-    Point,
-    /// One value per cell.
-    Cell,
-    /// One value per face.
-    Face,
-    /// One value per directed edge.
-    Edge,
-    /// One value per halfedge/corner-edge.
-    Halfedge,
-    /// One value per face corner.
-    Corner,
-}
-
-/// Attribute payload values.
-#[derive(Clone, Debug)]
-pub enum AttributeValues {
-    /// Scalar values.
-    Scalars(Vec<f32>),
-    /// RGBA colours.
-    Colors(Vec<[f32; 4]>),
-    /// 3D vectors.
-    Vectors(Vec<[f32; 3]>),
-}
-
-/// Named attribute data on a mesh-like topology.
-#[derive(Clone, Debug)]
-pub struct AttributeData {
-    /// Topological domain the values are defined on.
-    pub domain: AttributeDomain,
-    /// Attribute payload.
-    pub values: AttributeValues,
-}
-
-impl AttributeData {
-    /// Construct scalar attribute data.
-    pub fn scalars(domain: AttributeDomain, values: Vec<f32>) -> Self {
-        Self {
-            domain,
-            values: AttributeValues::Scalars(values),
-        }
-    }
-
-    /// Construct colour attribute data.
-    pub fn colors(domain: AttributeDomain, values: Vec<[f32; 4]>) -> Self {
-        Self {
-            domain,
-            values: AttributeValues::Colors(values),
-        }
-    }
-
-    /// Construct vector attribute data.
-    pub fn vectors(domain: AttributeDomain, values: Vec<[f32; 3]>) -> Self {
-        Self {
-            domain,
-            values: AttributeValues::Vectors(values),
-        }
-    }
-}
-
 /// Per-vertex joint influence data for CPU skinning workflows.
 #[derive(Clone, Debug)]
 pub struct SkinWeights {
@@ -329,7 +292,7 @@ pub struct SkinWeights {
 }
 
 /// One blend shape (morph target): per-vertex displacements from the base
-/// mesh, parallel to [`SurfaceMesh::positions`]. A deformer sums the base
+/// mesh, parallel to the mesh's `positions`. A deformer sums the base
 /// geometry with each target's displacements scaled by that target's weight.
 #[derive(Clone, Debug)]
 pub struct MorphTarget {
@@ -469,50 +432,33 @@ pub struct MorphWeightClip {
     pub weights: Vec<f32>,
 }
 
-/// Source-agnostic surface mesh data.
-#[derive(Clone, Debug, Default)]
-pub struct SurfaceMesh {
-    /// Vertex positions in local space.
-    pub positions: Vec<[f32; 3]>,
-    /// Per-vertex normals.
-    pub normals: Vec<[f32; 3]>,
-    /// Triangle index list.
-    pub indices: Vec<u32>,
-    /// Optional per-vertex UV coordinates. The set a material samples by
-    /// default, and what [`UvTransform::uv_set`] 0 means.
-    pub uvs: Option<Vec<[f32; 2]>>,
-    /// Optional second per-vertex UV set, from glTF `TEXCOORD_1` or an FBX
-    /// mesh's next authored UV layer. `None` when the source carries one set,
-    /// which is most meshes. What [`UvTransform::uv_set`] 1 means, and what a
-    /// material slot transformed onto that set reads. Maps to
-    /// `viewport_lib::MeshData::uvs1`.
+/// A mesh entry inside a loaded scene: the geometry, plus the skinning and
+/// blend-shape data the renderer's mesh payload does not carry.
+#[derive(Clone, Debug)]
+pub struct SceneMesh {
+    /// Mesh name.
+    pub name: String,
+    /// Geometry and named attributes, as the renderer uploads them.
     ///
-    /// This is the content channel, not a lightmap bake: a baked lightmap set
-    /// is sidecar data with its own owner.
-    pub uvs1: Option<Vec<[f32; 2]>>,
-    /// Optional per-vertex tangents.
-    pub tangents: Option<Vec<[f32; 4]>>,
-    /// Optional per-vertex RGBA colours (linear 0..1), from a format's
-    /// per-vertex colour channel such as glTF `COLOR_0` or PLY vertex colours.
-    /// Maps to `viewport_lib::MeshData::vertex_colours`.
-    pub colours: Option<Vec<[f32; 4]>>,
-    /// Named attributes on this mesh.
-    pub attributes: HashMap<String, AttributeData>,
-    /// Optional skinning weights.
+    /// `normals` is always parallel to `positions`: a source with no normals
+    /// gets area-weighted smooth normals at decode. `vertex_colours` is linear
+    /// RGBA, from a channel such as glTF `COLOR_0` or PLY vertex colours.
+    /// `uvs1` is the second content UV set (glTF `TEXCOORD_1`, or an FBX
+    /// mesh's next authored UV layer), not a lightmap bake.
+    ///
+    /// Attributes are keyed by name. Per-vertex scalars are
+    /// `AttributeData::Vertex` and per-vertex vectors `VertexVector`. Scalars
+    /// a scientific format stores per cell are `Cell`, and per halfedge
+    /// `Halfedge`, one value per source cell or halfedge: the same count the
+    /// renderer expects when the surface is all triangles, but not when the
+    /// source cells were quads or polygons split into triangles.
+    pub mesh: MeshData,
+    /// Skinning weights, parallel to `mesh.positions`, when the mesh is skinned.
     pub skin_weights: Option<SkinWeights>,
     /// Blend shapes for this mesh, in authored order. Empty when the source
     /// carries none. A downstream deformer indexes these by position, so the
     /// order is the order a weight palette is expected to follow.
     pub morph_targets: Vec<MorphTarget>,
-}
-
-/// A mesh entry inside a loaded scene.
-#[derive(Clone, Debug)]
-pub struct SceneMesh {
-    /// Mesh name.
-    pub name: String,
-    /// Mesh geometry and attributes.
-    pub mesh: SurfaceMesh,
     /// Index into `SceneData::materials`.
     pub material_index: Option<usize>,
     /// Local transform carried through from the source format.
@@ -533,7 +479,9 @@ impl Default for SceneMesh {
     fn default() -> Self {
         Self {
             name: String::new(),
-            mesh: SurfaceMesh::default(),
+            mesh: MeshData::default(),
+            skin_weights: None,
+            morph_targets: Vec::new(),
             material_index: None,
             transform: glam::Mat4::IDENTITY,
             two_sided: false,
@@ -760,7 +708,7 @@ pub struct DecodedDataSet {
     /// Dataset name.
     pub name: String,
     /// Optional extracted surface mesh.
-    pub surface_mesh: Option<SurfaceMesh>,
+    pub surface_mesh: Option<MeshData>,
     /// Optional point-set representation.
     pub point_set: Option<PointSet>,
     /// Optional dense structured volume.
@@ -773,7 +721,7 @@ pub struct DecodedDataSet {
 
 impl DecodedDataSet {
     /// Return the dataset as a surface mesh when available.
-    pub fn as_surface_mesh(&self) -> Option<&SurfaceMesh> {
+    pub fn as_surface_mesh(&self) -> Option<&MeshData> {
         self.surface_mesh.as_ref()
     }
 
@@ -1024,6 +972,25 @@ mod tests {
         assert!((converted.offset[0] - 0.25).abs() < 1e-6);
         assert!((converted.offset[1] + 0.1).abs() < 1e-6);
         assert_eq!(converted.rotation, 0.0);
+    }
+
+    #[test]
+    fn smooth_normals_are_unit_and_face_the_winding() {
+        // A quad in the XY plane, wound anticlockwise seen from +Z, plus one
+        // vertex no triangle uses.
+        let positions = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [5.0, 5.0, 5.0],
+        ];
+        let normals = smooth_normals(&positions, &[0, 1, 2, 0, 2, 3]);
+        assert_eq!(normals.len(), positions.len());
+        for n in &normals {
+            assert!((glam::Vec3::from(*n).length() - 1.0).abs() < 1e-6);
+            assert!((n[2] - 1.0).abs() < 1e-6, "{n:?}");
+        }
     }
 
     #[test]
