@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use viewport_lib_types::colour::Colour;
 use viewport_lib_types::data::attribute::AttributeData;
 use viewport_lib_types::data::mesh::MeshData;
 
@@ -431,6 +432,15 @@ fn load_ply(bytes: &[u8]) -> Result<IoScene, IoError> {
 
     // Store extra scalar attributes in MeshData.
     let mut mesh_data = MeshData::new(positions, normals, indices);
+    // PLY colour is sRGB scaled to 0..1, and the mesh channel is linear.
+    if !colors.is_empty() {
+        mesh_data.vertex_colours = Some(
+            colors
+                .iter()
+                .map(|&c| Colour::from_srgb_array(c).to_linear_rgba())
+                .collect(),
+        );
+    }
     for (buf, (_, prop)) in scalar_bufs.iter().zip(extra_props.iter()) {
         if !buf.is_empty() {
             mesh_data

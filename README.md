@@ -86,11 +86,14 @@ if let Some(volume) = datasets[0].as_structured_volume() {
 }
 ```
 
-Point set to gaussian splats:
+Point set to gaussian splats or a point cloud:
 
 ```rust
 let points = viewport_lib_io::loaders::csv::point_cloud_from_path("samples.csv".as_ref())?;
 let splats = points.to_gaussian_splats([0.01, 0.01, 0.01], 1.0);
+
+// Or the renderer's point cloud item, coloured by the best channel the set has.
+let cloud = points.to_point_cloud_item();
 ```
 
 Trained gaussian splats:

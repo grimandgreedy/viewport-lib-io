@@ -2,10 +2,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use viewport_lib_plugins::item_types::gaussian_splat::{GaussianSplatData, ShDegree};
+use viewport_lib_plugins::item_types::point_cloud::PointCloudItem;
 use viewport_lib_types::colour::Colour;
 use viewport_lib_types::data::mesh::MeshData;
 use viewport_lib_types::data::texture::TextureData;
 use viewport_lib_types::data::volume_mesh::VolumeMeshData;
+use viewport_lib_types::encoding::ColourSource;
 use viewport_lib_types::material::{
     AlphaMode, MATERIAL_TEXTURE_SLOTS, SamplerKey, TextureFilter, TextureSlot, UvTransform,
     WrapMode,
@@ -501,7 +503,11 @@ pub struct PointSet {
     pub name: String,
     /// Point positions.
     pub positions: Vec<[f32; 3]>,
-    /// Optional per-point colours.
+    /// Optional per-point colours: sRGB-encoded RGB in `0..=1` with linear
+    /// alpha, as point formats store them (a PLY `uchar` channel divided by
+    /// 255, with no transfer curve applied). Empty when the source has none.
+    ///
+    /// Decode with `Colour::from_srgb_array` before treating them as linear.
     pub colors: Vec<[f32; 4]>,
     /// Optional primary scalar values.
     pub scalars: Vec<f32>,
@@ -510,7 +516,40 @@ pub struct PointSet {
 }
 
 impl PointSet {
+    /// The renderer's point cloud item for these points, coloured by the best
+    /// channel the set carries.
+    ///
+    /// Colour comes from the per-point colours when there are any (decoded from
+    /// sRGB), otherwise from the primary scalar through the item's default
+    /// colourmap over the scalar's own range, otherwise the item's default
+    /// white. Size, render mode, transform and settings are the item's defaults,
+    /// for the caller to set. The named scalar attributes are not carried: to
+    /// colour by one, set `colour` to a `ColourSource::Scalar` built from
+    /// [`scalar_attributes`](Self::scalar_attributes).
+    pub fn to_point_cloud_item(&self) -> PointCloudItem {
+        let mut item = PointCloudItem::default();
+        item.positions = self.positions.clone();
+        if !self.colors.is_empty() {
+            item.colour = ColourSource::PerSample(
+                self.colors
+                    .iter()
+                    .map(|&c| Colour::from_srgb_array(c))
+                    .collect(),
+            );
+        } else if !self.scalars.is_empty() {
+            item.colour = ColourSource::Scalar {
+                values: self.scalars.clone(),
+                range: None,
+                colourmap: None,
+            };
+        }
+        item
+    }
+
     /// Create a degree-0 gaussian splat set from points.
+    ///
+    /// The colours become the degree-0 SH coefficients unchanged, since both are
+    /// sRGB-referred; points without colours are white.
     pub fn to_gaussian_splats(
         &self,
         default_scale: [f32; 3],
@@ -876,6 +915,43 @@ mod tests {
             assert!((glam::Vec3::from(*n).length() - 1.0).abs() < 1e-6);
             assert!((n[2] - 1.0).abs() < 1e-6, "{n:?}");
         }
+    }
+
+    #[test]
+    fn a_point_set_colours_its_item_by_the_best_channel_it_has() {
+        let mut points = PointSet {
+            positions: vec![[0.0; 3], [1.0, 0.0, 0.0]],
+            scalars: vec![1.0, 2.0],
+            ..PointSet::default()
+        };
+
+        // No colours: the primary scalar drives the colourmap.
+        let item = points.to_point_cloud_item();
+        assert_eq!(item.positions, points.positions);
+        assert!(matches!(
+            &item.colour,
+            ColourSource::Scalar { values, range: None, colourmap: None } if values == &points.scalars
+        ));
+
+        // Colours win over the scalar, and are decoded from sRGB.
+        points.colors = vec![[0.5, 0.5, 0.5, 1.0], [1.0, 0.0, 0.0, 0.5]];
+        let item = points.to_point_cloud_item();
+        let ColourSource::PerSample(colours) = &item.colour else {
+            panic!("expected per-point colours, got {:?}", item.colour);
+        };
+        let grey = colours[0].to_linear_rgba();
+        assert!((grey[0] - 0.214).abs() < 1e-3, "{grey:?}");
+        assert_eq!(colours[1].alpha(), 0.5);
+
+        // Neither: the item's own default.
+        let bare = PointSet {
+            positions: vec![[0.0; 3]],
+            ..PointSet::default()
+        };
+        assert_eq!(
+            bare.to_point_cloud_item().colour,
+            PointCloudItem::default().colour
+        );
     }
 
     #[test]

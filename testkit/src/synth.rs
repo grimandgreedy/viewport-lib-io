@@ -10,16 +10,23 @@
 //! test can compare one format's decode against another's.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A fresh directory under the system temp dir, named for the caller plus the
-/// process id and a nanosecond stamp so parallel runs cannot collide.
+/// process id, a nanosecond stamp, and a per-process counter.
+///
+/// The counter is what makes two calls in one process distinct: the clock alone
+/// is not enough, since on macOS it ticks in microseconds and two tests starting
+/// together can read the same stamp.
 ///
 /// The directory is left behind on failure, on purpose: a test that fails has
 /// something worth looking at.
 pub fn temp_dir(name: &str) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
     let unique = format!(
-        "viewport_lib_io_{name}_{}_{}",
+        "viewport_lib_io_{name}_{}_{}_{}",
         std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

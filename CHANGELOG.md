@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`loaders::ply_points::point_cloud_from_bytes`** - the in-memory sibling of `point_cloud_from_path`, for a PLY that arrived over a network or through a sandbox rather than from a filesystem. It was already the whole implementation of the path form; this makes it reachable.
 - **Slot-labelled image decoding** - `png`, `jpeg`, `tga` and `bmp` gain `texture_from_path_for_slot` and `texture_from_bytes_for_slot`, which take a material `TextureSlot` and return a texture labelled for it: sRGB for albedo and emissive, a normal map for the normal slot, linear for the rest.
 - **`viewport_lib_types` re-export** - the crate re-exports `viewport-lib-types`, so the shared types its loaders return are nameable without a second dependency.
+- **`PointSet::to_point_cloud_item`** - builds the renderer's `PointCloudItem` from a decoded point set: per-point colours (decoded from sRGB) if present, otherwise the primary scalar through the default colourmap, with size, render mode and transform left at the item's defaults. Named scalars are not carried.
 - **`From<TextureSampler> for SamplerKey`** - a decoded sampler converts to the renderer's, with anisotropy and LOD bias left at their defaults.
 
 ### Changed
@@ -29,9 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Vector paths and paint are the shared types** - `VectorShape::subpaths` uses the renderer's `SubPath`, `PathSegment` and `FillRule`, and `VectorShape::fill` and `VectorStroke::colour` are `Colour` instead of linear `[f32; 4]`. Read the old arrays with `to_linear_rgba()`.
 
 ### Fixed
+- **PLY mesh vertex colours were dropped** - a PLY with faces read its `red` / `green` / `blue` properties and then discarded them. They now land in `MeshData::vertex_colours`, decoded from the file's sRGB bytes to linear.
+- **`PointSet::colors` did not say its colour space** - the field is now documented as sRGB-encoded RGB in `0..=1` with linear alpha, which is what every loader already produced. No data changes.
 - **OBJ files without normals got a constant +Y normal** - every vertex of a normal-less OBJ faced +Y whatever its geometry. Normals are now generated from the faces and follow the winding.
 
 ### Tests
+- **Temp fixture directories no longer collide** - `synth::temp_dir` adds a per-process counter to the name, so two tests starting in the same clock tick no longer share a directory and read each other's half-written files.
 - **Testkit mesh checks follow `MeshData`** - `check_surface_mesh` is replaced by `check_mesh` (geometry, normals now required) and `check_scene_mesh` (adds skin and morph data), and `conformance::mesh` compares two decodes field for field.
 - **Volume mesh coverage** - a VTK tetrahedron with point and cell data checks that the two land in `node_scalars` and `cell_scalars` apart.
 - **UV transforms checked by the texel they sample** - the glTF and FBX transform tests now sample the decoded transform with the renderer's formula and compare against the file's own.
