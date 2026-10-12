@@ -41,3 +41,20 @@ fn the_two_encodings_decode_alike() {
     assert_eq!(from_ascii.positions, from_binary.positions);
     assert_eq!(from_ascii.indices, from_binary.indices);
 }
+
+/// Exporters often write `facet normal 0 0 0`. The decode still hands out unit
+/// normals, computed from each triangle's winding.
+#[test]
+fn zero_facet_normals_are_computed() {
+    let path = synth::temp_path("stl_zero_normals", "quad.stl");
+    synth::write(
+        &path,
+        synth::stl_ascii_quad().replace("facet normal 0 0 1", "facet normal 0 0 0"),
+    );
+
+    let mesh = conformance::mesh("quad.stl with zero normals", || stl::mesh_from_path(&path));
+
+    for n in &mesh.normals {
+        assert_eq!(*n, [0.0, 0.0, 1.0]);
+    }
+}

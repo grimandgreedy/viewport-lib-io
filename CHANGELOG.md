@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Vector paths and paint are the shared types** - `VectorShape::subpaths` uses the renderer's `SubPath`, `PathSegment` and `FillRule`, and `VectorShape::fill` and `VectorStroke::colour` are `Colour` instead of linear `[f32; 4]`. Read the old arrays with `to_linear_rgba()`.
 
 ### Fixed
+- **STL facet normals written as zero** - a facet stored as `facet normal 0 0 0`, as many exporters write it, came through as a zero normal and rendered unlit. It is now computed from the triangle's winding; a stored normal with a direction is kept and normalised, even where it disagrees with the winding.
 - **PLY mesh vertex colours were dropped** - a PLY with faces read its `red` / `green` / `blue` properties and then discarded them. They now land in `MeshData::vertex_colours`, decoded from the file's sRGB bytes to linear.
 - **`PointSet::colors` did not say its colour space** - the field is now documented as sRGB-encoded RGB in `0..=1` with linear alpha, which is what every loader already produced. No data changes.
 - **OBJ files without normals got a constant +Y normal** - every vertex of a normal-less OBJ faced +Y whatever its geometry. Normals are now generated from the faces and follow the winding.
