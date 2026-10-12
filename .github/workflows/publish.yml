@@ -31,7 +31,7 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -y cmake
 
       - name: Run tests
-        run: cargo test --lib
+        run: cargo test --lib --features all-formats
 
       - name: Dry run publish
         run: cargo publish --dry-run

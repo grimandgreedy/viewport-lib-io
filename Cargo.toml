@@ -14,8 +14,14 @@ rust-version = "1.85"
 publish = true
 exclude = ["examples/", "tests/", ".github/", ".gitignore"]
 
+[package.metadata.docs.rs]
+features = ["all-formats"]
+
 [features]
-default = ["png", "jpeg", "tga", "bmp", "svg", "hdr", "exr", "stl", "obj", "msh", "gltf", "fbx", "bvh", "ply", "csv", "numpy", "raw", "vtk", "xdmf", "exodus", "ensight", "tecplot", "cgns", "netcdf"]
+# No format is on by default: a consumer names the formats it reads, or takes
+# `all-formats`. Each format pulls its own parser, and the HDF5 ones (`xdmf`,
+# `exodus`, `cgns`) build the HDF5 C library with CMake.
+default = []
 png = ["dep:image"]
 jpeg = ["dep:image"]
 tga = ["dep:image"]

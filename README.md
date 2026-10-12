@@ -25,6 +25,20 @@ This crate should not:
 
 Supported loader modules are listed in `loaders/` with their extension, e.g., `loaders/png.rs`
 
+## Features
+
+No format is enabled by default. Name the ones you read, or take them all:
+
+```toml
+viewport-lib-io = { version = "0.9", features = ["png", "gltf"] }
+viewport-lib-io = { version = "0.9", features = ["all-formats"] }
+```
+
+One feature per format: `png`, `jpeg`, `tga`, `bmp`, `hdr`, `exr`, `svg`, `stl`,
+`obj`, `msh`, `gltf`, `fbx`, `bvh`, `ply`, `csv`, `numpy`, `raw`, `vtk`, `xdmf`,
+`exodus`, `ensight`, `tecplot`, `cgns`, `netcdf`. `xdmf`, `exodus` and `cgns`
+build the HDF5 C library statically and need `cmake`.
+
 ## Usage
 
 Surface mesh, as the renderer's `MeshData` (normals always present):
