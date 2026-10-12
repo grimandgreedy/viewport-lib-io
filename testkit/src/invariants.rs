@@ -69,7 +69,7 @@ impl Report {
 }
 
 /// Check one mesh's geometry in isolation: index bounds, per-vertex array
-/// lengths, normals present and unit length, and per-vertex attribute lengths.
+/// lengths, normals present and unit length, and attribute lengths.
 ///
 /// `subject` names the mesh in any violation, so pass something that locates it
 /// in the file (`"hero.glb / mesh[2]"` rather than `"mesh"`).
@@ -134,20 +134,24 @@ pub fn check_mesh(subject: &str, mesh: &MeshData) -> Report {
         }
     }
 
+    // Every attribute is counted against what the renderer indexes it by: a
+    // vertex, a triangle, or a triangle's three edges or corners.
+    let triangles = mesh.indices.len() / 3;
     for (name, attribute) in &mesh.attributes {
-        // Only per-vertex attributes are checked. Cell and halfedge values from
-        // a scientific source count source cells, which match the triangle
-        // count only when the surface was all triangles to begin with.
-        let len = match attribute {
-            AttributeData::Vertex(v) => v.len(),
-            AttributeData::VertexVector(v) => v.len(),
-            _ => continue,
+        let (len, expected, per) = match attribute {
+            AttributeData::Vertex(v) => (v.len(), vertices, "vertex"),
+            AttributeData::VertexVector(v) => (v.len(), vertices, "vertex"),
+            AttributeData::Cell(v) | AttributeData::Face(v) => (v.len(), triangles, "triangle"),
+            AttributeData::FaceColour(v) => (v.len(), triangles, "triangle"),
+            AttributeData::Edge(v) | AttributeData::Halfedge(v) | AttributeData::Corner(v) => {
+                (v.len(), 3 * triangles, "triangle edge or corner")
+            }
         };
         report.check(
-            len == vertices,
+            len == expected,
             subject,
             "attribute_length",
-            format!("vertex attribute '{name}' has {len} values for {vertices} vertices"),
+            format!("attribute '{name}' has {len} values for {expected} (one per {per})"),
         );
     }
 

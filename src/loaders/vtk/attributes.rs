@@ -9,7 +9,7 @@ pub(super) fn extract_attributes(
     attrs: &Attributes,
     num_points: usize,
     num_cells: usize,
-    detect_halfedges: bool,
+    halfedge_triangles: usize,
 ) -> (
     HashMap<String, Vec<f32>>,
     HashMap<String, Vec<f32>>,
@@ -18,7 +18,8 @@ pub(super) fn extract_attributes(
     let mut point_data = HashMap::new();
     let mut cell_data = HashMap::new();
     let mut edge_data = HashMap::new();
-    let halfedge_len = if detect_halfedges { 3 * num_cells } else { 0 };
+    // Halfedge data is three values per triangle; zero turns detection off.
+    let halfedge_len = 3 * halfedge_triangles;
 
     for attr in &attrs.point {
         extract_attribute_into(

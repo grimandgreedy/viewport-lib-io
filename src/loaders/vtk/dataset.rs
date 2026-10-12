@@ -7,7 +7,6 @@ use std::path::Path;
 use vtkio::Vtk;
 use vtkio::model::{CellType, Cells, DataSet, PolyDataPiece, UnstructuredGridPiece};
 
-use viewport_lib_types::data::attribute::AttributeData;
 use viewport_lib_types::data::mesh::MeshData;
 use viewport_lib_types::data::volume_mesh::CELL_SENTINEL;
 
@@ -23,6 +22,7 @@ use super::topology::{
     extract_surface_unstructured, image_data_positions, rectilinear_positions,
     structured_surface_indices, triangulate_strips, triangulate_vertex_numbers, vtk_extent_to_dims,
 };
+use crate::loaders::common::{structured_triangle_cells, surface_mesh};
 
 pub fn datasets_from_path(path: &Path) -> Result<Vec<IoDataSet>, IoError> {
     let vtk = Vtk::import(path).map_err(|error| IoError::Parse(format!("vtk: {error}")))?;
@@ -65,12 +65,23 @@ pub(super) fn datasets_from_vtk(vtk: Vtk, source: &Path) -> Result<Vec<IoDataSet
                 let [ni, nj, nk] = vtk_extent_to_dims(piece.extent);
                 let indices = structured_surface_indices(ni, nj, nk);
                 let normals = smooth_normals(&positions, &indices);
-                let (point_data, cell_data, edge_data) =
-                    extract_attributes(&piece.data, positions.len(), indices.len() / 3, true);
+                let triangle_cells = structured_triangle_cells([ni, nj, nk], &indices);
+                let (point_data, cell_data, edge_data) = extract_attributes(
+                    &piece.data,
+                    positions.len(),
+                    structured_cell_count(ni, nj, nk),
+                    indices.len() / 3,
+                );
                 Ok(IoDataSet {
                     name: format!("structured_grid_piece_{index}"),
                     surface_mesh: Some(build_mesh_data(
-                        positions, indices, normals, point_data, cell_data, edge_data,
+                        positions,
+                        indices,
+                        normals,
+                        &point_data,
+                        &cell_data,
+                        &edge_data,
+                        &triangle_cells,
                     )),
                     ..IoDataSet::default()
                 })
@@ -90,17 +101,23 @@ pub(super) fn datasets_from_vtk(vtk: Vtk, source: &Path) -> Result<Vec<IoDataSet
                 let positions = rectilinear_positions(&xs, &ys, &zs);
                 let indices = structured_surface_indices(ni, nj, nk);
                 let normals = smooth_normals(&positions, &indices);
-                let (point_data, cell_data, edge_data) =
-                    extract_attributes(&piece.data, positions.len(), indices.len() / 3, false);
+                let triangle_cells = structured_triangle_cells([ni, nj, nk], &indices);
+                let (point_data, cell_data, edge_data) = extract_attributes(
+                    &piece.data,
+                    positions.len(),
+                    structured_cell_count(ni, nj, nk),
+                    0,
+                );
                 Ok(IoDataSet {
                     name: format!("rectilinear_grid_piece_{index}"),
                     surface_mesh: Some(build_mesh_data(
                         positions,
                         indices,
                         normals,
-                        point_data.clone(),
-                        cell_data.clone(),
-                        edge_data,
+                        &point_data,
+                        &cell_data,
+                        &edge_data,
+                        &triangle_cells,
                     )),
                     volume: Some(IoVolume {
                         name: format!("rectilinear_grid_piece_{index}"),
@@ -130,22 +147,28 @@ pub(super) fn datasets_from_vtk(vtk: Vtk, source: &Path) -> Result<Vec<IoDataSet
                     .checked_mul(nj)
                     .and_then(|value| value.checked_mul(nk))
                     .ok_or_else(|| IoError::Parse("vtk: ImageData point count overflow".into()))?;
-                let num_cells = ni
-                    .saturating_sub(1)
-                    .checked_mul(nj.saturating_sub(1))
-                    .and_then(|value| value.checked_mul(nk.saturating_sub(1)))
-                    .unwrap_or(0);
-                let (point_data, cell_data, edge_data) =
-                    extract_attributes(&piece.data, num_points, num_cells, false);
+                let (point_data, cell_data, edge_data) = extract_attributes(
+                    &piece.data,
+                    num_points,
+                    structured_cell_count(ni, nj, nk),
+                    0,
+                );
                 let is_2d = ni <= 1 || nj <= 1 || nk <= 1;
                 if is_2d {
                     let positions = image_data_positions(ni, nj, nk, origin, spacing);
                     let indices = structured_surface_indices(ni, nj, nk);
                     let normals = smooth_normals(&positions, &indices);
+                    let triangle_cells = structured_triangle_cells([ni, nj, nk], &indices);
                     return Ok(IoDataSet {
                         name: format!("image_data_piece_{index}"),
                         surface_mesh: Some(build_mesh_data(
-                            positions, indices, normals, point_data, cell_data, edge_data,
+                            positions,
+                            indices,
+                            normals,
+                            &point_data,
+                            &cell_data,
+                            &edge_data,
+                            &triangle_cells,
                         )),
                         ..IoDataSet::default()
                     });
@@ -187,16 +210,26 @@ pub(super) fn from_polydata(piece: PolyDataPiece, name: String) -> Result<IoData
         return Err(IoError::Parse("vtk: polydata has no points".into()));
     }
 
+    // Polydata cell data covers verts, lines, polys and strips, in that order,
+    // so the polygons' cell numbers start after the verts and lines.
+    let count = |cells: &Option<vtkio::model::VertexNumbers>| {
+        cells
+            .as_ref()
+            .map_or(0, |cells| collect_cells(cells).len() as u32)
+    };
+    let mut next_cell = count(&piece.verts) + count(&piece.lines);
     let mut indices = Vec::new();
+    let mut triangle_cells = Vec::new();
     if let Some(polys) = &piece.polys {
-        triangulate_vertex_numbers(polys, &mut indices);
+        next_cell +=
+            triangulate_vertex_numbers(polys, &mut indices, &mut triangle_cells, next_cell);
     }
     if let Some(strips) = &piece.strips {
-        triangulate_strips(strips, &mut indices);
+        next_cell += triangulate_strips(strips, &mut indices, &mut triangle_cells, next_cell);
     }
+    let num_cells = next_cell as usize;
 
-    let (point_data, _, _) =
-        extract_attributes(&piece.data, positions.len(), indices.len() / 3, false);
+    let (point_data, _, _) = extract_attributes(&piece.data, positions.len(), num_cells, 0);
     if indices.is_empty() {
         return Ok(IoDataSet {
             name,
@@ -212,11 +245,17 @@ pub(super) fn from_polydata(piece: PolyDataPiece, name: String) -> Result<IoData
     let num_tris = indices.len() / 3;
     let normals = smooth_normals(&positions, &indices);
     let (point_data, cell_data, edge_data) =
-        extract_attributes(&piece.data, positions.len(), num_tris, true);
+        extract_attributes(&piece.data, positions.len(), num_cells, num_tris);
     Ok(IoDataSet {
         name,
         surface_mesh: Some(build_mesh_data(
-            positions, indices, normals, point_data, cell_data, edge_data,
+            positions,
+            indices,
+            normals,
+            &point_data,
+            &cell_data,
+            &edge_data,
+            &triangle_cells,
         )),
         ..IoDataSet::default()
     })
@@ -238,7 +277,7 @@ pub(super) fn from_unstructured(
     if all_voxel {
         let num_vox = piece.cells.types.len();
         let (point_data, cell_data, _) =
-            extract_attributes(&piece.data, positions.len(), num_vox, false);
+            extract_attributes(&piece.data, positions.len(), num_vox, 0);
         if let Some(sparse) = try_sparse_voxel_grid(&positions, &piece.cells, &cell_data) {
             return Ok(IoDataSet {
                 name,
@@ -253,9 +292,9 @@ pub(super) fn from_unstructured(
         }
     }
 
-    let indices = extract_surface_unstructured(&piece.cells);
+    let (indices, triangle_cells) = extract_surface_unstructured(&piece.cells);
     if indices.is_empty() {
-        let point_data = extract_attributes(&piece.data, positions.len(), 0, false).0;
+        let point_data = extract_attributes(&piece.data, positions.len(), 0, 0).0;
         return Ok(IoDataSet {
             name,
             point_set: Some(build_point_cloud(
@@ -271,16 +310,19 @@ pub(super) fn from_unstructured(
     let num_tris = indices.len() / 3;
     let normals = smooth_normals(&positions, &indices);
     let (point_data, cell_data, edge_data) =
-        extract_attributes(&piece.data, positions.len(), num_tris, true);
-    let (raw_point_data, raw_cell_data, _) =
-        extract_attributes(&piece.data, positions.len(), num_cells, false);
-    let volume_mesh =
-        build_volume_mesh_data(&positions, &piece.cells, &raw_cell_data, &raw_point_data);
+        extract_attributes(&piece.data, positions.len(), num_cells, num_tris);
+    let volume_mesh = build_volume_mesh_data(&positions, &piece.cells, &cell_data, &point_data);
 
     Ok(IoDataSet {
         name,
         surface_mesh: Some(build_mesh_data(
-            positions, indices, normals, point_data, cell_data, edge_data,
+            positions,
+            indices,
+            normals,
+            &point_data,
+            &cell_data,
+            &edge_data,
+            &triangle_cells,
         )),
         volume_mesh: volume_mesh.map(Box::new),
         ..IoDataSet::default()
@@ -291,22 +333,27 @@ pub(super) fn build_mesh_data(
     positions: Vec<[f32; 3]>,
     indices: Vec<u32>,
     normals: Vec<[f32; 3]>,
-    point_data: HashMap<String, Vec<f32>>,
-    cell_data: HashMap<String, Vec<f32>>,
-    edge_data: HashMap<String, Vec<f32>>,
+    point_data: &HashMap<String, Vec<f32>>,
+    cell_data: &HashMap<String, Vec<f32>>,
+    edge_data: &HashMap<String, Vec<f32>>,
+    triangle_cells: &[u32],
 ) -> MeshData {
-    let mut mesh = MeshData::new(positions, normals, indices);
-    for (name, values) in point_data {
-        mesh.attributes.insert(name, AttributeData::Vertex(values));
-    }
-    for (name, values) in cell_data {
-        mesh.attributes.insert(name, AttributeData::Cell(values));
-    }
-    for (name, values) in edge_data {
-        mesh.attributes
-            .insert(name, AttributeData::Halfedge(values));
-    }
-    mesh
+    surface_mesh(
+        MeshData::new(positions, normals, indices),
+        point_data,
+        cell_data,
+        edge_data,
+        triangle_cells,
+    )
+}
+
+/// Cells in a structured grid of `ni * nj * nk` points, counting a flat axis as
+/// one cell thick, which is how VTK numbers the cells of a 2D grid.
+fn structured_cell_count(ni: usize, nj: usize, nk: usize) -> usize {
+    [ni, nj, nk]
+        .iter()
+        .map(|n| n.saturating_sub(1).max(1))
+        .product()
 }
 
 pub(super) fn build_point_cloud(

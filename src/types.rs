@@ -451,10 +451,9 @@ pub struct SceneMesh {
     ///
     /// Attributes are keyed by name. Per-vertex scalars are
     /// `AttributeData::Vertex` and per-vertex vectors `VertexVector`. Scalars
-    /// a scientific format stores per cell are `Cell`, and per halfedge
-    /// `Halfedge`, one value per source cell or halfedge: the same count the
-    /// renderer expects when the surface is all triangles, but not when the
-    /// source cells were quads or polygons split into triangles.
+    /// a scientific format stores per cell are `Cell`, expanded to one value
+    /// per triangle (a quad's value on both its triangles, a hex's on its whole
+    /// boundary), and per-halfedge scalars `Halfedge`, three per triangle.
     pub mesh: MeshData,
     /// Skinning weights, parallel to `mesh.positions`, when the mesh is skinned.
     pub skin_weights: Option<SkinWeights>,

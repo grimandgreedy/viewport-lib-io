@@ -6,8 +6,11 @@ use std::collections::HashMap;
 use vtkio::model::{CellType, Cells, VertexNumbers};
 
 use super::buffers::collect_cells;
+use crate::loaders::common::tag_new_triangles;
 
-pub(super) fn extract_surface_unstructured(cells: &Cells) -> Vec<u32> {
+/// The boundary faces of an unstructured grid as triangles, with the index of
+/// the cell each triangle came from.
+pub(super) fn extract_surface_unstructured(cells: &Cells) -> (Vec<u32>, Vec<u32>) {
     let cell_verts = collect_cells(&cells.cell_verts);
     let mut face_counts: HashMap<[u32; 3], usize> = HashMap::new();
 
@@ -23,14 +26,16 @@ pub(super) fn extract_surface_unstructured(cells: &Cells) -> Vec<u32> {
     // Going back through the cells emits them in the order the file wrote them,
     // which is both stable and what every other mesh loader here produces.
     let mut indices = Vec::new();
-    for (cell_type, verts) in cells.types.iter().zip(cell_verts.iter()) {
+    let mut triangle_cells = Vec::new();
+    for (cell, (cell_type, verts)) in cells.types.iter().zip(cell_verts.iter()).enumerate() {
         for tri in cell_faces(*cell_type, verts) {
             if face_counts.get(&sorted_tri(tri)) == Some(&1) {
                 indices.extend_from_slice(&tri);
+                triangle_cells.push(cell as u32);
             }
         }
     }
-    indices
+    (indices, triangle_cells)
 }
 
 pub(super) fn cell_faces(cell_type: CellType, verts: &[u32]) -> Vec<[u32; 3]> {
@@ -232,14 +237,32 @@ pub(super) fn rectilinear_positions(xs: &[f32], ys: &[f32], zs: &[f32]) -> Vec<[
     positions
 }
 
-pub(super) fn triangulate_vertex_numbers(vn: &VertexNumbers, out: &mut Vec<u32>) {
-    for cell in collect_cells(vn) {
-        fan_triangulate(&cell, out);
+/// Fan-triangulate each polygon, tagging its triangles with its cell index
+/// counted from `first`. Returns how many cells there were.
+pub(super) fn triangulate_vertex_numbers(
+    vn: &VertexNumbers,
+    out: &mut Vec<u32>,
+    triangle_cells: &mut Vec<u32>,
+    first: u32,
+) -> u32 {
+    let cells = collect_cells(vn);
+    for (cell, verts) in cells.iter().enumerate() {
+        fan_triangulate(verts, out);
+        tag_new_triangles(triangle_cells, out, first + cell as u32);
     }
+    cells.len() as u32
 }
 
-pub(super) fn triangulate_strips(vn: &VertexNumbers, out: &mut Vec<u32>) {
-    for strip in collect_cells(vn) {
+/// Triangulate each strip, tagging its triangles with its cell index counted
+/// from `first`. Returns how many cells there were.
+pub(super) fn triangulate_strips(
+    vn: &VertexNumbers,
+    out: &mut Vec<u32>,
+    triangle_cells: &mut Vec<u32>,
+    first: u32,
+) -> u32 {
+    let strips = collect_cells(vn);
+    for (cell, strip) in strips.iter().enumerate() {
         for index in 0..strip.len().saturating_sub(2) {
             if index % 2 == 0 {
                 out.extend_from_slice(&[strip[index], strip[index + 1], strip[index + 2]]);
@@ -247,7 +270,9 @@ pub(super) fn triangulate_strips(vn: &VertexNumbers, out: &mut Vec<u32>) {
                 out.extend_from_slice(&[strip[index + 1], strip[index], strip[index + 2]]);
             }
         }
+        tag_new_triangles(triangle_cells, out, first + cell as u32);
     }
+    strips.len() as u32
 }
 
 pub(super) fn fan_triangulate(verts: &[u32], out: &mut Vec<u32>) {
@@ -302,6 +327,22 @@ mod tests {
         assert_eq!(sorted_tri([1, 2, 0]), [0, 1, 2]);
     }
 
+    /// Two tetrahedra sharing a face: the shared face is interior, and each of
+    /// the six boundary triangles is tagged with the cell it came from.
+    #[test]
+    fn surface_triangles_name_their_cells() {
+        let cells = Cells {
+            cell_verts: VertexNumbers::Legacy {
+                num_cells: 2,
+                vertices: vec![4, 0, 1, 2, 3, 4, 0, 2, 1, 4],
+            },
+            types: vec![CellType::Tetra; 2],
+        };
+        let (indices, triangle_cells) = extract_surface_unstructured(&cells);
+        assert_eq!(indices.len(), 18);
+        assert_eq!(triangle_cells, vec![0, 0, 0, 1, 1, 1]);
+    }
+
     /// The surface comes back in the order the file wrote its cells. This is
     /// the guard on the actual bug: collecting the faces out of the counting
     /// map instead put them in a per-process random order, so the same file
@@ -317,7 +358,7 @@ mod tests {
         };
 
         assert_eq!(
-            extract_surface_unstructured(&cells),
+            extract_surface_unstructured(&cells).0,
             vec![0, 1, 2, 3, 4, 5, 6, 7, 8],
             "three unshared faces, in file order"
         );
@@ -336,7 +377,7 @@ mod tests {
             types: vec![CellType::Tetra, CellType::Tetra],
         };
 
-        let indices = extract_surface_unstructured(&cells);
+        let (indices, _) = extract_surface_unstructured(&cells);
         assert_eq!(
             indices.len(),
             6 * 3,

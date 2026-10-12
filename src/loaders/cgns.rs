@@ -3,7 +3,9 @@ use std::path::Path;
 
 use hdf5::File as Hdf5File;
 
-use super::common::{Dataset, VolumeGeometry, VolumeGrid};
+use super::common::{
+    Dataset, VolumeGeometry, VolumeGrid, structured_triangle_cells, tag_new_triangles,
+};
 use super::error::ReadError;
 use super::pvd::{PvdSeries, TimestepEntry};
 use crate::{
@@ -223,6 +225,8 @@ fn read_structured_zone(
         );
         let indices = structured_surface_indices(ni as usize, nj as usize, nk as usize);
         let normals = smooth_normals(&positions, &indices);
+        let triangle_cells =
+            structured_triangle_cells([ni as usize, nj as usize, nk as usize], &indices);
         Ok(Dataset {
             positions,
             indices,
@@ -230,6 +234,7 @@ fn read_structured_zone(
             point_data,
             cell_data,
             edge_data: HashMap::new(),
+            triangle_cells,
             sparse_volume: None,
             volume: Some(volume),
             volume_mesh: None,
@@ -241,6 +246,8 @@ fn read_structured_zone(
             return Err(ReadError::Empty);
         }
         let normals = smooth_normals(&positions, &indices);
+        let triangle_cells =
+            structured_triangle_cells([ni as usize, nj as usize, nk as usize], &indices);
         Ok(Dataset {
             positions,
             indices,
@@ -248,6 +255,7 @@ fn read_structured_zone(
             point_data,
             cell_data,
             edge_data: HashMap::new(),
+            triangle_cells,
             sparse_volume: None,
             volume: None,
             volume_mesh: None,
@@ -271,7 +279,7 @@ fn read_unstructured_zone(
         .collect();
 
     // Read element connectivity and triangulate.
-    let indices = read_elements_triangulated(zone, n_vertices)?;
+    let (indices, triangle_cells) = read_elements_triangulated(zone, n_vertices)?;
     if indices.is_empty() || positions.is_empty() {
         return Err(ReadError::Empty);
     }
@@ -286,6 +294,7 @@ fn read_unstructured_zone(
         point_data,
         cell_data,
         edge_data: HashMap::new(),
+        triangle_cells,
         sparse_volume: None,
         volume: None,
         volume_mesh: None,
@@ -421,25 +430,48 @@ const PENTA_6: i32 = 14;
 const HEXA_8: i32 = 17;
 const MIXED: i32 = 20;
 
+/// Triangulate every element section, returning the triangle indices and, for
+/// each triangle, the zero-based element number it came from. A section's
+/// numbering starts at its `ElementRange`, which is what cell-centred solution
+/// data is indexed by; a section without one continues from the last.
 fn read_elements_triangulated(
     zone: &hdf5::Group,
     _n_vertices: usize,
-) -> Result<Vec<u32>, ReadError> {
+) -> Result<(Vec<u32>, Vec<u32>), ReadError> {
     let elem_sections = find_children_by_label(zone, "Elements_t")?;
     let mut all_indices = Vec::new();
+    let mut triangle_cells = Vec::new();
+    let mut next_element = 0u32;
 
     for section in &elem_sections {
         let elem_type = read_element_type(section)?;
         let connectivity = read_element_connectivity(section)?;
+        let first = read_element_range_start(section).unwrap_or(next_element);
 
-        if elem_type == MIXED {
-            triangulate_mixed(&connectivity, &mut all_indices);
+        let count = if elem_type == MIXED {
+            triangulate_mixed(&connectivity, &mut all_indices, &mut triangle_cells, first)
         } else {
-            triangulate_typed(elem_type, &connectivity, &mut all_indices);
-        }
+            triangulate_typed(
+                elem_type,
+                &connectivity,
+                &mut all_indices,
+                &mut triangle_cells,
+                first,
+            )
+        };
+        next_element = first + count;
     }
 
-    Ok(all_indices)
+    Ok((all_indices, triangle_cells))
+}
+
+/// The zero-based number of a section's first element, from its 1-based
+/// `ElementRange`.
+fn read_element_range_start(section: &hdf5::Group) -> Option<u32> {
+    let range = section.group("ElementRange").ok()?;
+    let values = read_dataset_i32(&range.dataset(" data").ok()?).ok()?;
+    let start = *values.first()?;
+    (start >= 1).then(|| (start - 1) as u32)
 }
 
 fn read_element_type(section: &hdf5::Group) -> Result<i32, ReadError> {
@@ -467,8 +499,15 @@ fn read_element_connectivity(section: &hdf5::Group) -> Result<Vec<i32>, ReadErro
     Err(ReadError::Cgns("Missing ElementConnectivity".to_string()))
 }
 
-/// Triangulate elements of a single known type.
-fn triangulate_typed(elem_type: i32, connectivity: &[i32], out: &mut Vec<u32>) {
+/// Triangulate elements of a single known type, numbering them from `first`.
+/// Returns how many elements the section holds.
+fn triangulate_typed(
+    elem_type: i32,
+    connectivity: &[i32],
+    out: &mut Vec<u32>,
+    triangle_cells: &mut Vec<u32>,
+    first: u32,
+) -> u32 {
     let stride = match elem_type {
         TRI_3 => 3,
         QUAD_4 => 4,
@@ -476,17 +515,28 @@ fn triangulate_typed(elem_type: i32, connectivity: &[i32], out: &mut Vec<u32>) {
         PYRA_5 => 5,
         PENTA_6 => 6,
         HEXA_8 => 8,
-        _ => return,
+        _ => return 0,
     };
 
+    let mut count = 0;
     for elem in connectivity.chunks_exact(stride) {
         triangulate_element(elem_type, elem, out);
+        tag_new_triangles(triangle_cells, out, first + count);
+        count += 1;
     }
+    count
 }
 
-/// Triangulate a MIXED element section where each element is prefixed by its type.
-fn triangulate_mixed(connectivity: &[i32], out: &mut Vec<u32>) {
+/// Triangulate a MIXED element section where each element is prefixed by its
+/// type, numbering elements from `first`. Returns how many elements were read.
+fn triangulate_mixed(
+    connectivity: &[i32],
+    out: &mut Vec<u32>,
+    triangle_cells: &mut Vec<u32>,
+    first: u32,
+) -> u32 {
     let mut i = 0;
+    let mut count = 0;
     while i < connectivity.len() {
         let etype = connectivity[i];
         i += 1;
@@ -496,8 +546,11 @@ fn triangulate_mixed(connectivity: &[i32], out: &mut Vec<u32>) {
         }
         let nodes = &connectivity[i..i + n_nodes];
         triangulate_element(etype, nodes, out);
+        tag_new_triangles(triangle_cells, out, first + count);
+        count += 1;
         i += n_nodes;
     }
+    count
 }
 
 fn element_node_count(elem_type: i32) -> usize {

@@ -599,6 +599,7 @@ fn zone_to_dataset(zone: TecplotZone, variables: &[String]) -> Result<Dataset, R
         point_data,
         cell_data: HashMap::new(),
         edge_data: HashMap::new(),
+        triangle_cells: Vec::new(),
         sparse_volume: None,
         volume: None,
         volume_mesh: None,

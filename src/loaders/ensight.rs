@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::Read as IoRead;
 use std::path::{Path, PathBuf};
 
-use super::common::Dataset;
+use super::common::{Dataset, structured_triangle_cells, tag_new_triangles};
 use super::error::ReadError;
 use super::pvd::{PvdSeries, TimestepEntry};
 use crate::{
@@ -376,6 +376,9 @@ struct GeoPart {
     name: String,
     positions: Vec<[f32; 3]>,
     indices: Vec<u32>,
+    /// The part-local element each triangle came from: per-element variables
+    /// are numbered across every element block of the part, in file order.
+    triangle_cells: Vec<u32>,
 }
 
 impl GeoPart {
@@ -388,6 +391,7 @@ impl GeoPart {
             point_data: HashMap::new(),
             cell_data: HashMap::new(),
             edge_data: HashMap::new(),
+            triangle_cells: self.triangle_cells,
             sparse_volume: None,
             volume: None,
             volume_mesh: None,
@@ -463,6 +467,8 @@ fn read_ascii_part(
 
     let mut positions = Vec::new();
     let mut indices = Vec::new();
+    let mut triangle_cells = Vec::new();
+    let mut next_cell = 0u32;
 
     while let Some(line) = lines.peek() {
         let trimmed = line.trim();
@@ -474,13 +480,20 @@ fn read_ascii_part(
             let dims = read_ascii_block_dims(lines)?;
             positions = read_ascii_block_coordinates(lines, dims)?;
             indices = structured_surface_indices(dims[0], dims[1], dims[2]);
+            triangle_cells = structured_triangle_cells(dims, &indices);
         } else if trimmed == "part" {
             // Next part — don't consume this line.
             break;
         } else if is_element_type(trimmed) {
             let elem_type = trimmed.to_string();
             lines.next();
-            read_ascii_elements(lines, &elem_type, &mut indices)?;
+            read_ascii_elements(
+                lines,
+                &elem_type,
+                &mut indices,
+                &mut triangle_cells,
+                &mut next_cell,
+            )?;
         } else {
             lines.next();
         }
@@ -490,6 +503,7 @@ fn read_ascii_part(
         name,
         positions,
         indices,
+        triangle_cells,
     })
 }
 
@@ -576,10 +590,16 @@ fn read_n_floats(
     Ok(())
 }
 
+/// Read one element block, triangulating each element and tagging its
+/// triangles with its part-local number. `next_cell` advances by the block's
+/// element count, skipped element types included, since per-element variables
+/// count them too.
 fn read_ascii_elements(
     lines: &mut std::iter::Peekable<std::str::Lines<'_>>,
     elem_type: &str,
     indices: &mut Vec<u32>,
+    triangle_cells: &mut Vec<u32>,
+    next_cell: &mut u32,
 ) -> Result<(), ReadError> {
     let n: usize = lines
         .next()
@@ -594,10 +614,11 @@ fn read_ascii_elements(
         for _ in 0..n {
             lines.next();
         }
+        *next_cell += n as u32;
         return Ok(());
     }
 
-    for _ in 0..n {
+    for element in 0..n {
         let line = lines.next().unwrap_or("");
         let node_ids: Vec<u32> = line
             .split_whitespace()
@@ -607,8 +628,10 @@ fn read_ascii_elements(
 
         if node_ids.len() >= nodes_per {
             triangulate_ensight(elem_type, &node_ids[..nodes_per], indices);
+            tag_new_triangles(triangle_cells, indices, *next_cell + element as u32);
         }
     }
+    *next_cell += n as u32;
 
     Ok(())
 }
@@ -676,6 +699,8 @@ fn read_binary_part(cursor: &mut std::io::Cursor<&[u8]>) -> Result<GeoPart, Read
 
     let mut positions = Vec::new();
     let mut indices = Vec::new();
+    let mut triangle_cells = Vec::new();
+    let mut next_cell = 0u32;
 
     loop {
         let pos_before = cursor.position();
@@ -688,12 +713,19 @@ fn read_binary_part(cursor: &mut std::io::Cursor<&[u8]>) -> Result<GeoPart, Read
                     let dims = read_binary_block_dims(cursor)?;
                     positions = read_binary_block_coordinates(cursor, dims)?;
                     indices = structured_surface_indices(dims[0], dims[1], dims[2]);
+                    triangle_cells = structured_triangle_cells(dims, &indices);
                 } else if trimmed == "part" {
                     // Rewind — this is the next part.
                     cursor.set_position(pos_before);
                     break;
                 } else if is_element_type(trimmed) {
-                    read_binary_elements(cursor, trimmed, &mut indices)?;
+                    read_binary_elements(
+                        cursor,
+                        trimmed,
+                        &mut indices,
+                        &mut triangle_cells,
+                        &mut next_cell,
+                    )?;
                 } else {
                     // Unknown record — might be end of geometry.
                     cursor.set_position(pos_before);
@@ -708,6 +740,7 @@ fn read_binary_part(cursor: &mut std::io::Cursor<&[u8]>) -> Result<GeoPart, Read
         name,
         positions,
         indices,
+        triangle_cells,
     })
 }
 
@@ -766,6 +799,8 @@ fn read_binary_elements(
     cursor: &mut std::io::Cursor<&[u8]>,
     elem_type: &str,
     indices: &mut Vec<u32>,
+    triangle_cells: &mut Vec<u32>,
+    next_cell: &mut u32,
 ) -> Result<(), ReadError> {
     let n = read_i32(cursor)? as usize;
     let nodes_per = nodes_per_element(elem_type);
@@ -774,6 +809,7 @@ fn read_binary_elements(
         let skip = n * nodes_per * 4;
         let pos = cursor.position() + skip as u64;
         cursor.set_position(pos);
+        *next_cell += n as u32;
         return Ok(());
     }
 
@@ -781,13 +817,15 @@ fn read_binary_elements(
     let mut connectivity = vec![0i32; total];
     read_i32_array(cursor, &mut connectivity)?;
 
-    for elem in connectivity.chunks_exact(nodes_per) {
+    for (element, elem) in connectivity.chunks_exact(nodes_per).enumerate() {
         let local: Vec<u32> = elem
             .iter()
             .map(|&id| (id - 1).max(0) as u32) // 1-based to 0-based
             .collect();
         triangulate_ensight(elem_type, &local, indices);
+        tag_new_triangles(triangle_cells, indices, *next_cell + element as u32);
     }
+    *next_cell += n as u32;
 
     Ok(())
 }

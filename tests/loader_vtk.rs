@@ -124,3 +124,64 @@ fn a_tetrahedral_grid_keeps_node_and_cell_fields_apart() {
     assert_eq!(volume.cell_scalars["pressure"], vec![7.0]);
     assert!(!volume.cell_scalars.contains_key("temperature"));
 }
+
+fn surface_cell_field(vtk_text: &str, label: &str, field: &str) -> Vec<f32> {
+    use viewport_lib_io::viewport_lib_types::data::attribute::AttributeData;
+    let path = synth::temp_path("vtk_cells", label);
+    synth::write(&path, vtk_text);
+    let datasets = vtk::datasets_from_path(&path).expect("decode vtk");
+    let mesh = datasets
+        .iter()
+        .find_map(|d| d.as_surface_mesh())
+        .expect("a surface");
+    match &mesh.attributes[field] {
+        AttributeData::Cell(values) => {
+            assert_eq!(
+                values.len(),
+                mesh.indices.len() / 3,
+                "one value per triangle"
+            );
+            values.clone()
+        }
+        other => panic!("expected a cell attribute, got {other:?}"),
+    }
+}
+
+/// Cell data on a quad belongs to both of the quad's triangles. Before, a cell
+/// array was kept only when it happened to have one value per triangle, so a
+/// quad mesh lost its cell data.
+#[test]
+fn a_quad_cells_value_reaches_both_its_triangles() {
+    let text = "# vtk DataFile Version 3.0\nquad\nASCII\nDATASET UNSTRUCTURED_GRID\n\
+                POINTS 4 float\n0 0 0\n1 0 0\n1 1 0\n0 1 0\n\
+                CELLS 1 5\n4 0 1 2 3\nCELL_TYPES 1\n9\n\
+                CELL_DATA 1\nSCALARS pressure float 1\nLOOKUP_TABLE default\n7\n";
+    assert_eq!(
+        surface_cell_field(text, "quad.vtk", "pressure"),
+        vec![7.0, 7.0]
+    );
+}
+
+/// Polydata cell data numbers verts and lines before polygons, so a polygon's
+/// value sits after them.
+#[test]
+fn polydata_cell_data_skips_the_vertex_cells() {
+    let text = "# vtk DataFile Version 3.0\npoly\nASCII\nDATASET POLYDATA\n\
+                POINTS 4 float\n0 0 0\n1 0 0\n1 1 0\n0 1 0\n\
+                VERTICES 1 2\n1 0\nPOLYGONS 1 5\n4 0 1 2 3\n\
+                CELL_DATA 2\nSCALARS id float 1\nLOOKUP_TABLE default\n10\n20\n";
+    assert_eq!(surface_cell_field(text, "poly.vtk", "id"), vec![20.0, 20.0]);
+}
+
+/// A hexahedron's boundary is twelve triangles, all on the one cell.
+#[test]
+fn a_hex_cells_value_covers_its_whole_boundary() {
+    let text = "# vtk DataFile Version 3.0\nhex\nASCII\nDATASET UNSTRUCTURED_GRID\n\
+                POINTS 8 float\n0 0 0\n1 0 0\n1 1 0\n0 1 0\n0 0 1\n1 0 1\n1 1 1\n0 1 1\n\
+                CELLS 1 9\n8 0 1 2 3 4 5 6 7\nCELL_TYPES 1\n12\n\
+                CELL_DATA 1\nSCALARS pressure float 1\nLOOKUP_TABLE default\n3\n";
+    assert_eq!(
+        surface_cell_field(text, "hex.vtk", "pressure"),
+        vec![3.0; 12]
+    );
+}

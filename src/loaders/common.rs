@@ -138,10 +138,16 @@ pub struct Dataset {
     pub normals: Vec<[f32; 3]>,
     /// Point-centred scalar fields.
     pub point_data: HashMap<String, Vec<f32>>,
-    /// Cell-centred scalar fields.
+    /// Cell-centred scalar fields, one value per source cell (a quad, a hex,
+    /// a polygon), not per triangle.
     pub cell_data: HashMap<String, Vec<f32>>,
-    /// Per-halfedge scalar fields.
+    /// Per-halfedge scalar fields, three per triangle.
     pub edge_data: HashMap<String, Vec<f32>>,
+    /// For each triangle in `indices`, the source cell it came from, indexing
+    /// `cell_data`. Empty when the loader does not track it, in which case a
+    /// cell field reaches the surface only if it already has one value per
+    /// triangle.
+    pub triangle_cells: Vec<u32>,
     /// Sparse voxel grid representation.
     pub sparse_volume: Option<Box<SparseGrid>>,
     /// Optional structured volume representation.
@@ -181,20 +187,13 @@ impl Dataset {
         } else {
             smooth_normals(&self.positions, &self.indices)
         };
-        let mut mesh = MeshData::new(self.positions.clone(), normals, self.indices.clone());
-        for (name, values) in &self.point_data {
-            mesh.attributes
-                .insert(name.clone(), AttributeData::Vertex(values.clone()));
-        }
-        for (name, values) in &self.cell_data {
-            mesh.attributes
-                .insert(name.clone(), AttributeData::Cell(values.clone()));
-        }
-        for (name, values) in &self.edge_data {
-            mesh.attributes
-                .insert(name.clone(), AttributeData::Halfedge(values.clone()));
-        }
-        mesh
+        surface_mesh(
+            MeshData::new(self.positions.clone(), normals, self.indices.clone()),
+            &self.point_data,
+            &self.cell_data,
+            &self.edge_data,
+            &self.triangle_cells,
+        )
     }
 
     pub fn into_io_dataset(self) -> DecodedDataSet {
@@ -357,9 +356,155 @@ fn sample_rectilinear_point_field(
     c0 * (1.0 - tz) + c1 * tz
 }
 
+/// Attach a scientific dataset's fields to a triangulated surface.
+///
+/// Point fields become `AttributeData::Vertex`. Cell fields are one value per
+/// source cell and become `AttributeData::Cell`, which the renderer reads as one
+/// value per triangle, so they are expanded through `triangle_cells` (the source
+/// cell of each triangle). Without that map a cell field is kept only when it
+/// already has one value per triangle; one that cannot be placed is left off
+/// rather than attached at the wrong triangles. Halfedge fields are kept when
+/// they have three values per triangle.
+pub(crate) fn surface_mesh(
+    mut mesh: MeshData,
+    point_data: &HashMap<String, Vec<f32>>,
+    cell_data: &HashMap<String, Vec<f32>>,
+    edge_data: &HashMap<String, Vec<f32>>,
+    triangle_cells: &[u32],
+) -> MeshData {
+    let triangles = mesh.indices.len() / 3;
+    for (name, values) in point_data {
+        mesh.attributes
+            .insert(name.clone(), AttributeData::Vertex(values.clone()));
+    }
+    for (name, values) in cell_data {
+        let per_triangle = if triangle_cells.len() == triangles {
+            per_triangle(values, triangle_cells)
+        } else if values.len() == triangles {
+            Some(values.clone())
+        } else {
+            None
+        };
+        if let Some(values) = per_triangle {
+            mesh.attributes
+                .insert(name.clone(), AttributeData::Cell(values));
+        }
+    }
+    for (name, values) in edge_data {
+        if values.len() == 3 * triangles {
+            mesh.attributes
+                .insert(name.clone(), AttributeData::Halfedge(values.clone()));
+        }
+    }
+    mesh
+}
+
+/// One value per triangle from one value per source cell. `None` when a
+/// triangle names a cell the field has no value for.
+pub(crate) fn per_triangle(cell_values: &[f32], triangle_cells: &[u32]) -> Option<Vec<f32>> {
+    triangle_cells
+        .iter()
+        .map(|&cell| cell_values.get(cell as usize).copied())
+        .collect()
+}
+
+/// Tag every triangle `indices` has gained since the last call with `cell`.
+/// Call it after triangulating each source cell.
+pub(crate) fn tag_new_triangles(triangle_cells: &mut Vec<u32>, indices: &[u32], cell: u32) {
+    triangle_cells.resize(indices.len() / 3, cell);
+}
+
+/// The source cell of each triangle on the surface of a structured grid of
+/// `dims` points, x fastest.
+///
+/// Every triangle of a split boundary quad includes the quad's lowest corner
+/// on each axis, so the per-axis minimum of its three points, clamped to the
+/// cell grid, is the cell it lies on. Works whatever the triangulation and
+/// winding, and for a flat grid (one axis of one point), where cells are counted
+/// over the other two axes.
+pub(crate) fn structured_triangle_cells(dims: [usize; 3], indices: &[u32]) -> Vec<u32> {
+    let [ni, nj, _] = dims;
+    let cells = dims.map(|n| n.saturating_sub(1).max(1));
+    indices
+        .chunks_exact(3)
+        .map(|triangle| {
+            let mut corner = [usize::MAX; 3];
+            for &point in triangle {
+                let point = point as usize;
+                let ijk = [
+                    point % ni.max(1),
+                    (point / ni.max(1)) % nj.max(1),
+                    point / (ni.max(1) * nj.max(1)),
+                ];
+                for axis in 0..3 {
+                    corner[axis] = corner[axis].min(ijk[axis]);
+                }
+            }
+            let [i, j, k] = [0, 1, 2].map(|axis| corner[axis].min(cells[axis] - 1));
+            (i + j * cells[0] + k * cells[0] * cells[1]) as u32
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn structured_surface_triangles_find_their_cells() {
+        // A 3x2x1 grid of points is a flat strip of two cells. Each quad splits
+        // two ways; both triangles of each split land on the same cell.
+        let dims = [3, 2, 1];
+        let quads = [[0, 1, 4, 3], [1, 2, 5, 4]];
+        let mut indices = Vec::new();
+        for [a, b, c, d] in quads {
+            indices.extend_from_slice(&[a, b, c, a, c, d]);
+            indices.extend_from_slice(&[a, b, d, b, c, d]);
+        }
+        assert_eq!(
+            structured_triangle_cells(dims, &indices),
+            vec![0, 0, 0, 0, 1, 1, 1, 1]
+        );
+
+        // A 2x2x3 column of two cells: a side face at k = 1..2 lies on cell 1,
+        // and the top face (k = 2, the last point layer) on the last cell.
+        let dims = [2, 2, 3];
+        let side = [4, 5, 9, 8]; // i 0..1, j 0, k 1..2
+        let top = [8, 9, 11, 10]; // k = 2
+        let mut indices = Vec::new();
+        for [a, b, c, d] in [side, top] {
+            indices.extend_from_slice(&[a, b, c, a, c, d]);
+        }
+        assert_eq!(structured_triangle_cells(dims, &indices), vec![1, 1, 1, 1]);
+    }
+
+    #[test]
+    fn cell_fields_are_expanded_onto_their_triangles() {
+        let mut dataset = empty_dataset();
+        dataset.positions = vec![[0.0; 3], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]];
+        // One quad cell, split into two triangles.
+        dataset.indices = vec![0, 1, 2, 0, 2, 3];
+        dataset.triangle_cells = vec![0, 0];
+        dataset.cell_data.insert("pressure".into(), vec![7.0]);
+
+        let surface = dataset.into_io_dataset().surface_mesh.expect("a surface");
+        assert_eq!(
+            surface.attributes["pressure"],
+            AttributeData::Cell(vec![7.0, 7.0])
+        );
+    }
+
+    #[test]
+    fn a_cell_field_that_cannot_be_placed_is_left_off() {
+        let mut dataset = empty_dataset();
+        dataset.positions = vec![[0.0; 3], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]];
+        dataset.indices = vec![0, 1, 2, 0, 2, 3];
+        // No triangle map, and one value for two triangles.
+        dataset.cell_data.insert("pressure".into(), vec![7.0]);
+
+        let surface = dataset.into_io_dataset().surface_mesh.expect("a surface");
+        assert!(!surface.attributes.contains_key("pressure"));
+    }
 
     fn empty_dataset() -> Dataset {
         Dataset {
@@ -369,6 +514,7 @@ mod tests {
             point_data: HashMap::new(),
             cell_data: HashMap::new(),
             edge_data: HashMap::new(),
+            triangle_cells: Vec::new(),
             sparse_volume: None,
             volume: None,
             volume_mesh: None,

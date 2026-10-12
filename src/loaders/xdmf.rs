@@ -6,7 +6,7 @@ use hdf5::File as Hdf5File;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 
-use super::common::{Dataset, VolumeGeometry, VolumeGrid};
+use super::common::{Dataset, VolumeGeometry, VolumeGrid, structured_triangle_cells};
 use super::error::ReadError;
 use super::pvd::{PvdSeries, TimestepEntry};
 use crate::{
@@ -325,12 +325,13 @@ fn parse_corect_grid(
             origin,
             spacing,
         );
-        let indices =
-            structured_surface_indices(dims[0] as usize, dims[1] as usize, dims[2] as usize);
+        let grid = [dims[0] as usize, dims[1] as usize, dims[2] as usize];
+        let indices = structured_surface_indices(grid[0], grid[1], grid[2]);
         if indices.is_empty() || positions.is_empty() {
             return Err(ReadError::Empty);
         }
         let normals = smooth_normals(&positions, &indices);
+        let triangle_cells = structured_triangle_cells(grid, &indices);
         Ok(Dataset {
             positions,
             indices,
@@ -338,6 +339,7 @@ fn parse_corect_grid(
             point_data,
             cell_data,
             edge_data: HashMap::new(),
+            triangle_cells,
             sparse_volume: None,
             volume: None,
             volume_mesh: None,
@@ -350,6 +352,7 @@ fn parse_corect_grid(
             point_data: point_data.clone(),
             cell_data: cell_data.clone(),
             edge_data: HashMap::new(),
+            triangle_cells: Vec::new(),
             sparse_volume: None,
             volume: Some(VolumeGrid {
                 dims,
@@ -402,11 +405,13 @@ fn parse_rect_grid(
 
     let (point_data, cell_data) = parse_attributes(grid, source)?;
     let positions = rectilinear_positions(&xs, &ys, &zs);
-    let indices = structured_surface_indices(dims[0] as usize, dims[1] as usize, dims[2] as usize);
+    let grid = [dims[0] as usize, dims[1] as usize, dims[2] as usize];
+    let indices = structured_surface_indices(grid[0], grid[1], grid[2]);
     if indices.is_empty() || positions.is_empty() {
         return Err(ReadError::Empty);
     }
     let normals = smooth_normals(&positions, &indices);
+    let triangle_cells = structured_triangle_cells(grid, &indices);
     let volume = if dims[0] > 1 && dims[1] > 1 && dims[2] > 1 {
         Some(VolumeGrid {
             dims,
@@ -429,6 +434,7 @@ fn parse_rect_grid(
         point_data,
         cell_data,
         edge_data: HashMap::new(),
+        triangle_cells,
         sparse_volume: None,
         volume,
         volume_mesh: None,

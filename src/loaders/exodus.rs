@@ -3,7 +3,7 @@ use std::path::Path;
 
 use hdf5::File as Hdf5File;
 
-use super::common::Dataset;
+use super::common::{Dataset, tag_new_triangles};
 use super::error::ReadError;
 use super::pvd::{PvdSeries, TimestepEntry};
 use crate::{
@@ -169,12 +169,14 @@ fn read_element_block(
 
     // Triangulate elements.
     let mut indices = Vec::new();
-    for elem in connectivity.chunks_exact(nodes_per_elem) {
+    let mut triangle_cells = Vec::new();
+    for (element, elem) in connectivity.chunks_exact(nodes_per_elem).enumerate() {
         let local: Vec<u32> = elem
             .iter()
             .map(|&g| *global_to_local.get(&g).unwrap_or(&0))
             .collect();
         triangulate_element(&elem_type, nodes_per_elem, &local, &mut indices);
+        tag_new_triangles(&mut triangle_cells, &indices, element as u32);
     }
 
     if indices.is_empty() || positions.is_empty() {
@@ -208,6 +210,7 @@ fn read_element_block(
         point_data,
         cell_data,
         edge_data: HashMap::new(),
+        triangle_cells,
         sparse_volume: None,
         volume: None,
         volume_mesh: None,
