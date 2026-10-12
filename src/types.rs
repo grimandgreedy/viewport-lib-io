@@ -8,9 +8,10 @@ use viewport_lib_types::data::mesh::MeshData;
 use viewport_lib_types::data::texture::TextureData;
 use viewport_lib_types::data::volume_mesh::VolumeMeshData;
 use viewport_lib_types::encoding::ColourSource;
+use viewport_lib_types::ids::TextureId;
 use viewport_lib_types::material::{
-    AlphaMode, MATERIAL_TEXTURE_SLOTS, SamplerKey, TextureFilter, TextureSlot, UvTransform,
-    WrapMode,
+    AlphaMode, BackfacePolicy, MATERIAL_TEXTURE_SLOTS, Material, SamplerKey, TextureFilter,
+    TextureSlot, UvTransform, WrapMode,
 };
 use viewport_lib_types::overlay::vector::{FillRule, SubPath};
 
@@ -132,10 +133,10 @@ pub(crate) fn smooth_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f3
 
 /// Material data extracted from a scene file.
 ///
-/// `normal_scale` and `occlusion_strength` map directly onto a viewport-lib
-/// `Material`: set `normal_strength = normal_scale`, and set
-/// `ao_range = [1.0 - occlusion_strength, 1.0]` (which reproduces glTF
-/// `occlusionStrength`, since `mix(1.0, sample, s) == mix(1 - s, 1, sample)`).
+/// [`to_material`](Self::to_material) builds the renderer's `Material` from it,
+/// given ids for its textures. `occlusion_strength` becomes
+/// `ao_range = [1.0 - occlusion_strength, 1.0]` there, which reproduces glTF
+/// `occlusionStrength`, since `mix(1.0, sample, s) == mix(1 - s, 1, sample)`.
 ///
 /// Materials are always metallic-roughness. glTF assets using
 /// `KHR_materials_pbrSpecularGlossiness` are converted at import with the
@@ -245,6 +246,46 @@ impl MaterialData {
         .into_iter()
         .filter_map(|(slot, src)| src.as_ref().map(|s| (slot, s)))
         .collect()
+    }
+
+    /// The renderer's PBR material for this one, with each present texture
+    /// resolved to an id by `texture`.
+    ///
+    /// `texture` is called once per present texture with its slot and source,
+    /// and returns the uploaded texture's id (uploading it, or looking it up in
+    /// a cache), or `None` to leave the slot empty. A
+    /// [`TextureSource::Decoded`] uploads as-is; a [`TextureSource::File`] is
+    /// decoded for its slot first.
+    ///
+    /// Carried across: base colour and emissive through the linear path,
+    /// metallic, roughness, `emissive_strength`, alpha mode, `double_sided` (as
+    /// [`BackfacePolicy::Identical`]), `normal_scale` as `normal_strength`,
+    /// `occlusion_strength` as `ao_range = [1 - strength, 1]`, and the per-slot
+    /// UV transforms and samplers. [`opacity`](Self::opacity) is not part of a
+    /// renderer material: set it on the item (`ItemSettings::opacity`).
+    pub fn to_material(
+        &self,
+        mut texture: impl FnMut(TextureSlot, &TextureSource) -> Option<TextureId>,
+    ) -> Material {
+        let mut material = Material::pbr(
+            Colour::from_linear_rgb_array(self.base_color),
+            self.metallic,
+            self.roughness,
+        );
+        material.emissive = Colour::from_linear_rgb_array(self.emissive);
+        material.emissive_strength = self.emissive_strength;
+        material.normal_strength = self.normal_scale;
+        material.ao_range = [1.0 - self.occlusion_strength, 1.0];
+        material.alpha_mode = self.alpha_mode;
+        if self.double_sided {
+            material.backface_policy = BackfacePolicy::Identical;
+        }
+        material.texture_transforms = self.uv_transforms;
+        material.sampler = self.samplers.map(|sampler| sampler.map(SamplerKey::from));
+        for (slot, source) in self.textures() {
+            material.set_texture(slot, texture(slot, source));
+        }
+        material
     }
 
     /// How one slot samples its UVs, or `None` when it samples UV0
@@ -951,6 +992,60 @@ mod tests {
             bare.to_point_cloud_item().colour,
             PointCloudItem::default().colour
         );
+    }
+
+    #[test]
+    fn a_material_converts_with_its_textures_resolved() {
+        use viewport_lib_types::material::ShadingModel;
+
+        let mut data = MaterialData {
+            base_color: [0.5, 0.25, 0.125],
+            metallic: 0.8,
+            roughness: 0.3,
+            emissive: [1.0, 0.5, 0.0],
+            emissive_strength: 200.0,
+            alpha_mode: AlphaMode::Mask(0.4),
+            double_sided: true,
+            normal_scale: 0.5,
+            occlusion_strength: 0.75,
+            base_color_texture: Some(TextureSource::File("albedo.png".into())),
+            normal_map_texture: Some(TextureSource::File("normal.png".into())),
+            ..MaterialData::default()
+        };
+        data.uv_transforms[TextureSlot::Albedo.index()] = Some(UvTransform::from_rotation(0.5));
+        data.samplers[TextureSlot::Albedo.index()] = Some(TextureSampler {
+            wrap_u: WrapMode::ClampToEdge,
+            ..TextureSampler::default()
+        });
+
+        let mut seen = Vec::new();
+        let material = data.to_material(|slot, _source| {
+            seen.push(slot);
+            // Leave the normal map unresolved, as an upload that failed would.
+            (slot == TextureSlot::Albedo).then(|| TextureId::from_raw(7))
+        });
+
+        assert_eq!(seen, vec![TextureSlot::Albedo, TextureSlot::Normal]);
+        assert_eq!(material.texture_id, Some(TextureId::from_raw(7)));
+        assert_eq!(material.normal_map_id, None);
+        assert_eq!(material.shading_model, ShadingModel::Pbr);
+        assert_eq!(material.base_colour.to_linear_rgb(), [0.5, 0.25, 0.125]);
+        assert_eq!(material.emissive.to_linear_rgb(), [1.0, 0.5, 0.0]);
+        assert_eq!(material.emissive_strength, 200.0);
+        assert_eq!((material.metallic, material.roughness), (0.8, 0.3));
+        assert_eq!(material.alpha_mode, AlphaMode::Mask(0.4));
+        assert!(material.is_two_sided());
+        assert_eq!(material.normal_strength, 0.5);
+        assert_eq!(material.ao_range, [0.25, 1.0]);
+        assert_eq!(
+            material.texture_transforms[TextureSlot::Albedo.index()],
+            Some(UvTransform::from_rotation(0.5))
+        );
+        assert_eq!(
+            material.sampler[TextureSlot::Albedo.index()].map(|s| s.wrap_u),
+            Some(WrapMode::ClampToEdge)
+        );
+        assert_eq!(material.sampler[TextureSlot::Normal.index()], None);
     }
 
     #[test]
