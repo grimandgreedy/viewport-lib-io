@@ -58,3 +58,25 @@ fn a_missing_file_is_an_error_not_an_empty_scene() {
     let path = synth::temp_dir("obj_missing").join("absent.obj");
     assert!(obj::scene_from_path(&path).is_err());
 }
+
+/// With a base directory the bytes form reads the material library like the
+/// path form does; without one it decodes the geometry and reads nothing else.
+#[test]
+fn bytes_decode_with_or_without_a_base() {
+    let dir = synth::temp_dir("obj_bytes");
+    let text = synth::obj_quad(Some("quad.mtl"));
+    synth::write(&dir.join("quad.obj"), &text);
+    synth::write(&dir.join("quad.mtl"), synth::mtl_quad());
+
+    let from_path = obj::scene_from_path(&dir.join("quad.obj")).expect("path");
+    let with_base = obj::scene_from_bytes(text.as_bytes(), Some(&dir)).expect("with base");
+    assert_eq!(with_base.materials.len(), 1);
+    assert_eq!(with_base.materials[0].name, from_path.materials[0].name);
+    assert_eq!(with_base.meshes[0].mesh, from_path.meshes[0].mesh);
+    assert_eq!(with_base.meshes[0].material_index, Some(0));
+
+    let without = obj::scene_from_bytes(text.as_bytes(), None).expect("without base");
+    assert!(without.materials.is_empty());
+    assert_eq!(without.meshes[0].mesh, from_path.meshes[0].mesh);
+    assert_eq!(without.meshes[0].material_index, None);
+}

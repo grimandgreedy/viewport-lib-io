@@ -13,13 +13,29 @@ use viewport_lib_types::overlay::vector::{FillRule, PathSegment, SubPath};
 /// Rasterise an SVG file into an 8-bit RGBA texture labelled sRGB colour, at
 /// the canvas size in pixels.
 pub fn texture_from_path(path: &Path) -> Result<TextureData, IoError> {
+    let bytes = std::fs::read(path)?;
+    rasterise(&bytes, path.parent())
+}
+
+/// Rasterise an SVG into an 8-bit RGBA texture labelled sRGB colour, from bytes
+/// already read. The in-memory sibling of [`texture_from_path`].
+///
+/// With no file there is no directory to resolve external references against,
+/// so an `<image>` that points at a file beside the SVG is left out of the
+/// raster; one embedded as a data URI still draws.
+pub fn texture_from_bytes(bytes: &[u8]) -> Result<TextureData, IoError> {
+    rasterise(bytes, None)
+}
+
+/// Rasterise SVG bytes at the canvas size, resolving external references
+/// against `resources_dir` when there is one.
+fn rasterise(bytes: &[u8], resources_dir: Option<&Path>) -> Result<TextureData, IoError> {
     #[cfg(feature = "svg")]
     {
-        let bytes = std::fs::read(path)?;
         let mut options = resvg::usvg::Options::default();
-        options.resources_dir = path.parent().map(std::path::Path::to_path_buf);
+        options.resources_dir = resources_dir.map(Path::to_path_buf);
 
-        let tree = resvg::usvg::Tree::from_data(&bytes, &options)
+        let tree = resvg::usvg::Tree::from_data(bytes, &options)
             .map_err(|error| IoError::Parse(format!("failed to parse SVG: {error}")))?;
         let size = tree.size().to_int_size();
         let mut pixmap = resvg::tiny_skia::Pixmap::new(size.width(), size.height())
@@ -42,7 +58,7 @@ pub fn texture_from_path(path: &Path) -> Result<TextureData, IoError> {
 
     #[cfg(not(feature = "svg"))]
     {
-        let _ = path;
+        let _ = (bytes, resources_dir);
         Err(IoError::MissingFeature {
             feature: "svg",
             context: "SVG texture decoding",

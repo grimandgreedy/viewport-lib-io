@@ -10,8 +10,18 @@ use crate::types::IoPointCloud;
 /// `y`, and `z` become positions; remaining numeric columns become named scalar
 /// attributes.
 pub fn point_cloud_from_path(path: &Path) -> Result<IoPointCloud, IoError> {
-    let text = std::fs::read_to_string(path)?;
-    parse_csv(&text)
+    let bytes = std::fs::read(path)?;
+    point_cloud_from_bytes(&bytes)
+}
+
+/// Decode CSV-like text into a point cloud, from bytes already read.
+///
+/// The same decode as [`point_cloud_from_path`] without the filesystem. The
+/// bytes must be UTF-8.
+pub fn point_cloud_from_bytes(bytes: &[u8]) -> Result<IoPointCloud, IoError> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|error| IoError::Parse(format!("csv: not valid UTF-8: {error}")))?;
+    parse_csv(text)
 }
 
 fn parse_csv(text: &str) -> Result<IoPointCloud, IoError> {

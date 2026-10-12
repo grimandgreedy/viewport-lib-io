@@ -10,7 +10,15 @@ use crate::types::{IoMesh, IoPointCloud, IoScene, smooth_normals};
 /// Decode a PLY file into a CPU-side scene.
 pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
     let bytes = std::fs::read(path)?;
-    load_ply(&bytes)
+    scene_from_bytes(&bytes)
+}
+
+/// Decode a PLY file into a CPU-side scene, from bytes already read.
+///
+/// The same decode as [`scene_from_path`] without the filesystem. A PLY
+/// references no other files, so nothing is lost.
+pub fn scene_from_bytes(bytes: &[u8]) -> Result<IoScene, IoError> {
+    load_ply(bytes)
 }
 
 // ─── Types ───────────────────────────────────────────────────────────────────

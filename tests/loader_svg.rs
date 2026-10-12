@@ -47,3 +47,13 @@ fn the_raster_entrypoint_still_works_on_the_same_file() {
         "four channels per pixel"
     );
 }
+
+#[test]
+fn raster_bytes_decode_like_the_path() {
+    let svg = synth::svg_filled_path("M0 0 H10 V10 H0 Z", "#ff0000");
+    let path = synth::temp_path("svg_raster_bytes", "art.svg");
+    synth::write(&path, &svg);
+    let from_path = svg::texture_from_path(&path).expect("path");
+    let from_bytes = svg::texture_from_bytes(svg.as_bytes()).expect("bytes");
+    assert!(from_bytes == from_path);
+}

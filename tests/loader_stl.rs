@@ -58,3 +58,12 @@ fn zero_facet_normals_are_computed() {
         assert_eq!(*n, [0.0, 0.0, 1.0]);
     }
 }
+
+#[test]
+fn bytes_decode_like_the_path() {
+    let path = synth::temp_path("stl_bytes", "quad.stl");
+    synth::write(&path, synth::stl_binary_quad());
+    let from_path = stl::mesh_from_path(&path).expect("path");
+    let from_bytes = stl::mesh_from_bytes(&synth::stl_binary_quad()).expect("bytes");
+    assert_eq!(from_bytes, from_path);
+}

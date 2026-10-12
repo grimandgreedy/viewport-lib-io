@@ -4,12 +4,18 @@ use viewport_lib_types::data::mesh::MeshData;
 
 use crate::error::IoError;
 
-/// Decode an STL file into neutral surface mesh data.
+/// Decode an STL file, ASCII or binary, into a triangle mesh.
 pub fn mesh_from_path(path: &Path) -> Result<MeshData, IoError> {
+    let bytes = std::fs::read(path)?;
+    mesh_from_bytes(&bytes)
+}
+
+/// Decode an STL, ASCII or binary, into a triangle mesh from bytes already
+/// read. The same decode as [`mesh_from_path`] without the filesystem.
+pub fn mesh_from_bytes(bytes: &[u8]) -> Result<MeshData, IoError> {
     #[cfg(feature = "stl")]
     {
-        let file = std::fs::File::open(path)?;
-        let mut reader = std::io::BufReader::new(file);
+        let mut reader = std::io::Cursor::new(bytes);
         let indexed = stl_io::read_stl(&mut reader)
             .map_err(|error| IoError::Parse(format!("stl: {error}")))?;
 
@@ -46,7 +52,7 @@ pub fn mesh_from_path(path: &Path) -> Result<MeshData, IoError> {
 
     #[cfg(not(feature = "stl"))]
     {
-        let _ = path;
+        let _ = bytes;
         Err(IoError::MissingFeature {
             feature: "stl",
             context: "STL mesh decoding",

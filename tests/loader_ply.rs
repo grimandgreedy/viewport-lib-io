@@ -85,3 +85,13 @@ fn a_mesh_keeps_its_vertex_colours_in_linear() {
     assert!((colours[1][0] - 0.2158).abs() < 1e-3, "{:?}", colours[1]);
     assert_eq!(colours[2], [0.0, 0.0, 1.0, 1.0]);
 }
+
+#[test]
+fn scene_bytes_decode_like_the_path() {
+    let path = synth::temp_path("ply_bytes", "quad.ply");
+    synth::write(&path, synth::ply_binary_quad());
+    let from_path = ply_scene::scene_from_path(&path).expect("path");
+    let from_bytes = ply_scene::scene_from_bytes(&synth::ply_binary_quad()).expect("bytes");
+    assert_eq!(from_bytes.meshes.len(), from_path.meshes.len());
+    assert_eq!(from_bytes.meshes[0].mesh, from_path.meshes[0].mesh);
+}

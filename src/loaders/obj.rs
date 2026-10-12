@@ -6,8 +6,24 @@ use viewport_lib_types::material::AlphaMode;
 use crate::error::IoError;
 use crate::types::{IoMaterial, IoMesh, IoScene, TextureSource, smooth_normals};
 
-/// Decode an OBJ file into a CPU-side scene.
+/// Decode an OBJ file into a CPU-side scene, reading its `mtllib` from beside
+/// it and resolving texture paths against its directory.
 pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
+    let bytes = std::fs::read(path)?;
+    scene_from_bytes(
+        &bytes,
+        Some(path.parent().unwrap_or_else(|| Path::new("."))),
+    )
+}
+
+/// Decode an OBJ into a CPU-side scene from bytes already read.
+///
+/// `base` is the directory the OBJ's references are relative to. With one, the
+/// `mtllib` is read from it (a missing one is an error, as for
+/// [`scene_from_path`]) and texture paths are joined to it. Without one, no
+/// material library is read, so the scene has no materials and its meshes no
+/// material index, and nothing touches the filesystem.
+pub fn scene_from_bytes(bytes: &[u8], base: Option<&Path>) -> Result<IoScene, IoError> {
     #[cfg(feature = "obj")]
     {
         let options = tobj::LoadOptions {
@@ -16,11 +32,18 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
             ..Default::default()
         };
 
-        let (models, materials) = tobj::load_obj(path, &options)
-            .map_err(|error| IoError::Parse(format!("obj: {error}")))?;
+        let (models, materials) = tobj::load_obj_buf(
+            &mut std::io::Cursor::new(bytes),
+            &options,
+            |mtl_path| match base {
+                Some(base) => tobj::load_mtl(base.join(mtl_path)),
+                None => tobj::load_mtl_buf(&mut std::io::Cursor::new(&[][..])),
+            },
+        )
+        .map_err(|error| IoError::Parse(format!("obj: {error}")))?;
         let materials = materials.map_err(|error| IoError::Parse(format!("mtl: {error}")))?;
 
-        let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+        let base_dir = base.unwrap_or_else(|| Path::new(""));
 
         let materials = materials
             .into_iter()
@@ -112,7 +135,7 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
 
     #[cfg(not(feature = "obj"))]
     {
-        let _ = path;
+        let _ = (bytes, base);
         Err(IoError::MissingFeature {
             feature: "obj",
             context: "OBJ scene decoding",

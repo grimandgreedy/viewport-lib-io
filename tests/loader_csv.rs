@@ -37,3 +37,19 @@ fn an_empty_file_is_an_error() {
     synth::write(&path, "");
     assert!(csv::point_cloud_from_path(&path).is_err());
 }
+
+#[test]
+fn bytes_decode_like_the_path() {
+    let text = synth::csv_points(5, "temperature");
+    let path = synth::temp_path("csv_bytes", "points.csv");
+    synth::write(&path, &text);
+    let from_path = csv::point_cloud_from_path(&path).expect("path");
+    let from_bytes = csv::point_cloud_from_bytes(text.as_bytes()).expect("bytes");
+    assert_eq!(from_bytes.positions, from_path.positions);
+    assert_eq!(from_bytes.scalar_attributes, from_path.scalar_attributes);
+}
+
+#[test]
+fn bytes_that_are_not_utf8_are_an_error() {
+    assert!(csv::point_cloud_from_bytes(&[0xff, 0xfe, 0x00]).is_err());
+}
