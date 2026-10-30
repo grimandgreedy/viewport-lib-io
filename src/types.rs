@@ -10,8 +10,8 @@ use viewport_lib_types::data::volume_mesh::VolumeMeshData;
 use viewport_lib_types::encoding::ColourSource;
 use viewport_lib_types::ids::TextureId;
 use viewport_lib_types::material::{
-    AlphaMode, BackfacePolicy, MATERIAL_TEXTURE_SLOTS, Material, SamplerKey, TextureFilter,
-    TextureSlot, UvTransform, WrapMode,
+    AlphaMode, BackfacePolicy, ItemSettings, MATERIAL_TEXTURE_SLOTS, Material, SamplerKey,
+    TextureFilter, TextureSlot, UvTransform, WrapMode,
 };
 use viewport_lib_types::overlay::vector::{FillRule, SubPath};
 
@@ -216,6 +216,14 @@ pub struct MaterialData {
     /// `None` as "your default sampler". Read one with
     /// [`sampler`](Self::sampler); converts to the renderer's [`SamplerKey`].
     pub samplers: [Option<TextureSampler>; MATERIAL_TEXTURE_SLOTS],
+    /// Whether the surface skips lighting and shows its base colour as is,
+    /// matching glTF `KHR_materials_unlit`. `false` for formats without the
+    /// concept.
+    ///
+    /// The renderer carries this on the item, not the material: set
+    /// `ItemSettings::unlit` from it, or start from
+    /// [`item_settings`](Self::item_settings).
+    pub unlit: bool,
 }
 
 impl MaterialData {
@@ -288,6 +296,18 @@ impl MaterialData {
         material
     }
 
+    /// Item settings carrying what of this material the renderer keeps on the
+    /// item rather than on its `Material`: [`unlit`](Self::unlit) as
+    /// `ItemSettings::unlit`. Everything else is left at its default.
+    ///
+    /// [`opacity`](Self::opacity) is not set, since it is only meaningful under
+    /// [`AlphaMode::Blend`]; copy it to `ItemSettings::opacity` when blending.
+    pub fn item_settings(&self) -> ItemSettings {
+        let mut settings = ItemSettings::default();
+        settings.unlit = self.unlit;
+        settings
+    }
+
     /// How one slot samples its UVs, or `None` when it samples UV0
     /// untransformed.
     pub fn uv_transform(&self, slot: TextureSlot) -> Option<UvTransform> {
@@ -322,6 +342,7 @@ impl Default for MaterialData {
             emissive_texture: None,
             uv_transforms: [None; MATERIAL_TEXTURE_SLOTS],
             samplers: [None; MATERIAL_TEXTURE_SLOTS],
+            unlit: false,
         }
     }
 }

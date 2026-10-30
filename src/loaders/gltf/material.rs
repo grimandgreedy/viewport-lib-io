@@ -18,8 +18,8 @@ struct SlotState {
 
 /// Convert one glTF material into the neutral [`IoMaterial`].
 ///
-/// Covers the metallic-roughness set, emissive, alpha mode and cutoff, and the
-/// texture slots. A specular-glossiness material is converted to
+/// Covers the metallic-roughness set, emissive, alpha mode and cutoff, the
+/// `KHR_materials_unlit` flag, and the texture slots. A specular-glossiness material is converted to
 /// metallic-roughness first, since that is the only model the neutral type
 /// carries.
 pub(super) fn convert_material(
@@ -155,6 +155,7 @@ pub(super) fn convert_material(
         emissive_texture,
         uv_transforms: slots.uv_transforms,
         samplers: slots.samplers,
+        unlit: material.unlit(),
     }
 }
 
@@ -1043,5 +1044,33 @@ mod tests {
         let _ = std::fs::remove_file(gltf_path);
         let _ = std::fs::remove_file(bin_path);
         let _ = std::fs::remove_dir(dir);
+    }
+
+    #[test]
+    fn reads_unlit_extension() {
+        let json = r#"{
+  "asset": { "version": "2.0" },
+  "extensionsUsed": ["KHR_materials_unlit"],
+  "materials": [
+    {
+      "name": "flat",
+      "pbrMetallicRoughness": { "baseColorFactor": [0.2, 0.4, 0.6, 1.0] },
+      "extensions": { "KHR_materials_unlit": {} }
+    },
+    { "name": "lit" }
+  ]
+}"#;
+        let scene = scene_from_slice(json.as_bytes(), None).unwrap();
+        assert_eq!(scene.materials.len(), 2);
+
+        let flat = &scene.materials[0];
+        assert!(flat.unlit);
+        assert!(flat.item_settings().unlit);
+        // The base colour still comes through: unlit shows it as is.
+        assert_eq!(flat.base_color, [0.2, 0.4, 0.6]);
+
+        let lit = &scene.materials[1];
+        assert!(!lit.unlit);
+        assert!(!lit.item_settings().unlit);
     }
 }
