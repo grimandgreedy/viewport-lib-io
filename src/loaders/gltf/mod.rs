@@ -2,7 +2,7 @@
 //!
 //! `scene_from_path` and `scene_from_slice` are the entrypoints; both walk the
 //! document once and hand each piece to the module that owns it: `node` for the
-//! scene graph, `primitive` for geometry, `material` for materials and
+//! scene graph and its lights, `primitive` for geometry, `material` for materials and
 //! textures, `skin` for skeletons and weights, `animation` for clips, and
 //! `axis` for the Y-up to Z-up conversion every one of them feeds into.
 
@@ -18,10 +18,10 @@ mod node;
 mod primitive;
 mod skin;
 
-use animation::{convert_animations, convert_morph_animations};
+use animation::{convert_animations, convert_morph_animations, convert_node_animations};
 use axis::reorient_mesh_z_up;
 use material::convert_material;
-use node::collect_node;
+use node::{collect_node, convert_lights, convert_nodes};
 use skin::convert_skeletons;
 
 /// Decode a glTF or GLB file into a CPU-side scene.
@@ -99,6 +99,7 @@ pub fn scene_from_slice(data: &[u8], base: Option<&Path>) -> Result<IoScene, IoE
         // (glTF node index -> joint index within a skeleton) is available.
         let (skeletons, joint_lookup) = convert_skeletons(&document, &buffers);
 
+        let mut nodes = convert_nodes(&document);
         let mut meshes = Vec::new();
         for scene in document.scenes() {
             for node in scene.nodes() {
@@ -110,6 +111,7 @@ pub fn scene_from_slice(data: &[u8], base: Option<&Path>) -> Result<IoScene, IoE
                     &joint_lookup,
                     None,
                     &mut meshes,
+                    &mut nodes,
                 );
             }
         }
@@ -126,7 +128,11 @@ pub fn scene_from_slice(data: &[u8], base: Option<&Path>) -> Result<IoScene, IoE
         }
 
         let animations = convert_animations(&document, &buffers, &joint_lookup);
+        let node_animations = convert_node_animations(&document, &buffers, &joint_lookup);
         let morph_animations = convert_morph_animations(&document, &buffers);
+        // Node transforms are reoriented as they are read, so the lights'
+        // world transforms come out Z-up.
+        let lights = convert_lights(&document, &nodes);
 
         Ok(IoScene {
             meshes,
@@ -134,6 +140,9 @@ pub fn scene_from_slice(data: &[u8], base: Option<&Path>) -> Result<IoScene, IoE
             skeletons,
             animations,
             morph_animations,
+            nodes,
+            lights,
+            node_animations,
             ..IoScene::default()
         })
     }
