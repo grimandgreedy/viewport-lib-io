@@ -225,6 +225,35 @@ pub struct MaterialData {
     /// `ItemSettings::unlit` from it, or start from
     /// [`item_settings`](Self::item_settings).
     pub unlit: bool,
+    /// Index of refraction, matching glTF `KHR_materials_ior`. Default 1.5,
+    /// which gives the renderer's default dielectric reflectance.
+    pub ior: f32,
+    /// Strength of the dielectric specular, matching glTF
+    /// `KHR_materials_specular`'s `specularFactor`. Default 1.0. The
+    /// extension's textures are not read.
+    pub specular_factor: f32,
+    /// Linear tint of the dielectric specular, matching glTF
+    /// `KHR_materials_specular`'s `specularColorFactor`. Default white.
+    pub specular_colour: [f32; 3],
+    /// Clear coat strength, matching glTF `KHR_materials_clearcoat`'s
+    /// `clearcoatFactor`. Default 0 (no coat). The extension's textures are
+    /// not read.
+    pub clearcoat: f32,
+    /// Clear coat perceptual roughness (`clearcoatRoughnessFactor`). Default 0.
+    pub clearcoat_roughness: f32,
+    /// Linear sheen colour, matching glTF `KHR_materials_sheen`'s
+    /// `sheenColorFactor`. Default black (no sheen). The extension's textures
+    /// are not read.
+    pub sheen_colour: [f32; 3],
+    /// Sheen perceptual roughness (`sheenRoughnessFactor`). Default 0.
+    pub sheen_roughness: f32,
+    /// Anisotropy of the specular lobe, matching glTF
+    /// `KHR_materials_anisotropy`'s `anisotropyStrength`. Default 0
+    /// (isotropic). The extension's texture is not read.
+    pub anisotropy: f32,
+    /// Rotation of the anisotropy direction from the tangent, in radians
+    /// (`anisotropyRotation`). Default 0.
+    pub anisotropy_rotation: f32,
 }
 
 impl MaterialData {
@@ -270,7 +299,9 @@ impl MaterialData {
     /// metallic, roughness, `emissive_strength`, alpha mode, `double_sided` (as
     /// [`BackfacePolicy::Identical`]), `normal_scale` as `normal_strength`,
     /// `occlusion_strength` as `ao_range = [1 - strength, 1]`, and the per-slot
-    /// UV transforms and samplers. [`opacity`](Self::opacity) is not part of a
+    /// UV transforms and samplers; `ior` through `Material::with_ior`, so the
+    /// reflectance follows it, then the specular factor and colour, clear coat,
+    /// sheen and anisotropy. [`opacity`](Self::opacity) is not part of a
     /// renderer material: set it on the item (`ItemSettings::opacity`).
     pub fn to_material(
         &self,
@@ -294,7 +325,16 @@ impl MaterialData {
         for (slot, source) in self.textures() {
             material.set_texture(slot, texture(slot, source));
         }
+        let mut material = material.with_ior(self.ior);
+        material.specular_factor = self.specular_factor;
+        material.specular_colour = Colour::from_linear_rgb_array(self.specular_colour);
         material
+            .with_clearcoat(self.clearcoat, self.clearcoat_roughness)
+            .with_sheen(
+                Colour::from_linear_rgb_array(self.sheen_colour),
+                self.sheen_roughness,
+            )
+            .with_anisotropy(self.anisotropy, self.anisotropy_rotation)
     }
 
     /// Item settings carrying what of this material the renderer keeps on the
@@ -344,6 +384,15 @@ impl Default for MaterialData {
             uv_transforms: [None; MATERIAL_TEXTURE_SLOTS],
             samplers: [None; MATERIAL_TEXTURE_SLOTS],
             unlit: false,
+            ior: 1.5,
+            specular_factor: 1.0,
+            specular_colour: [1.0, 1.0, 1.0],
+            clearcoat: 0.0,
+            clearcoat_roughness: 0.0,
+            sheen_colour: [0.0, 0.0, 0.0],
+            sheen_roughness: 0.0,
+            anisotropy: 0.0,
+            anisotropy_rotation: 0.0,
         }
     }
 }

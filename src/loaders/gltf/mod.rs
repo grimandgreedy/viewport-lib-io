@@ -3,7 +3,8 @@
 //! `scene_from_path` and `scene_from_slice` are the entrypoints; both walk the
 //! document once and hand each piece to the module that owns it: `node` for the
 //! scene graph and its lights, `primitive` for geometry, `material` for materials and
-//! textures, `skin` for skeletons and weights, `animation` for clips, and
+//! textures (with `material_extensions` for the IOR, specular and layer
+//! extensions), `skin` for skeletons and weights, `animation` for clips, and
 //! `axis` for the Y-up to Z-up conversion every one of them feeds into.
 
 use std::path::Path;
@@ -14,6 +15,7 @@ use crate::types::{IoScene, MAX_JOINTS};
 mod animation;
 mod axis;
 mod material;
+mod material_extensions;
 mod node;
 mod primitive;
 mod skin;

@@ -7,6 +7,7 @@ use viewport_lib_types::material::{
     AlphaMode, MATERIAL_TEXTURE_SLOTS, TextureFilter, TextureSlot, UvTransform, WrapMode,
 };
 
+use super::material_extensions::read_material_extensions;
 use crate::types::{IoMaterial, TextureSampler, TextureSource, uv_transform_from_origin_rotation};
 
 /// The per-slot sampling state a material is built up with: how each slot
@@ -19,9 +20,10 @@ struct SlotState {
 /// Convert one glTF material into the neutral [`IoMaterial`].
 ///
 /// Covers the metallic-roughness set, emissive, alpha mode and cutoff, the
-/// `KHR_materials_unlit` flag, and the texture slots. A specular-glossiness material is converted to
-/// metallic-roughness first, since that is the only model the neutral type
-/// carries.
+/// `KHR_materials_unlit` flag, the texture slots, and the factors of the IOR,
+/// specular, clear coat, sheen and anisotropy extensions. A specular-glossiness
+/// material is converted to metallic-roughness first, since that is the only
+/// model the neutral type carries.
 pub(super) fn convert_material(
     material: &gltf::Material,
     images: &[gltf::image::Data],
@@ -133,7 +135,7 @@ pub(super) fn convert_material(
         image_to_texture_source(&info.texture(), TextureSlot::Ao, images, parent_dir)
     });
 
-    IoMaterial {
+    let mut converted = IoMaterial {
         name: material
             .name()
             .map(std::borrow::ToOwned::to_owned)
@@ -156,7 +158,10 @@ pub(super) fn convert_material(
         uv_transforms: slots.uv_transforms,
         samplers: slots.samplers,
         unlit: material.unlit(),
-    }
+        ..IoMaterial::default()
+    };
+    read_material_extensions(material, &mut converted);
+    converted
 }
 
 /// The extension a `textureInfo` carries its UV transform in.
