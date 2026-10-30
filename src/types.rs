@@ -7,6 +7,7 @@ use viewport_lib_types::colour::Colour;
 use viewport_lib_types::data::mesh::MeshData;
 use viewport_lib_types::data::texture::TextureData;
 use viewport_lib_types::data::volume_mesh::VolumeMeshData;
+use viewport_lib_types::effects::lighting::{Candela, LightSource, Lux};
 use viewport_lib_types::encoding::ColourSource;
 use viewport_lib_types::ids::TextureId;
 use viewport_lib_types::material::{
@@ -525,6 +526,181 @@ impl MorphWeightClip {
     }
 }
 
+/// One node animation track: a sampler bound to one channel of a scene node's
+/// local transform.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct NodeAnimationTrack {
+    /// Index into [`SceneData::nodes`].
+    pub node: usize,
+    /// Which component of the node's local transform this track drives.
+    pub channel: AnimationChannel,
+    /// Keyframe sampler producing values for this channel, Z-up like
+    /// [`SceneNode::transform`].
+    pub sampler: AnimationSampler,
+}
+
+/// Tracks that animate scene nodes which are not skeleton joints: a door
+/// swinging, a turntable, a light on a rail.
+///
+/// Kept apart from [`AnimationClip`], which targets one skeleton's joints. A
+/// sample replaces the matching component of the node's local
+/// [`SceneNode::transform`]; the node's world transform is then its parent
+/// chain composed with it, which moves the node's meshes and lights.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct NodeAnimationClip {
+    /// Clip name, from the source animation. Anonymous clips are named by the
+    /// loader.
+    pub name: String,
+    /// Length of the clip in seconds, derived from the maximum sampler time.
+    pub duration: f32,
+    /// Per-channel tracks.
+    pub tracks: Vec<NodeAnimationTrack>,
+}
+
+/// One node of the source scene graph, kept so node animation and lights have
+/// something to refer to.
+///
+/// [`SceneMesh::transform`] already holds each mesh's composed world transform,
+/// so a static scene needs nothing from here.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct SceneNode {
+    /// Node name, when the source provides one.
+    pub name: Option<String>,
+    /// Index of the parent node in [`SceneData::nodes`], or `None` for a root.
+    pub parent: Option<usize>,
+    /// Local transform relative to the parent, reoriented to Z-up like every
+    /// other transform in the scene. Composing a node's chain of local
+    /// transforms gives the world transform its meshes carry.
+    pub transform: glam::Mat4,
+    /// Indices into [`SceneData::meshes`] decoded from this node, one per
+    /// primitive. A mesh rigidly attached to a joint has its transform baked
+    /// and follows the skeleton instead of this node.
+    pub meshes: Vec<usize>,
+}
+
+/// Which kind of punctual light a [`SceneLight`] is, with its kind-specific
+/// parameters.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum SceneLightKind {
+    /// Parallel rays along the light's direction; intensity in lux.
+    Directional,
+    /// Light in every direction from the light's position; intensity in
+    /// candela.
+    Point {
+        /// Distance at which the light may be treated as reaching zero, in
+        /// world units. `None` when the source leaves it unset, which glTF
+        /// reads as "infinite" in principle.
+        range: Option<f32>,
+    },
+    /// A cone along the light's direction; intensity in candela.
+    Spot {
+        /// As [`SceneLightKind::Point::range`].
+        range: Option<f32>,
+        /// Half-angle in radians inside which the light is at full intensity.
+        /// glTF's default is 0.
+        inner_angle: f32,
+        /// Half-angle in radians at which the light falls to zero. glTF's
+        /// default is pi / 4.
+        outer_angle: f32,
+    },
+}
+
+/// A punctual light placed in a decoded scene (glTF `KHR_lights_punctual`).
+///
+/// Units pass straight through from the source: lux for directional lights,
+/// candela for point and spot lights, which are the units `LightSource` takes.
+/// [`to_light_source`](Self::to_light_source) builds one.
+///
+/// A source may leave a point or spot light's range unset, meaning unbounded.
+/// The renderer culls a light at its range and has no unbounded value, so the
+/// consumer picks one. A common heuristic is the distance at which the light
+/// has faded below a small threshold; Filament's gltfio, for example, guesses
+/// `(intensity / 0.05).powf(0.25)`.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct SceneLight {
+    /// Light name, when the source provides one.
+    pub name: Option<String>,
+    /// Kind and kind-specific parameters.
+    pub kind: SceneLightKind,
+    /// Linear RGB colour, white by default.
+    pub colour: [f32; 3],
+    /// Photometric intensity: lux for [`SceneLightKind::Directional`], candela
+    /// for the others.
+    pub intensity: f32,
+    /// World transform of the light's node, reoriented to Z-up. In this frame
+    /// the light shines along its local +Y, which is where glTF's local -Z
+    /// lands; read the direction with [`direction`](Self::direction).
+    /// Scale does not affect the light.
+    pub world_transform: glam::Mat4,
+    /// Index into [`SceneData::nodes`] of the node carrying the light.
+    pub node: Option<usize>,
+}
+
+impl SceneLight {
+    /// World-space position of the light. Meaningless for a directional
+    /// light, which has none.
+    pub fn position(&self) -> [f32; 3] {
+        self.world_transform
+            .transform_point3(glam::Vec3::ZERO)
+            .to_array()
+    }
+
+    /// Unit world-space direction the light shines along (light to surface).
+    /// Meaningless for a point light.
+    pub fn direction(&self) -> [f32; 3] {
+        self.world_transform
+            .transform_vector3(glam::Vec3::Y)
+            .try_normalize()
+            .unwrap_or(glam::Vec3::NEG_Z)
+            .to_array()
+    }
+
+    /// The renderer's light for this one, with position, direction, colour,
+    /// intensity, range and cone angles carried across and the source radius
+    /// left at 0.
+    ///
+    /// `range_when_unset` is the range given to a point or spot light whose
+    /// source left it unset (see the type's docs). The renderer culls a light
+    /// beyond its range, so pass a finite distance that covers the scene.
+    pub fn to_light_source(&self, range_when_unset: f32) -> LightSource {
+        let position = self.position();
+        let direction = self.direction();
+        let mut light = match self.kind {
+            SceneLightKind::Directional => {
+                // LightKind::Directional takes the surface-to-light direction.
+                let towards = direction.map(|c| -c);
+                LightSource::directional_lux(towards, Lux(self.intensity))
+            }
+            SceneLightKind::Point { range } => LightSource::point_candela(
+                position,
+                Candela(self.intensity),
+                range.unwrap_or(range_when_unset),
+                0.0,
+            ),
+            SceneLightKind::Spot {
+                range,
+                inner_angle,
+                outer_angle,
+            } => LightSource::spot_candela(
+                position,
+                direction,
+                Candela(self.intensity),
+                range.unwrap_or(range_when_unset),
+                inner_angle,
+                outer_angle,
+                0.0,
+            ),
+        };
+        light.colour = Colour::from_linear_rgb_array(self.colour);
+        light
+    }
+}
+
 /// A mesh entry inside a loaded scene: the geometry, plus the skinning and
 /// blend-shape data the renderer's mesh payload does not carry.
 #[derive(Clone, Debug)]
@@ -828,6 +1004,15 @@ pub struct SceneData {
     pub animations: Vec<AnimationClip>,
     /// Blend-shape weight animations targeting the scene's morphable meshes.
     pub morph_animations: Vec<MorphWeightClip>,
+    /// The source scene graph, for formats that keep one. Empty otherwise.
+    /// glTF fills it in document node order, so a glTF node index is an index
+    /// here.
+    pub nodes: Vec<SceneNode>,
+    /// Punctual lights placed in the scene.
+    pub lights: Vec<SceneLight>,
+    /// Animation clips targeting nodes in [`nodes`](Self::nodes) that are not
+    /// skeleton joints.
+    pub node_animations: Vec<NodeAnimationClip>,
 }
 
 /// An outline stroke on a [`VectorShape`]: the contours drawn at `width` in the
@@ -935,6 +1120,8 @@ pub(crate) type IoVolumeMesh = VolumeMeshData;
 pub(crate) type IoDataSet = DecodedDataSet;
 #[allow(dead_code)]
 pub(crate) type IoScene = SceneData;
+#[allow(dead_code)]
+pub(crate) type IoNode = SceneNode;
 
 #[cfg(test)]
 mod tests {

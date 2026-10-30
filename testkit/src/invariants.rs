@@ -430,6 +430,61 @@ pub fn check_scene(subject: &str, scene: &SceneData) -> Report {
         }
     }
 
+    // Nodes, lights and node clips cross-reference by index like the rest.
+    let nodes = scene.nodes.len();
+    for (i, node) in scene.nodes.iter().enumerate() {
+        let node_subject = format!("{subject} / node[{i}]");
+        if let Some(parent) = node.parent {
+            report.check(
+                parent < nodes && parent != i,
+                &node_subject,
+                "node_parent_resolves",
+                format!("parent {parent} of {nodes}"),
+            );
+        }
+        for &mesh in &node.meshes {
+            report.check(
+                mesh < scene.meshes.len(),
+                &node_subject,
+                "node_mesh_resolves",
+                format!("mesh {mesh} of {}", scene.meshes.len()),
+            );
+        }
+    }
+    for (i, light) in scene.lights.iter().enumerate() {
+        if let Some(node) = light.node {
+            report.check(
+                node < nodes,
+                &format!("{subject} / light[{i}]"),
+                "light_node_resolves",
+                format!("node {node} of {nodes}"),
+            );
+        }
+    }
+    for (i, clip) in scene.node_animations.iter().enumerate() {
+        let clip_subject = format!("{subject} / node_animation[{i}] '{}'", clip.name);
+        for (t, track) in clip.tracks.iter().enumerate() {
+            let track_subject = format!("{clip_subject} / track[{t}]");
+            report.check(
+                track.node < nodes,
+                &track_subject,
+                "track_node_resolves",
+                format!("node {} of {nodes}", track.node),
+            );
+            let times = track.sampler.times.len();
+            let values = match &track.sampler.values {
+                AnimationTrackValues::Vec3(v) => v.len(),
+                AnimationTrackValues::Quat(v) => v.len(),
+            };
+            report.check(
+                values == times * track.sampler.interpolation.values_per_key(),
+                &track_subject,
+                "sampler_values_match_times",
+                format!("{values} values for {times} times"),
+            );
+        }
+    }
+
     report
 }
 

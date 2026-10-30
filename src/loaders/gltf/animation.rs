@@ -1,15 +1,16 @@
-//! Animation clips and morph-weight clips.
+//! Animation clips: skeletal, node and morph-weight.
 
 use crate::types::{
     AnimationChannel, AnimationClip, AnimationInterpolation, AnimationSampler, AnimationTrack,
-    AnimationTrackValues, MorphWeightClip,
+    AnimationTrackValues, MorphWeightClip, NodeAnimationClip, NodeAnimationTrack,
 };
 
 use super::axis::{reorient_quat, reorient_scale, reorient_vec3};
 use super::skin::JointLookup;
 
 /// Convert glTF animations into [`AnimationClip`]s. Each animation is split
-/// per target skeleton (channels naming nodes not in any skin are skipped).
+/// per target skeleton; channels naming nodes not in any skin are read by
+/// [`convert_node_animations`] instead.
 pub(super) fn convert_animations(
     document: &gltf::Document,
     buffers: &[gltf::buffer::Data],
@@ -72,6 +73,49 @@ pub(super) fn convert_animations(
         }
     }
 
+    out
+}
+
+/// Convert the translation, rotation and scale channels of glTF animations
+/// that target nodes outside every skin into [`NodeAnimationClip`]s, one per
+/// animation that has any. The node index is the glTF node index, which is
+/// the index into `SceneData::nodes`.
+pub(super) fn convert_node_animations(
+    document: &gltf::Document,
+    buffers: &[gltf::buffer::Data],
+    joint_lookup: &JointLookup,
+) -> Vec<NodeAnimationClip> {
+    let mut out = Vec::new();
+    for animation in document.animations() {
+        let mut tracks = Vec::new();
+        let mut duration = 0.0f32;
+        for channel in animation.channels() {
+            let node = channel.target().node().index();
+            if joint_lookup.contains_key(&node) {
+                continue; // driven through the skeleton's clip
+            }
+            let Some((track_channel, sampler)) = read_transform_channel(&channel, buffers) else {
+                continue;
+            };
+            duration = duration.max(sampler.times.last().copied().unwrap_or(0.0));
+            tracks.push(NodeAnimationTrack {
+                node,
+                channel: track_channel,
+                sampler,
+            });
+        }
+        if tracks.is_empty() {
+            continue;
+        }
+        out.push(NodeAnimationClip {
+            name: animation
+                .name()
+                .map(std::borrow::ToOwned::to_owned)
+                .unwrap_or_else(|| format!("animation_{}", animation.index())),
+            duration,
+            tracks,
+        });
+    }
     out
 }
 
@@ -216,7 +260,7 @@ pub(super) fn convert_morph_animations(
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use crate::types::AnimationInterpolation;
+    use crate::types::{AnimationChannel, AnimationInterpolation, AnimationTrackValues};
     use viewport_lib_io_testkit::synth::temp_dir;
 
     #[test]
@@ -397,6 +441,97 @@ mod tests {
         assert_eq!(clip.key_weights(0), Some(&[0.0, 0.25][..]));
         assert_eq!(clip.key_weights(1), Some(&[1.0, 0.5][..]));
         assert_eq!(clip.key_weights(2), None);
+
+        let _ = std::fs::remove_file(gltf_path);
+        let _ = std::fs::remove_file(bin_path);
+        let _ = std::fs::remove_dir(dir);
+    }
+
+    #[test]
+    fn reads_node_translation_channel_with_node_target() {
+        // A triangle on node 1, a child of node 0, with a translation channel on
+        // node 1. Neither node is a joint.
+        //   positions:  3 vec3 (36) @0
+        //   indices:    3 u32  (12) @36
+        //   anim times: 2 f32  (8)  @48
+        //   anim xyz:   2 vec3 (24) @56
+        // Total: 80 bytes.
+        let dir = temp_dir("gltf_node_anim");
+        let gltf_path = dir.join("tri.gltf");
+        let bin_path = dir.join("tri.bin");
+
+        let mut bin = Vec::new();
+        for v in [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in [0u32, 1, 2] {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in [0.0f32, 2.0] {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in [0.0f32, 0.0, 0.0, 0.0, 1.0, 0.0] {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        assert_eq!(bin.len(), 80);
+        std::fs::write(&bin_path, &bin).unwrap();
+
+        let json = r#"{
+  "asset": { "version": "2.0" },
+  "scene": 0,
+  "scenes": [{ "nodes": [0] }],
+  "nodes": [
+    { "name": "rig", "children": [1] },
+    { "name": "lift", "mesh": 0 }
+  ],
+  "meshes": [{
+    "primitives": [{ "attributes": { "POSITION": 0 }, "indices": 1 }]
+  }],
+  "animations": [{
+    "name": "Rise",
+    "channels": [{ "sampler": 0, "target": { "node": 1, "path": "translation" } }],
+    "samplers": [{ "input": 2, "output": 3, "interpolation": "LINEAR" }]
+  }],
+  "buffers": [{ "uri": "tri.bin", "byteLength": 80 }],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0,  "byteLength": 36 },
+    { "buffer": 0, "byteOffset": 36, "byteLength": 12, "target": 34963 },
+    { "buffer": 0, "byteOffset": 48, "byteLength": 8 },
+    { "buffer": 0, "byteOffset": 56, "byteLength": 24 }
+  ],
+  "accessors": [
+    { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0,0,0], "max": [1,1,0] },
+    { "bufferView": 1, "componentType": 5125, "count": 3, "type": "SCALAR" },
+    { "bufferView": 2, "componentType": 5126, "count": 2, "type": "SCALAR", "min": [0.0], "max": [2.0] },
+    { "bufferView": 3, "componentType": 5126, "count": 2, "type": "VEC3" }
+  ]
+}"#;
+        std::fs::write(&gltf_path, json).unwrap();
+
+        let scene = scene_from_path(&gltf_path).unwrap();
+        assert!(scene.animations.is_empty(), "no skeleton, no skeletal clip");
+        assert_eq!(scene.node_animations.len(), 1);
+        let clip = &scene.node_animations[0];
+        assert_eq!(clip.name, "Rise");
+        assert!((clip.duration - 2.0).abs() < 1e-6);
+        assert_eq!(clip.tracks.len(), 1);
+
+        let track = &clip.tracks[0];
+        assert_eq!(track.node, 1);
+        assert_eq!(scene.nodes[track.node].name.as_deref(), Some("lift"));
+        assert_eq!(scene.nodes[track.node].parent, Some(0));
+        assert_eq!(scene.nodes[track.node].meshes, vec![0]);
+        assert_eq!(track.channel, AnimationChannel::Translation);
+        assert_eq!(track.sampler.interpolation, AnimationInterpolation::Linear);
+        assert_eq!(track.sampler.times, vec![0.0, 2.0]);
+        // glTF +Y (up) becomes Z-up +Z.
+        match &track.sampler.values {
+            AnimationTrackValues::Vec3(values) => {
+                assert_eq!(values.len(), 2);
+                assert!(values[1].abs_diff_eq(glam::Vec3::Z, 1e-6));
+            }
+            other => panic!("expected Vec3 values, got {other:?}"),
+        }
 
         let _ = std::fs::remove_file(gltf_path);
         let _ = std::fs::remove_file(bin_path);
