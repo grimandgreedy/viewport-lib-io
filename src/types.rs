@@ -414,9 +414,20 @@ pub enum AnimationInterpolation {
     Step,
     /// Vec3 channels lerp; Quat channels slerp.
     Linear,
-    /// Cubic-spline interpolation as defined by glTF. Not yet consumed by
-    /// downstream players; preserved on import for round-trip fidelity.
+    /// Cubic-spline interpolation as defined by glTF. Each keyframe stores an
+    /// in-tangent, a value and an out-tangent, in that order.
     CubicSpline,
+}
+
+impl AnimationInterpolation {
+    /// How many stored values one keyframe takes: 3 under `CubicSpline`
+    /// (in-tangent, value, out-tangent), 1 otherwise.
+    pub fn values_per_key(self) -> usize {
+        match self {
+            Self::CubicSpline => 3,
+            Self::Step | Self::Linear => 1,
+        }
+    }
 }
 
 /// Per-keyframe values for an animation sampler. The variant must match the
@@ -487,14 +498,31 @@ pub struct MorphWeightClip {
     /// Number of morph targets, so [`weights`](Self::weights) can be
     /// de-interleaved per keyframe.
     pub target_count: usize,
-    /// Interpolation between keyframes. `CubicSpline` is collapsed to its value
-    /// component on read, so this is `Step` or `Linear` in practice.
+    /// Interpolation between keyframes.
     pub interpolation: AnimationInterpolation,
     /// Keyframe times in seconds, strictly increasing.
     pub times: Vec<f32>,
     /// Weights, row-major `[keyframe][target]`: length is
     /// `times.len() * target_count`.
+    ///
+    /// Under `CubicSpline` each keyframe holds three rows, in-tangents, values
+    /// and out-tangents, so the layout is `[keyframe][in | value | out][target]`
+    /// and the length is `3 * times.len() * target_count`, as glTF stores it.
+    /// [`key_weights`](Self::key_weights) reads the values alone.
     pub weights: Vec<f32>,
+}
+
+impl MorphWeightClip {
+    /// The weights at keyframe `key`, one per target, without the cubic-spline
+    /// tangents. `None` past the last keyframe.
+    pub fn key_weights(&self, key: usize) -> Option<&[f32]> {
+        if key >= self.times.len() {
+            return None;
+        }
+        let per_key = self.interpolation.values_per_key();
+        let start = (key * per_key + per_key / 2) * self.target_count;
+        self.weights.get(start..start + self.target_count)
+    }
 }
 
 /// A mesh entry inside a loaded scene: the geometry, plus the skinning and

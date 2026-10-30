@@ -374,10 +374,7 @@ pub fn check_scene(subject: &str, scene: &SceneData) -> Report {
 
             // One value per keyframe, or three under cubic-spline (in-tangent,
             // value, out-tangent).
-            let per_key = match track.sampler.interpolation {
-                viewport_lib_io::types::AnimationInterpolation::CubicSpline => 3,
-                _ => 1,
-            };
+            let per_key = track.sampler.interpolation.values_per_key();
             let values = match &track.sampler.values {
                 AnimationTrackValues::Vec3(v) => v.len(),
                 AnimationTrackValues::Quat(v) => v.len(),
@@ -402,8 +399,11 @@ pub fn check_scene(subject: &str, scene: &SceneData) -> Report {
             "morph_clip_has_targets",
             "target_count is zero",
         );
+        // Three rows per keyframe under cubic-spline (in-tangents, values,
+        // out-tangents).
+        let per_key = clip.interpolation.values_per_key();
         report.check(
-            clip.weights.len() == clip.times.len() * clip.target_count,
+            clip.weights.len() == clip.times.len() * clip.target_count * per_key,
             &clip_subject,
             "weights_match_times_by_targets",
             format!(
