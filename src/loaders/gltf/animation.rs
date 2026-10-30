@@ -30,74 +30,18 @@ pub(super) fn convert_animations(
                 None => continue, // channel targets a non-joint; skip
             };
 
-            let gltf_channel = match target.property() {
-                gltf::animation::Property::Translation => AnimationChannel::Translation,
-                gltf::animation::Property::Rotation => AnimationChannel::Rotation,
-                gltf::animation::Property::Scale => AnimationChannel::Scale,
-                // Morph-weight channels drive a mesh, not a joint: handled
-                // separately by `convert_morph_animations`.
-                gltf::animation::Property::MorphTargetWeights => continue,
-            };
-
-            let sampler = channel.sampler();
-            let interp = match sampler.interpolation() {
-                gltf::animation::Interpolation::Step => AnimationInterpolation::Step,
-                gltf::animation::Interpolation::Linear => AnimationInterpolation::Linear,
-                gltf::animation::Interpolation::CubicSpline => AnimationInterpolation::CubicSpline,
-            };
-
-            let reader = channel.reader(|buffer| Some(&buffers[buffer.index()]));
-            let times: Vec<f32> = match reader.read_inputs() {
-                Some(iter) => iter.collect(),
-                None => continue,
-            };
-            if times.is_empty() {
+            let Some((track_channel, sampler)) = read_transform_channel(&channel, buffers) else {
                 continue;
-            }
-            let clip_end = times.last().copied().unwrap_or(0.0);
-
-            // Animation samples describe a joint's local transform; they
-            // are reoriented into Z-up here so the player can consume them
-            // without any per-frame conversion. Translations rotate,
-            // rotations conjugate, scales permute their Y and Z components
-            // (axis-aligned permutation under the X-axis 90 rotation).
-            let values = match reader.read_outputs() {
-                Some(gltf::animation::util::ReadOutputs::Translations(iter)) => {
-                    AnimationTrackValues::Vec3(
-                        iter.map(|v| {
-                            let r = reorient_vec3(v);
-                            glam::Vec3::from_array(r)
-                        })
-                        .collect(),
-                    )
-                }
-                Some(gltf::animation::util::ReadOutputs::Scales(iter)) => {
-                    AnimationTrackValues::Vec3(
-                        iter.map(|v| reorient_scale(glam::Vec3::from_array(v)))
-                            .collect(),
-                    )
-                }
-                Some(gltf::animation::util::ReadOutputs::Rotations(iter)) => {
-                    AnimationTrackValues::Quat(
-                        iter.into_f32()
-                            .map(|q| reorient_quat(glam::Quat::from_array(q)))
-                            .collect(),
-                    )
-                }
-                _ => continue,
             };
+            let clip_end = sampler.times.last().copied().unwrap_or(0.0);
 
             let entry = per_skeleton
                 .entry(skeleton_idx)
                 .or_insert_with(|| (Vec::new(), 0.0));
             entry.0.push(AnimationTrack {
                 joint: joint_idx,
-                channel: gltf_channel,
-                sampler: AnimationSampler {
-                    interpolation: interp,
-                    times,
-                    values,
-                },
+                channel: track_channel,
+                sampler,
             });
             entry.1 = entry.1.max(clip_end);
         }
@@ -129,6 +73,65 @@ pub(super) fn convert_animations(
     }
 
     out
+}
+
+/// Read one translation, rotation or scale channel into a sampler, reoriented
+/// into Z-up. `None` for a morph-weight channel or one without readable
+/// keyframes.
+///
+/// Samples describe a node's local transform; they are reoriented here so a
+/// player consumes them without any per-frame conversion. Translations rotate,
+/// rotations conjugate, scales permute their Y and Z components (axis-aligned
+/// permutation under the X-axis 90 rotation). Each conversion is linear, so
+/// cubic-spline in- and out-tangents convert exactly like the values.
+fn read_transform_channel(
+    channel: &gltf::animation::Channel,
+    buffers: &[gltf::buffer::Data],
+) -> Option<(AnimationChannel, AnimationSampler)> {
+    let track_channel = match channel.target().property() {
+        gltf::animation::Property::Translation => AnimationChannel::Translation,
+        gltf::animation::Property::Rotation => AnimationChannel::Rotation,
+        gltf::animation::Property::Scale => AnimationChannel::Scale,
+        gltf::animation::Property::MorphTargetWeights => return None,
+    };
+
+    let interpolation = match channel.sampler().interpolation() {
+        gltf::animation::Interpolation::Step => AnimationInterpolation::Step,
+        gltf::animation::Interpolation::Linear => AnimationInterpolation::Linear,
+        gltf::animation::Interpolation::CubicSpline => AnimationInterpolation::CubicSpline,
+    };
+
+    let reader = channel.reader(|buffer| Some(&buffers[buffer.index()]));
+    let times: Vec<f32> = reader.read_inputs()?.collect();
+    if times.is_empty() {
+        return None;
+    }
+
+    let values = match reader.read_outputs()? {
+        gltf::animation::util::ReadOutputs::Translations(iter) => AnimationTrackValues::Vec3(
+            iter.map(|v| glam::Vec3::from_array(reorient_vec3(v)))
+                .collect(),
+        ),
+        gltf::animation::util::ReadOutputs::Scales(iter) => AnimationTrackValues::Vec3(
+            iter.map(|v| reorient_scale(glam::Vec3::from_array(v)))
+                .collect(),
+        ),
+        gltf::animation::util::ReadOutputs::Rotations(iter) => AnimationTrackValues::Quat(
+            iter.into_f32()
+                .map(|q| reorient_quat(glam::Quat::from_array(q)))
+                .collect(),
+        ),
+        gltf::animation::util::ReadOutputs::MorphTargetWeights(_) => return None,
+    };
+
+    Some((
+        track_channel,
+        AnimationSampler {
+            interpolation,
+            times,
+            values,
+        },
+    ))
 }
 
 /// Convert glTF morph-target-weight channels into [`MorphWeightClip`]s: one clip
