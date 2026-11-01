@@ -32,7 +32,14 @@ exr = ["dep:image"]
 stl = ["dep:stl_io"]
 obj = ["dep:tobj"]
 msh = []
-gltf = ["dep:gltf", "gltf/KHR_texture_transform", "gltf/KHR_materials_unlit", "gltf/KHR_materials_ior", "gltf/KHR_materials_specular", "gltf/KHR_lights_punctual", "gltf/extensions", "dep:serde_json"]
+gltf = ["dep:gltf", "gltf/KHR_texture_transform", "gltf/KHR_materials_unlit", "gltf/KHR_materials_ior", "gltf/KHR_materials_specular", "gltf/KHR_lights_punctual", "gltf/extensions", "gltf/allow_empty_texture", "dep:serde_json"]
+# KHR_draco_mesh_compression primitives in glTF, decoded at load. Needs Rust 1.88.
+gltf-draco = ["gltf", "dep:draco-core"]
+# EXT_meshopt_compression buffer views in glTF, decoded at load. Needs Rust 1.88.
+gltf-meshopt = ["gltf", "dep:meshopt-pure"]
+# KTX2 images (KHR_texture_basisu) in glTF, transcoded at load to the
+# `GltfTextureTarget` the caller picks.
+gltf-ktx2 = ["gltf", "dep:basisu"]
 fbx = ["dep:fbxcel-dom", "dep:anyhow", "png"]
 bvh = []
 ply = []
@@ -51,21 +58,27 @@ netcdf = ["dep:netcdf-reader", "_scientific-common"]
 # format, so it is not in all-formats and is not meant to be enabled directly:
 # the format features above pull it in.
 _scientific-common = ["dep:quick-xml"]
-all-formats = ["png", "jpeg", "tga", "bmp", "svg", "hdr", "exr", "stl", "obj", "msh", "gltf", "fbx", "bvh", "ply", "csv", "numpy", "raw", "vtk", "xdmf", "exodus", "ensight", "tecplot", "cgns", "netcdf"]
+all-formats = ["png", "jpeg", "tga", "bmp", "svg", "hdr", "exr", "stl", "obj", "msh", "gltf", "gltf-draco", "gltf-meshopt", "gltf-ktx2", "fbx", "bvh", "ply", "csv", "numpy", "raw", "vtk", "xdmf", "exodus", "ensight", "tecplot", "cgns", "netcdf"]
 
 [dev-dependencies]
 # The shared checks and fixture builders, as a crate rather than a feature so a
 # release build never compiles them. It depends back on this crate; cargo allows
 # that cycle for a dev-dependency between packages.
 viewport-lib-io-testkit = { path = "testkit" }
+# The Draco and meshopt encoders build the compressed glTF fixtures.
+draco-core = { version = "2.3", default-features = false, features = ["encoder", "decoder"] }
+meshopt-pure = "1.3"
 
 [dependencies]
 anyhow = { version = "1", optional = true }
+basisu = { version = "0.1", optional = true }
+draco-core = { version = "2.3", optional = true, default-features = false, features = ["decoder", "edgebreaker_valence_decode", "legacy_bitstream_decode"] }
 fbxcel-dom = { version = "0.0.10", optional = true }
 glam = { version = "=0.30.10", features = ["bytemuck"] }
 gltf = { version = "1", features = ["import", "KHR_materials_emissive_strength", "KHR_materials_pbrSpecularGlossiness"], optional = true }
 hdf5 = { version = "0.8", optional = true }
 hdf5-sys = { version = "0.8", features = ["static", "zlib"], optional = true }
+meshopt-pure = { version = "1.3", optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "hdr", "exr", "tga", "bmp"], optional = true }
 flate2 = { version = "1", optional = true }
 netcdf-reader = { version = "0.4", default-features = false, features = ["netcdf4"], optional = true }

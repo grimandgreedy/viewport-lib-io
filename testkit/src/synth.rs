@@ -329,6 +329,130 @@ pub fn glb(json: &[u8], bin: &[u8]) -> Vec<u8> {
     out
 }
 
+/// A Basis Universal UASTC texture in a KTX2 container, with a full mip chain
+/// down to 1x1 when `mips` is set and only the base level otherwise.
+///
+/// Every 4x4 block is a UASTC solid-colour block, coloured by `colour(level, bx,
+/// by)` with the block's level and block coordinates, so a test can tell
+/// levels and blocks apart after a transcode. `alpha` marks the data
+/// descriptor's channel as RGBA rather than RGB, which is how the transcoder
+/// decides the image carries alpha; `srgb` sets the transfer function. No
+/// supercompression.
+pub fn ktx2_uastc(
+    width: u32,
+    height: u32,
+    mips: bool,
+    alpha: bool,
+    srgb: bool,
+    colour: impl Fn(u32, u32, u32) -> [u8; 4],
+) -> Vec<u8> {
+    let levels = if mips {
+        32 - width.max(height).leading_zeros()
+    } else {
+        1
+    };
+
+    let mut level_data = Vec::new();
+    for level in 0..levels {
+        let w = (width >> level).max(1);
+        let h = (height >> level).max(1);
+        let mut data = Vec::new();
+        for by in 0..h.div_ceil(4) {
+            for bx in 0..w.div_ceil(4) {
+                data.extend_from_slice(&uastc_solid_block(colour(level, bx, by)));
+            }
+        }
+        level_data.push(data);
+    }
+
+    // Header (80 bytes), level index (24 per level), then the data format
+    // descriptor: a total size word plus one basic block with one sample.
+    let index_end = 80 + 24 * levels as usize;
+    let dfd_offset = index_end;
+    let dfd_len = 44usize;
+    let mut data_offset = (dfd_offset + dfd_len).next_multiple_of(16);
+
+    let mut out = Vec::new();
+    out.extend_from_slice(&[
+        0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A,
+    ]);
+    for word in [0u32, 1, width, height, 0, 0, 1, levels, 0] {
+        out.extend_from_slice(&word.to_le_bytes());
+    }
+    for word in [dfd_offset as u32, dfd_len as u32, 0, 0] {
+        out.extend_from_slice(&word.to_le_bytes());
+    }
+    out.extend_from_slice(&0u64.to_le_bytes());
+    out.extend_from_slice(&0u64.to_le_bytes());
+
+    let mut offsets = Vec::new();
+    for data in &level_data {
+        offsets.push(data_offset);
+        data_offset = (data_offset + data.len()).next_multiple_of(16);
+    }
+    for (data, offset) in level_data.iter().zip(&offsets) {
+        out.extend_from_slice(&(*offset as u64).to_le_bytes());
+        out.extend_from_slice(&(data.len() as u64).to_le_bytes());
+        out.extend_from_slice(&(data.len() as u64).to_le_bytes());
+    }
+
+    // Colour model 166 (UASTC), primaries BT.709, transfer 2 (sRGB) or 1
+    // (linear); 4x4 texel blocks of 16 bytes; one 128-bit sample whose channel
+    // id is 3 (RGBA) or 0 (RGB).
+    let transfer: u32 = if srgb { 2 } else { 1 };
+    let channel: u32 = if alpha { 3 } else { 0 };
+    for word in [
+        dfd_len as u32,
+        0,
+        2 | (40 << 16),
+        166 | (1 << 8) | (transfer << 16),
+        3 | (3 << 8),
+        16,
+        0,
+        127 << 16 | channel << 24,
+        0,
+        0,
+        u32::MAX,
+    ] {
+        out.extend_from_slice(&word.to_le_bytes());
+    }
+
+    for (data, offset) in level_data.iter().zip(&offsets) {
+        out.resize(*offset, 0);
+        out.extend_from_slice(data);
+    }
+    out
+}
+
+/// A UASTC solid-colour block: mode 8, the colour, and the ETC1 hint fields
+/// a transcoder to ETC reads.
+fn uastc_solid_block(colour: [u8; 4]) -> [u8; 16] {
+    let mut block = [0u8; 16];
+    let mut bit = 0usize;
+    let mut put = |value: u32, bits: usize| {
+        for i in 0..bits {
+            if value >> i & 1 != 0 {
+                block[bit / 8] |= 1 << (bit % 8);
+            }
+            bit += 1;
+        }
+    };
+    // Mode 8's prefix code, five bits.
+    put(0x17, 5);
+    for channel in colour {
+        put(u32::from(channel), 8);
+    }
+    // ETC1 hints: differential, intensity table 0, selector 0, and the colour
+    // at five bits per channel.
+    put(1, 1);
+    put(0, 3);
+    put(0, 2);
+    for channel in &colour[..3] {
+        put(u32::from(*channel) >> 3, 5);
+    }
+    block
+}
+
 /// An SVG holding one filled path, for the vector loader.
 pub fn svg_filled_path(d: &str, fill: &str) -> String {
     format!(

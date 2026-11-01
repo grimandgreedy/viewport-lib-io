@@ -39,6 +39,13 @@ One feature per format: `png`, `jpeg`, `tga`, `bmp`, `hdr`, `exr`, `svg`, `stl`,
 `exodus`, `ensight`, `tecplot`, `cgns`, `netcdf`. `xdmf`, `exodus` and `cgns`
 build the HDF5 C library statically and need `cmake`.
 
+Three more extend `gltf` to compressed assets: `gltf-draco`
+(`KHR_draco_mesh_compression`), `gltf-meshopt` (`EXT_meshopt_compression`) and
+`gltf-ktx2` (`KHR_texture_basisu`). KTX2 textures transcode to the
+`GltfTextureTarget` passed in `GltfLoadOptions` (RGBA8 by default, or the BC,
+ETC2/EAC or ASTC family the device supports). `gltf-draco` and `gltf-meshopt`
+need Rust 1.88.
+
 ## Usage
 
 Surface mesh, as the renderer's `MeshData` (normals always present):
@@ -89,6 +96,16 @@ for clip in &scene.animations {
         // track.sampler.times and track.sampler.values hold the keyframes
     }
 }
+```
+
+Compressed glTF, with KTX2 textures transcoded for a device with
+`TEXTURE_COMPRESSION_BC` (features `gltf-draco`, `gltf-meshopt`, `gltf-ktx2`):
+
+```rust
+use viewport_lib_io::loaders::gltf::{self, GltfLoadOptions, GltfTextureTarget};
+
+let options = GltfLoadOptions::default().with_texture_target(GltfTextureTarget::Bc);
+let scene = gltf::scene_from_path_with_options("model.glb".as_ref(), options)?;
 ```
 
 Scientific dataset:

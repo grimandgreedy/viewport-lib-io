@@ -1,37 +1,73 @@
 //! glTF and GLB decoding.
 //!
-//! `scene_from_path` and `scene_from_slice` are the entrypoints; both walk the
-//! document once and hand each piece to the module that owns it: `node` for the
-//! scene graph and its lights, `primitive` for geometry, `material` for materials and
-//! textures (with `material_extensions` for the IOR, specular and layer
-//! extensions), `skin` for skeletons and weights, `animation` for clips, and
-//! `axis` for the Y-up to Z-up conversion every one of them feeds into.
+//! `scene_from_path` and `scene_from_slice` are the entrypoints; `scene` walks
+//! the document once and hands each piece to the module that owns it: `buffers`
+//! for buffer data, `node` for the scene graph and its lights, `primitive` for
+//! geometry (read through `attributes`), `material` for materials (with
+//! `material_extensions` for the IOR, specular and layer extensions), `texture`
+//! for the images behind them, `skin` for skeletons and weights, `animation`
+//! for clips, and `axis` for the Y-up to Z-up conversion every one of them
+//! feeds into.
+//!
+//! # Compressed assets
+//!
+//! Three features decode the compression extensions, each off by default:
+//!
+//! - `gltf-draco`: `KHR_draco_mesh_compression` primitives are read from their
+//!   Draco stream.
+//! - `gltf-meshopt`: `EXT_meshopt_compression` buffer views are decoded before
+//!   any accessor reads them, including views over a fallback buffer that holds
+//!   no data.
+//! - `gltf-ktx2`: `KHR_texture_basisu` images (Basis Universal ETC1S or UASTC
+//!   in KTX2) are transcoded to the [`GltfTextureTarget`] set on
+//!   [`GltfLoadOptions`], with every mip level the file holds.
+//!
+//! A file that lists one of these extensions in `extensionsRequired` fails with
+//! [`IoError::MissingFeature`] naming the feature when it is off. Integer
+//! vertex attributes (`KHR_mesh_quantization`, which compressors usually write
+//! alongside meshopt) are always read.
+//!
+//! [`GltfTextureTarget`]: crate::loaders::gltf::GltfTextureTarget
+//! [`GltfLoadOptions`]: crate::loaders::gltf::GltfLoadOptions
+//! [`IoError::MissingFeature`]: crate::IoError::MissingFeature
 
 use std::path::Path;
 
 use crate::error::IoError;
-use crate::types::{IoScene, MAX_JOINTS};
+use crate::types::IoScene;
 
 mod animation;
+mod attributes;
 mod axis;
+mod buffers;
 mod material;
 mod material_extensions;
 mod node;
+mod options;
 mod primitive;
+mod scene;
 mod skin;
+mod texture;
 
-use animation::{convert_animations, convert_morph_animations, convert_node_animations};
-use axis::reorient_mesh_z_up;
-use material::convert_material;
-use node::{collect_node, convert_lights, convert_nodes};
-use skin::convert_skeletons;
+pub use options::{GltfLoadOptions, GltfTextureTarget};
 
 /// Decode a glTF or GLB file into a CPU-side scene.
 ///
-/// Reads the file at `path` and delegates to [`scene_from_slice`]. The
-/// parent directory is used as the base for resolving external buffers and
-/// image URIs.
+/// Equivalent to [`scene_from_path_with_options`] with the default
+/// [`GltfLoadOptions`]. The parent directory is used as the base for resolving
+/// external buffers and image URIs.
 pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
+    scene_from_path_with_options(path, GltfLoadOptions::default())
+}
+
+/// Decode a glTF or GLB file into a CPU-side scene with per-call options.
+///
+/// Reads the file at `path` and delegates to [`scene_from_slice_with_options`],
+/// with the parent directory as the base for external buffers and image URIs.
+pub fn scene_from_path_with_options(
+    path: &Path,
+    options: GltfLoadOptions,
+) -> Result<IoScene, IoError> {
     #[cfg(feature = "gltf")]
     {
         if !path.exists() {
@@ -42,12 +78,12 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
         }
         let bytes = std::fs::read(path)?;
         let parent_dir = path.parent().unwrap_or(Path::new("."));
-        scene_from_slice(&bytes, Some(parent_dir))
+        scene_from_slice_with_options(&bytes, Some(parent_dir), options)
     }
 
     #[cfg(not(feature = "gltf"))]
     {
-        let _ = path;
+        let _ = (path, options);
         Err(IoError::MissingFeature {
             feature: "gltf",
             context: "glTF scene decoding",
@@ -63,95 +99,24 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
 /// to resolve with [`IoError::Parse`]. Self-contained GLBs and embedded
 /// data URIs work regardless of `base`.
 pub fn scene_from_slice(data: &[u8], base: Option<&Path>) -> Result<IoScene, IoError> {
+    scene_from_slice_with_options(data, base, GltfLoadOptions::default())
+}
+
+/// Decode a glTF or GLB blob already held in memory, with per-call options.
+/// See [`scene_from_slice`] for `base`.
+pub fn scene_from_slice_with_options(
+    data: &[u8],
+    base: Option<&Path>,
+    options: GltfLoadOptions,
+) -> Result<IoScene, IoError> {
     #[cfg(feature = "gltf")]
     {
-        let gltf = gltf::Gltf::from_slice_without_validation(data)
-            .map_err(|error| IoError::Parse(format!("glTF load failed: {error:?}")))?;
-        let blob = gltf.blob.clone();
-        let buffers = gltf::import_buffers(&gltf, base, blob)
-            .map_err(|error| IoError::Parse(format!("glTF buffers failed: {error:?}")))?;
-        let document = gltf.document;
-        let images = gltf::import_images(&document, base, &buffers).unwrap_or_default();
-
-        // External texture URIs are resolved relative to `base`. When `base`
-        // is `None` we fall back to the current working directory only as a
-        // last resort; data URIs and embedded textures still work either way.
-        let texture_base = base.unwrap_or(Path::new("."));
-
-        let materials = document
-            .materials()
-            .map(|material| convert_material(&material, &images, texture_base))
-            .collect();
-
-        // Reject skeletons that overflow the fixed-size skinning palette
-        // before any decoding work commits. The per-vertex joint index type
-        // is `[u8; 4]`, so anything past MAX_JOINTS cannot be referenced
-        // anyway.
-        for skin in document.skins() {
-            let count = skin.joints().count();
-            if count > MAX_JOINTS {
-                return Err(IoError::Parse(format!(
-                    "skin '{}' has {count} joints, exceeds MAX_JOINTS = {MAX_JOINTS}",
-                    skin.name().unwrap_or("<unnamed>"),
-                )));
-            }
-        }
-
-        // Skeletons must be built before meshes/animations so the index map
-        // (glTF node index -> joint index within a skeleton) is available.
-        let (skeletons, joint_lookup) = convert_skeletons(&document, &buffers);
-
-        let mut nodes = convert_nodes(&document);
-        let mut meshes = Vec::new();
-        for scene in document.scenes() {
-            for node in scene.nodes() {
-                collect_node(
-                    &node,
-                    &buffers,
-                    glam::Mat4::IDENTITY,
-                    None,
-                    &joint_lookup,
-                    None,
-                    &mut meshes,
-                    &mut nodes,
-                );
-            }
-        }
-
-        // glTF uses right-handed Y-up; viewport-lib-io emits right-handed
-        // Z-up. The conversion happens once, here, on every piece of data
-        // that carries an orientation: vertex positions, normals, tangents,
-        // per-mesh transforms, joint inverse-bind matrices, and animation
-        // samples (see convert_skeletons / convert_animations). After this
-        // point the entire IoScene is in Z-up; downstream consumers do not
-        // re-rotate.
-        for mesh in &mut meshes {
-            reorient_mesh_z_up(mesh);
-        }
-
-        let animations = convert_animations(&document, &buffers, &joint_lookup);
-        let node_animations = convert_node_animations(&document, &buffers, &joint_lookup);
-        let morph_animations = convert_morph_animations(&document, &buffers);
-        // Node transforms are reoriented as they are read, so the lights'
-        // world transforms come out Z-up.
-        let lights = convert_lights(&document, &nodes);
-
-        Ok(IoScene {
-            meshes,
-            materials,
-            skeletons,
-            animations,
-            morph_animations,
-            nodes,
-            lights,
-            node_animations,
-            ..IoScene::default()
-        })
+        scene::build_scene(data, base, &options)
     }
 
     #[cfg(not(feature = "gltf"))]
     {
-        let _ = (data, base);
+        let _ = (data, base, options);
         Err(IoError::MissingFeature {
             feature: "gltf",
             context: "glTF scene decoding",
