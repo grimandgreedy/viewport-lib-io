@@ -150,7 +150,7 @@ pub(super) fn convert_skeletons(
 mod tests {
     use super::super::*;
     use super::*;
-    use crate::types::{AnimationChannel, AnimationInterpolation, AnimationTrackValues};
+    use crate::types::{AnimationChannel, AnimationInterpolation, AnimationTrackValues, MAX_JOINTS};
     use viewport_lib_io_testkit::synth::{glb as make_glb, temp_dir};
 
     #[test]
