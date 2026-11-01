@@ -20,6 +20,7 @@ mod node;
 mod primitive;
 mod scene;
 mod skin;
+mod texture;
 
 /// Decode a glTF or GLB file into a CPU-side scene.
 ///
