@@ -1,11 +1,35 @@
 //! glTF and GLB decoding.
 //!
 //! `scene_from_path` and `scene_from_slice` are the entrypoints; `scene` walks
-//! the document once and hands each piece to the module that owns it: `node` for the
-//! scene graph and its lights, `primitive` for geometry, `material` for materials and
-//! textures (with `material_extensions` for the IOR, specular and layer
-//! extensions), `skin` for skeletons and weights, `animation` for clips, and
-//! `axis` for the Y-up to Z-up conversion every one of them feeds into.
+//! the document once and hands each piece to the module that owns it: `buffers`
+//! for buffer data, `node` for the scene graph and its lights, `primitive` for
+//! geometry (read through `attributes`), `material` for materials (with
+//! `material_extensions` for the IOR, specular and layer extensions), `texture`
+//! for the images behind them, `skin` for skeletons and weights, `animation`
+//! for clips, and `axis` for the Y-up to Z-up conversion every one of them
+//! feeds into.
+//!
+//! # Compressed assets
+//!
+//! Three features decode the compression extensions, each off by default:
+//!
+//! - `gltf-draco`: `KHR_draco_mesh_compression` primitives are read from their
+//!   Draco stream.
+//! - `gltf-meshopt`: `EXT_meshopt_compression` buffer views are decoded before
+//!   any accessor reads them, including views over a fallback buffer that holds
+//!   no data.
+//! - `gltf-ktx2`: `KHR_texture_basisu` images (Basis Universal ETC1S or UASTC
+//!   in KTX2) are transcoded to the [`GltfTextureTarget`] set on
+//!   [`GltfLoadOptions`], with every mip level the file holds.
+//!
+//! A file that lists one of these extensions in `extensionsRequired` fails with
+//! [`IoError::MissingFeature`] naming the feature when it is off. Integer
+//! vertex attributes (`KHR_mesh_quantization`, which compressors usually write
+//! alongside meshopt) are always read.
+//!
+//! [`GltfTextureTarget`]: crate::loaders::gltf::GltfTextureTarget
+//! [`GltfLoadOptions`]: crate::loaders::gltf::GltfLoadOptions
+//! [`IoError::MissingFeature`]: crate::IoError::MissingFeature
 
 use std::path::Path;
 

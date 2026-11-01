@@ -58,7 +58,7 @@ netcdf = ["dep:netcdf-reader", "_scientific-common"]
 # format, so it is not in all-formats and is not meant to be enabled directly:
 # the format features above pull it in.
 _scientific-common = ["dep:quick-xml"]
-all-formats = ["png", "jpeg", "tga", "bmp", "svg", "hdr", "exr", "stl", "obj", "msh", "gltf", "fbx", "bvh", "ply", "csv", "numpy", "raw", "vtk", "xdmf", "exodus", "ensight", "tecplot", "cgns", "netcdf"]
+all-formats = ["png", "jpeg", "tga", "bmp", "svg", "hdr", "exr", "stl", "obj", "msh", "gltf", "gltf-draco", "gltf-meshopt", "gltf-ktx2", "fbx", "bvh", "ply", "csv", "numpy", "raw", "vtk", "xdmf", "exodus", "ensight", "tecplot", "cgns", "netcdf"]
 
 [dev-dependencies]
 # The shared checks and fixture builders, as a crate rather than a feature so a
