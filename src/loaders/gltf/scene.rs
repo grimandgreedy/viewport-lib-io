@@ -10,19 +10,24 @@ use super::animation::{convert_animations, convert_morph_animations, convert_nod
 use super::axis::reorient_mesh_z_up;
 use super::material::convert_material;
 use super::node::{collect_node, convert_lights, convert_nodes};
+use super::options::GltfLoadOptions;
 use super::skin::convert_skeletons;
 use super::texture::ImageTable;
 
 /// Decode a glTF or GLB blob into a scene. `base` resolves external buffer and
 /// image URIs.
-pub(super) fn build_scene(data: &[u8], base: Option<&Path>) -> Result<IoScene, IoError> {
+pub(super) fn build_scene(
+    data: &[u8],
+    base: Option<&Path>,
+    options: &GltfLoadOptions,
+) -> Result<IoScene, IoError> {
     let gltf = gltf::Gltf::from_slice_without_validation(data)
         .map_err(|error| IoError::Parse(format!("glTF load failed: {error:?}")))?;
     let blob = gltf.blob.clone();
     let buffers = gltf::import_buffers(&gltf, base, blob)
         .map_err(|error| IoError::Parse(format!("glTF buffers failed: {error:?}")))?;
     let document = gltf.document;
-    let images = ImageTable::load(&document, base, &buffers);
+    let images = ImageTable::load(&document, base, &buffers, options);
 
     let materials = document
         .materials()

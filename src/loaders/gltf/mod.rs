@@ -17,17 +17,31 @@ mod axis;
 mod material;
 mod material_extensions;
 mod node;
+mod options;
 mod primitive;
 mod scene;
 mod skin;
 mod texture;
 
+pub use options::{GltfLoadOptions, GltfTextureTarget};
+
 /// Decode a glTF or GLB file into a CPU-side scene.
 ///
-/// Reads the file at `path` and delegates to [`scene_from_slice`]. The
-/// parent directory is used as the base for resolving external buffers and
-/// image URIs.
+/// Equivalent to [`scene_from_path_with_options`] with the default
+/// [`GltfLoadOptions`]. The parent directory is used as the base for resolving
+/// external buffers and image URIs.
 pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
+    scene_from_path_with_options(path, GltfLoadOptions::default())
+}
+
+/// Decode a glTF or GLB file into a CPU-side scene with per-call options.
+///
+/// Reads the file at `path` and delegates to [`scene_from_slice_with_options`],
+/// with the parent directory as the base for external buffers and image URIs.
+pub fn scene_from_path_with_options(
+    path: &Path,
+    options: GltfLoadOptions,
+) -> Result<IoScene, IoError> {
     #[cfg(feature = "gltf")]
     {
         if !path.exists() {
@@ -38,12 +52,12 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
         }
         let bytes = std::fs::read(path)?;
         let parent_dir = path.parent().unwrap_or(Path::new("."));
-        scene_from_slice(&bytes, Some(parent_dir))
+        scene_from_slice_with_options(&bytes, Some(parent_dir), options)
     }
 
     #[cfg(not(feature = "gltf"))]
     {
-        let _ = path;
+        let _ = (path, options);
         Err(IoError::MissingFeature {
             feature: "gltf",
             context: "glTF scene decoding",
@@ -59,14 +73,24 @@ pub fn scene_from_path(path: &Path) -> Result<IoScene, IoError> {
 /// to resolve with [`IoError::Parse`]. Self-contained GLBs and embedded
 /// data URIs work regardless of `base`.
 pub fn scene_from_slice(data: &[u8], base: Option<&Path>) -> Result<IoScene, IoError> {
+    scene_from_slice_with_options(data, base, GltfLoadOptions::default())
+}
+
+/// Decode a glTF or GLB blob already held in memory, with per-call options.
+/// See [`scene_from_slice`] for `base`.
+pub fn scene_from_slice_with_options(
+    data: &[u8],
+    base: Option<&Path>,
+    options: GltfLoadOptions,
+) -> Result<IoScene, IoError> {
     #[cfg(feature = "gltf")]
     {
-        scene::build_scene(data, base)
+        scene::build_scene(data, base, &options)
     }
 
     #[cfg(not(feature = "gltf"))]
     {
-        let _ = (data, base);
+        let _ = (data, base, options);
         Err(IoError::MissingFeature {
             feature: "gltf",
             context: "glTF scene decoding",

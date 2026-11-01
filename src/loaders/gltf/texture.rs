@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use viewport_lib_types::data::texture::TextureData;
 use viewport_lib_types::material::TextureSlot;
 
+use super::options::GltfLoadOptions;
 use crate::types::TextureSource;
 
 /// Every image in the document, decoded once, for the materials to draw on.
@@ -26,7 +27,9 @@ impl ImageTable {
         document: &gltf::Document,
         base: Option<&Path>,
         buffers: &[gltf::buffer::Data],
+        options: &GltfLoadOptions,
     ) -> Self {
+        let _ = options;
         let decoded = document
             .images()
             .map(|image| gltf::image::Data::from_source(image.source(), base, buffers).ok())
