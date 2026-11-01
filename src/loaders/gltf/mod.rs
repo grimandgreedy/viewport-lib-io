@@ -13,6 +13,7 @@ use crate::error::IoError;
 use crate::types::IoScene;
 
 mod animation;
+mod attributes;
 mod axis;
 mod material;
 mod material_extensions;

@@ -4,64 +4,103 @@ use viewport_lib_types::data::mesh::MeshData;
 
 use crate::types::{IoMesh, MorphTarget, SkinWeights, smooth_normals};
 
+use super::attributes::read_vectors;
 use super::skin::normalise_skin_weights;
+
+/// The per-vertex streams of one primitive, before they become a mesh.
+#[derive(Default)]
+pub(super) struct VertexStreams {
+    pub(super) positions: Vec<[f32; 3]>,
+    /// Triangle-list indices. `None` for a non-indexed primitive.
+    pub(super) indices: Option<Vec<u32>>,
+    pub(super) normals: Option<Vec<[f32; 3]>>,
+    pub(super) tangents: Option<Vec<[f32; 4]>>,
+    pub(super) uvs: Option<Vec<[f32; 2]>>,
+    /// TEXCOORD_1: the second set a material slot can select through its UV
+    /// transform's `uv_set`. Sets beyond it are not carried.
+    pub(super) uvs1: Option<Vec<[f32; 2]>>,
+    /// COLOR_0, expanded to RGBA.
+    pub(super) colours: Option<Vec<[f32; 4]>>,
+    pub(super) joints: Option<Vec<[u16; 4]>>,
+    pub(super) weights: Option<Vec<[f32; 4]>>,
+}
+
+impl VertexStreams {
+    /// Read the streams from the primitive's accessors.
+    fn from_accessors(primitive: &gltf::Primitive, buffers: &[gltf::buffer::Data]) -> Self {
+        let reader = primitive.reader(|buffer| buffers.get(buffer.index()).map(|data| &data.0[..]));
+        let attribute = |semantic: gltf::Semantic| primitive.get(&semantic);
+        Self {
+            positions: attribute(gltf::Semantic::Positions)
+                .and_then(|accessor| read_vectors(accessor, buffers))
+                .unwrap_or_default(),
+            indices: reader.read_indices().map(|iter| iter.into_u32().collect()),
+            normals: attribute(gltf::Semantic::Normals)
+                .and_then(|accessor| read_vectors(accessor, buffers)),
+            tangents: attribute(gltf::Semantic::Tangents)
+                .and_then(|accessor| read_vectors(accessor, buffers)),
+            uvs: attribute(gltf::Semantic::TexCoords(0))
+                .and_then(|accessor| read_vectors(accessor, buffers)),
+            uvs1: attribute(gltf::Semantic::TexCoords(1))
+                .and_then(|accessor| read_vectors(accessor, buffers)),
+            // glTF stores colour as vec3 or vec4 in u8, u16, or f32;
+            // `into_rgba_f32` normalises all of them, expanding vec3 with
+            // alpha 1.0.
+            colours: reader
+                .read_colors(0)
+                .map(|iter| iter.into_rgba_f32().collect()),
+            joints: reader.read_joints(0).map(|iter| iter.into_u16().collect()),
+            weights: reader.read_weights(0).map(|iter| iter.into_f32().collect()),
+        }
+    }
+}
 
 /// Convert one glTF primitive into a mesh: positions, indices, normals,
 /// tangents, UVs, vertex colours, skin weights, and morph targets.
 ///
-/// Returns `None` for a primitive with no positions, or one whose mode is not
-/// triangles. Coordinates stay in glTF's Y-up frame here; the caller reorients
-/// the finished mesh.
+/// Returns `None` for a primitive with no positions. Coordinates stay in
+/// glTF's Y-up frame here; the caller reorients the finished mesh.
 pub(super) fn convert_primitive(
     primitive: &gltf::Primitive,
     buffers: &[gltf::buffer::Data],
     mesh: &gltf::Mesh,
     primitive_index: usize,
 ) -> Option<IoMesh> {
-    let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
+    let streams = VertexStreams::from_accessors(primitive, buffers);
+    build_mesh(streams, primitive, buffers, mesh, primitive_index)
+}
 
-    let positions: Vec<[f32; 3]> = reader.read_positions()?.collect();
+/// Assemble the mesh from its streams, with the primitive's morph targets,
+/// material and name.
+fn build_mesh(
+    streams: VertexStreams,
+    primitive: &gltf::Primitive,
+    buffers: &[gltf::buffer::Data],
+    mesh: &gltf::Mesh,
+    primitive_index: usize,
+) -> Option<IoMesh> {
+    let VertexStreams {
+        positions,
+        indices,
+        normals,
+        tangents,
+        uvs,
+        uvs1,
+        colours,
+        joints,
+        weights,
+    } = streams;
     if positions.is_empty() {
         return None;
     }
 
-    let indices: Vec<u32> = reader
-        .read_indices()
-        .map(|iter| iter.into_u32().collect())
-        .unwrap_or_else(|| (0..positions.len() as u32).collect());
-
-    let normals = reader
-        .read_normals()
-        .map(|iter| iter.collect())
-        .unwrap_or_else(|| smooth_normals(&positions, &indices));
-
-    let uvs = reader
-        .read_tex_coords(0)
-        .map(|iter| iter.into_f32().collect());
-
-    // TEXCOORD_1: the second set a material slot can select through its UV
-    // transform's `uv_set`. Sets beyond it are not carried.
-    let uvs1 = reader
-        .read_tex_coords(1)
-        .map(|iter| iter.into_f32().collect());
-
-    let tangents = reader.read_tangents().map(|iter| iter.collect());
-
-    // COLOR_0: per-vertex colour. glTF stores it as vec3 or vec4 in u8, u16, or
-    // f32; `into_rgba_f32` normalises all of them to `[f32; 4]` (expanding vec3
-    // with alpha 1.0).
-    let colours: Option<Vec<[f32; 4]>> = reader
-        .read_colors(0)
-        .map(|iter| iter.into_rgba_f32().collect());
+    let indices = indices.unwrap_or_else(|| (0..positions.len() as u32).collect());
+    let normals = normals.unwrap_or_else(|| smooth_normals(&positions, &indices));
 
     // Skin attributes. glTF stores joint indices as either u8 or u16; we
     // normalise to u8 because the runtime substrate uses [u8; 4] today. Joint
     // indices above 255 are clamped with a warning.
-    let joint_indices_u16: Option<Vec<[u16; 4]>> =
-        reader.read_joints(0).map(|iter| iter.into_u16().collect());
-    let joint_weights: Option<Vec<[f32; 4]>> =
-        reader.read_weights(0).map(|iter| iter.into_f32().collect());
-    let skin_weights = match (joint_indices_u16, joint_weights) {
+    let skin_weights = match (joints, weights) {
         (Some(ji), Some(jw)) => Some(SkinWeights {
             joint_indices: ji
                 .into_iter()
@@ -80,23 +119,27 @@ pub(super) fn convert_primitive(
     // and real names are a follow-up. Displacements are reoriented into Z-up
     // alongside the base attributes in `reorient_mesh_z_up`.
     let base_vertex_count = positions.len();
-    let morph_targets: Vec<MorphTarget> = reader
-        .read_morph_targets()
+    let morph_targets: Vec<MorphTarget> = primitive
+        .morph_targets()
         .enumerate()
-        .map(|(i, (positions, normals, tangents))| {
+        .map(|(i, target)| {
             // Keep every target, even one with no POSITION displacement (some
             // face rigs carry a normals-only target): a dropped target would
             // shift the indices a weight animation drives by, and change the
             // count so the whole clip no longer matches. Zero-fill instead.
-            let position_deltas: Vec<[f32; 3]> = match positions {
-                Some(iter) => iter.collect(),
-                None => vec![[0.0, 0.0, 0.0]; base_vertex_count],
-            };
+            let position_deltas: Vec<[f32; 3]> = target
+                .positions()
+                .and_then(|accessor| read_vectors(accessor, buffers))
+                .unwrap_or_else(|| vec![[0.0, 0.0, 0.0]; base_vertex_count]);
             MorphTarget {
                 name: format!("target_{i}"),
                 position_deltas,
-                normal_deltas: normals.map(|iter| iter.collect()),
-                tangent_deltas: tangents.map(|iter| iter.collect()),
+                normal_deltas: target
+                    .normals()
+                    .and_then(|accessor| read_vectors(accessor, buffers)),
+                tangent_deltas: target
+                    .tangents()
+                    .and_then(|accessor| read_vectors(accessor, buffers)),
             }
         })
         .collect();
