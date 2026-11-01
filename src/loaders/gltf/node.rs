@@ -381,7 +381,7 @@ mod tests {
             LightKind::Point {
                 position, range, ..
             } => {
-                assert!(close3(position, [1.0, -3.0, 3.0]));
+                assert!(close3(position.as_vec3().to_array(), [1.0, -3.0, 3.0]));
                 assert_eq!(range, 25.0, "an unset range takes the caller's value");
             }
             other => panic!("expected a point light, got {other:?}"),
