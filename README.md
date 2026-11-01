@@ -43,8 +43,7 @@ Three more extend `gltf` to compressed assets: `gltf-draco`
 (`KHR_draco_mesh_compression`), `gltf-meshopt` (`EXT_meshopt_compression`) and
 `gltf-ktx2` (`KHR_texture_basisu`). KTX2 textures transcode to the
 `GltfTextureTarget` passed in `GltfLoadOptions` (RGBA8 by default, or the BC,
-ETC2/EAC or ASTC family the device supports). `gltf-draco` and `gltf-meshopt`
-need Rust 1.88.
+ETC2/EAC or ASTC family the device supports).
 
 ## Usage
 

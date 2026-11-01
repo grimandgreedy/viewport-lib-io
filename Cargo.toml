@@ -10,7 +10,7 @@ homepage = "https://github.com/grimandgreedy/viewport-lib-io"
 documentation = "https://docs.rs/viewport-lib-io"
 keywords = ["3d", "loader", "visualization", "viewport", "viewport-lib"]
 categories = ["graphics", "parser-implementations", "filesystem"]
-rust-version = "1.85"
+rust-version = "1.96.1"
 publish = true
 exclude = ["examples/", "tests/", ".github/", ".gitignore"]
 
