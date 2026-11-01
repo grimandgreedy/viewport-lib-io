@@ -33,6 +33,8 @@ stl = ["dep:stl_io"]
 obj = ["dep:tobj"]
 msh = []
 gltf = ["dep:gltf", "gltf/KHR_texture_transform", "gltf/KHR_materials_unlit", "gltf/KHR_materials_ior", "gltf/KHR_materials_specular", "gltf/KHR_lights_punctual", "gltf/extensions", "gltf/allow_empty_texture", "dep:serde_json"]
+# EXT_meshopt_compression buffer views in glTF, decoded at load. Needs Rust 1.88.
+gltf-meshopt = ["gltf", "dep:meshopt-pure"]
 fbx = ["dep:fbxcel-dom", "dep:anyhow", "png"]
 bvh = []
 ply = []
@@ -66,6 +68,7 @@ glam = { version = "=0.30.10", features = ["bytemuck"] }
 gltf = { version = "1", features = ["import", "KHR_materials_emissive_strength", "KHR_materials_pbrSpecularGlossiness"], optional = true }
 hdf5 = { version = "0.8", optional = true }
 hdf5-sys = { version = "0.8", features = ["static", "zlib"], optional = true }
+meshopt-pure = { version = "1.3", optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "hdr", "exr", "tga", "bmp"], optional = true }
 flate2 = { version = "1", optional = true }
 netcdf-reader = { version = "0.4", default-features = false, features = ["netcdf4"], optional = true }

@@ -15,6 +15,7 @@ use crate::types::IoScene;
 mod animation;
 mod attributes;
 mod axis;
+mod buffers;
 mod material;
 mod material_extensions;
 mod node;
