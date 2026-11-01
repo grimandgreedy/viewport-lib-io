@@ -37,6 +37,9 @@ gltf = ["dep:gltf", "gltf/KHR_texture_transform", "gltf/KHR_materials_unlit", "g
 gltf-draco = ["gltf", "dep:draco-core"]
 # EXT_meshopt_compression buffer views in glTF, decoded at load. Needs Rust 1.88.
 gltf-meshopt = ["gltf", "dep:meshopt-pure"]
+# KTX2 images (KHR_texture_basisu) in glTF, transcoded at load to the
+# `GltfTextureTarget` the caller picks.
+gltf-ktx2 = ["gltf", "dep:basisu"]
 fbx = ["dep:fbxcel-dom", "dep:anyhow", "png"]
 bvh = []
 ply = []
@@ -68,6 +71,7 @@ meshopt-pure = "1.3"
 
 [dependencies]
 anyhow = { version = "1", optional = true }
+basisu = { version = "0.1", optional = true }
 draco-core = { version = "2.3", optional = true, default-features = false, features = ["decoder", "edgebreaker_valence_decode", "legacy_bitstream_decode"] }
 fbxcel-dom = { version = "0.0.10", optional = true }
 glam = { version = "=0.30.10", features = ["bytemuck"] }

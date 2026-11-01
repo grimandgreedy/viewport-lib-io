@@ -116,6 +116,10 @@ fn check_required_extensions(document: &gltf::Document) -> Result<(), IoError> {
                 "gltf-meshopt",
                 "glTF buffers compressed with EXT_meshopt_compression",
             )),
+            "KHR_texture_basisu" if !cfg!(feature = "gltf-ktx2") => Some((
+                "gltf-ktx2",
+                "glTF textures stored as KTX2 (KHR_texture_basisu)",
+            )),
             _ => None,
         };
         if let Some((feature, context)) = missing {
@@ -142,6 +146,11 @@ mod tests {
             "EXT_meshopt_compression",
             "gltf-meshopt",
             cfg!(feature = "gltf-meshopt"),
+        ),
+        (
+            "KHR_texture_basisu",
+            "gltf-ktx2",
+            cfg!(feature = "gltf-ktx2"),
         ),
     ];
 
