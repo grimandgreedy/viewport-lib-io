@@ -58,6 +58,7 @@ pub(super) fn build_scene(
     for scene in document.scenes() {
         for node in scene.nodes() {
             collect_node(
+                &document,
                 &node,
                 &buffers,
                 glam::Mat4::IDENTITY,
@@ -66,7 +67,7 @@ pub(super) fn build_scene(
                 None,
                 &mut meshes,
                 &mut nodes,
-            );
+            )?;
         }
     }
 
@@ -107,6 +108,10 @@ pub(super) fn build_scene(
 fn check_required_extensions(document: &gltf::Document) -> Result<(), IoError> {
     for name in document.extensions_required() {
         let missing = match name {
+            "KHR_draco_mesh_compression" if !cfg!(feature = "gltf-draco") => Some((
+                "gltf-draco",
+                "glTF meshes compressed with KHR_draco_mesh_compression",
+            )),
             "EXT_meshopt_compression" if !cfg!(feature = "gltf-meshopt") => Some((
                 "gltf-meshopt",
                 "glTF buffers compressed with EXT_meshopt_compression",
@@ -127,11 +132,18 @@ mod tests {
 
     /// Each compression extension, the feature that decodes it, and whether
     /// this build has that feature.
-    const COMPRESSION: &[(&str, &str, bool)] = &[(
-        "EXT_meshopt_compression",
-        "gltf-meshopt",
-        cfg!(feature = "gltf-meshopt"),
-    )];
+    const COMPRESSION: &[(&str, &str, bool)] = &[
+        (
+            "KHR_draco_mesh_compression",
+            "gltf-draco",
+            cfg!(feature = "gltf-draco"),
+        ),
+        (
+            "EXT_meshopt_compression",
+            "gltf-meshopt",
+            cfg!(feature = "gltf-meshopt"),
+        ),
+    ];
 
     #[test]
     fn a_required_compression_extension_names_the_feature_that_decodes_it() {

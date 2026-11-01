@@ -3,6 +3,7 @@
 
 use gltf::json::validation::Checked;
 
+use crate::error::IoError;
 use crate::types::{IoMesh, IoNode, SceneLight, SceneLightKind, SkinWeights};
 
 use super::axis::reorient_affine_mat4;
@@ -18,6 +19,7 @@ use super::skin::JointLookup;
 /// against its node in `nodes`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn collect_node(
+    document: &gltf::Document,
     node: &gltf::Node,
     buffers: &[gltf::buffer::Data],
     parent_world: glam::Mat4,
@@ -26,7 +28,7 @@ pub(super) fn collect_node(
     parent_joint: Option<(usize, usize)>,
     out: &mut Vec<IoMesh>,
     nodes: &mut [IoNode],
-) {
+) -> Result<(), IoError> {
     let local = glam::Mat4::from_cols_array_2d(&node.transform().matrix());
     let world = parent_world * local;
 
@@ -48,7 +50,7 @@ pub(super) fn collect_node(
 
         for (primitive_index, primitive) in mesh.primitives().enumerate() {
             if let Some(mut imported) =
-                convert_primitive(&primitive, buffers, &mesh, primitive_index)
+                convert_primitive(document, &primitive, buffers, &mesh, primitive_index)?
             {
                 if explicit_skeleton.is_some() {
                     // Real glTF skinning: JOINTS_0 / WEIGHTS_0 already
@@ -89,6 +91,7 @@ pub(super) fn collect_node(
 
     for child in node.children() {
         collect_node(
+            document,
             &child,
             buffers,
             world,
@@ -97,8 +100,9 @@ pub(super) fn collect_node(
             my_joint,
             out,
             nodes,
-        );
+        )?;
     }
+    Ok(())
 }
 
 /// Every glTF node in document order, with its parent and its local transform

@@ -2,6 +2,7 @@
 
 use viewport_lib_types::data::mesh::MeshData;
 
+use crate::error::IoError;
 use crate::types::{IoMesh, MorphTarget, SkinWeights, smooth_normals};
 
 use super::attributes::read_vectors;
@@ -58,16 +59,35 @@ impl VertexStreams {
 /// Convert one glTF primitive into a mesh: positions, indices, normals,
 /// tangents, UVs, vertex colours, skin weights, and morph targets.
 ///
-/// Returns `None` for a primitive with no positions. Coordinates stay in
+/// A primitive carrying `KHR_draco_mesh_compression` is read from its Draco
+/// stream, which the extension makes authoritative over any uncompressed
+/// accessors it also has. Returns `Ok(None)` for a primitive with no positions,
+/// and an error for a Draco stream that does not decode. Coordinates stay in
 /// glTF's Y-up frame here; the caller reorients the finished mesh.
 pub(super) fn convert_primitive(
+    document: &gltf::Document,
     primitive: &gltf::Primitive,
     buffers: &[gltf::buffer::Data],
     mesh: &gltf::Mesh,
     primitive_index: usize,
-) -> Option<IoMesh> {
-    let streams = VertexStreams::from_accessors(primitive, buffers);
-    build_mesh(streams, primitive, buffers, mesh, primitive_index)
+) -> Result<Option<IoMesh>, IoError> {
+    #[cfg(feature = "gltf-draco")]
+    let streams = match primitive.extension_value(draco::EXTENSION) {
+        Some(extension) => draco::read_streams(document, primitive, extension, buffers)?,
+        None => VertexStreams::from_accessors(primitive, buffers),
+    };
+    #[cfg(not(feature = "gltf-draco"))]
+    let streams = {
+        let _ = document;
+        VertexStreams::from_accessors(primitive, buffers)
+    };
+    Ok(build_mesh(
+        streams,
+        primitive,
+        buffers,
+        mesh,
+        primitive_index,
+    ))
 }
 
 /// Assemble the mesh from its streams, with the primitive's morph targets,
@@ -173,6 +193,239 @@ fn build_mesh(
         parent_index: None,
         ..IoMesh::default()
     })
+}
+
+#[cfg(feature = "gltf-draco")]
+mod draco {
+    use draco_core::{DataType, DecoderBuffer, Mesh, MeshDecoder, PointAttribute};
+    use serde_json::Value;
+
+    use super::VertexStreams;
+    use crate::error::IoError;
+
+    pub(super) const EXTENSION: &str = "KHR_draco_mesh_compression";
+
+    /// Decode the primitive's Draco stream into its vertex streams.
+    ///
+    /// The extension's `attributes` object maps each glTF semantic to a Draco
+    /// attribute id; the semantic's accessor still says how many components it
+    /// has and whether integer values are normalised. Semantics the loader
+    /// does not carry are skipped. Indices come from the decoded faces.
+    pub(super) fn read_streams(
+        document: &gltf::Document,
+        primitive: &gltf::Primitive,
+        extension: &Value,
+        buffers: &[gltf::buffer::Data],
+    ) -> Result<VertexStreams, IoError> {
+        let invalid = |reason: &str| IoError::Parse(format!("glTF {EXTENSION}: {reason}"));
+        let view_index = extension
+            .get("bufferView")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| invalid("no bufferView"))? as usize;
+        let attributes = extension
+            .get("attributes")
+            .and_then(Value::as_object)
+            .ok_or_else(|| invalid("no attributes"))?;
+        let view = document
+            .views()
+            .nth(view_index)
+            .ok_or_else(|| invalid("bufferView out of range"))?;
+        let bytes = buffers
+            .get(view.buffer().index())
+            .and_then(|data| data.0.get(view.offset()..view.offset() + view.length()))
+            .ok_or_else(|| invalid("bufferView range is outside its buffer"))?;
+
+        let mut decoded = Mesh::new();
+        MeshDecoder::new()
+            .decode(&mut DecoderBuffer::new(bytes), &mut decoded)
+            .map_err(|error| invalid(&error.to_string()))?;
+        let point_count = decoded.num_points();
+
+        let mut streams = VertexStreams {
+            indices: Some(
+                decoded
+                    .faces()
+                    .iter()
+                    .flat_map(|face| face.map(|point| point.0))
+                    .collect(),
+            ),
+            ..VertexStreams::default()
+        };
+        for (semantic, id) in attributes {
+            let Some(id) = id.as_u64() else {
+                return Err(invalid(&format!("{semantic} has a non-integer id")));
+            };
+            let attribute = decoded
+                .attribute_by_unique_id(id as u32)
+                .ok_or_else(|| invalid(&format!("{semantic} names missing attribute {id}")))?;
+            let accessor = primitive
+                .attributes()
+                .find(|(s, _)| s.to_string() == *semantic)
+                .map(|(_, accessor)| accessor);
+            let normalized =
+                accessor.as_ref().is_some_and(gltf::Accessor::normalized) || attribute.normalized();
+            let components = accessor
+                .as_ref()
+                .map_or(attribute.num_components() as usize, |a| {
+                    a.dimensions().multiplicity()
+                });
+            let read = |n: usize| read_values(attribute, point_count, n, normalized);
+            match semantic.as_str() {
+                "POSITION" => streams.positions = vectors(read(3)),
+                "NORMAL" => streams.normals = Some(vectors(read(3))),
+                "TANGENT" => streams.tangents = Some(vectors(read(4))),
+                "TEXCOORD_0" => streams.uvs = Some(vectors(read(2))),
+                "TEXCOORD_1" => streams.uvs1 = Some(vectors(read(2))),
+                "COLOR_0" => {
+                    let values = read(components.clamp(3, 4));
+                    streams.colours = Some(if components == 3 {
+                        values
+                            .chunks_exact(3)
+                            .map(|c| [c[0], c[1], c[2], 1.0])
+                            .collect()
+                    } else {
+                        vectors(values)
+                    });
+                }
+                "JOINTS_0" => {
+                    streams.joints = Some(
+                        read(4)
+                            .chunks_exact(4)
+                            .map(|j| [j[0] as u16, j[1] as u16, j[2] as u16, j[3] as u16])
+                            .collect(),
+                    )
+                }
+                "WEIGHTS_0" => streams.weights = Some(vectors(read(4))),
+                _ => {}
+            }
+        }
+        Ok(streams)
+    }
+
+    /// `components` values per point as `f32`, normalised from the stored
+    /// integer type when `normalized` is set.
+    fn read_values(
+        attribute: &PointAttribute,
+        point_count: usize,
+        components: usize,
+        normalized: bool,
+    ) -> Vec<f32> {
+        let mut values = attribute.read_f32s(point_count, components);
+        if normalized {
+            let scale = match attribute.data_type() {
+                DataType::Uint8 => Some((255.0, 0.0)),
+                DataType::Int8 => Some((127.0, -1.0)),
+                DataType::Uint16 => Some((65535.0, 0.0)),
+                DataType::Int16 => Some((32767.0, -1.0)),
+                _ => None,
+            };
+            if let Some((max, min)) = scale {
+                for value in &mut values {
+                    *value = (*value / max).max(min);
+                }
+            }
+        }
+        values
+    }
+
+    fn vectors<const N: usize>(values: Vec<f32>) -> Vec<[f32; N]> {
+        values
+            .chunks_exact(N)
+            .map(|chunk| std::array::from_fn(|i| chunk[i]))
+            .collect()
+    }
+    #[cfg(test)]
+    mod tests {
+        use draco_core::{
+            DataType, EncoderBuffer, EncoderOptions, FaceIndex, GeometryAttributeType, Mesh,
+            MeshEncoder, PointAttribute,
+        };
+        use viewport_lib_io_testkit::synth::glb;
+
+        use super::super::super::scene_from_slice;
+
+        fn attribute(
+            kind: GeometryAttributeType,
+            components: u8,
+            values: &[f32],
+        ) -> PointAttribute {
+            let mut attribute = PointAttribute::new();
+            let count = values.len() / components as usize;
+            attribute.init(kind, components, DataType::Float32, false, count);
+            for (i, value) in values.iter().enumerate() {
+                attribute.buffer_mut().write(i * 4, &value.to_le_bytes());
+            }
+            attribute
+        }
+
+        /// A quad whose Draco stream holds UVs as attribute 0 and positions as
+        /// attribute 1, beside uncompressed accessors holding other values:
+        /// the stream wins, and the ids map through the extension.
+        #[test]
+        fn reads_the_draco_stream_through_the_attribute_id_table() {
+            let positions = [
+                0.0f32, 0.0, 0.0, 2.0, 0.0, 0.0, 2.0, 2.0, 0.0, 0.0, 2.0, 0.0,
+            ];
+            let uvs = [0.0f32, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0];
+            let mut mesh = Mesh::new();
+            let uv_id = mesh.add_attribute(attribute(GeometryAttributeType::TexCoord, 2, &uvs));
+            let position_id =
+                mesh.add_attribute(attribute(GeometryAttributeType::Position, 3, &positions));
+            mesh.set_num_faces(2);
+            mesh.set_face(FaceIndex(0), [0u32.into(), 1u32.into(), 2u32.into()]);
+            mesh.set_face(FaceIndex(1), [0u32.into(), 2u32.into(), 3u32.into()]);
+            let mut encoder = MeshEncoder::new();
+            encoder.set_mesh(mesh);
+            let mut encoded = EncoderBuffer::new();
+            encoder
+                .encode(&EncoderOptions::new(), &mut encoded)
+                .unwrap();
+
+            // A decoy uncompressed triangle the loader must not read.
+            let mut bin = Vec::new();
+            for value in [9.0f32, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0] {
+                bin.extend_from_slice(&value.to_le_bytes());
+            }
+            let draco_offset = bin.len();
+            bin.extend_from_slice(encoded.data());
+            let draco_len = encoded.data().len();
+            while bin.len() % 4 != 0 {
+                bin.push(0);
+            }
+            let json = format!(
+                r#"{{"asset":{{"version":"2.0"}},
+                "extensionsUsed":["KHR_draco_mesh_compression"],
+                "extensionsRequired":["KHR_draco_mesh_compression"],
+                "scene":0,"scenes":[{{"nodes":[0]}}],"nodes":[{{"mesh":0}}],
+                "meshes":[{{"primitives":[{{
+                  "attributes":{{"POSITION":0,"TEXCOORD_0":1}},"indices":2,
+                  "extensions":{{"KHR_draco_mesh_compression":{{"bufferView":1,
+                    "attributes":{{"POSITION":{position_id},"TEXCOORD_0":{uv_id}}}}}}}}}]}}],
+                "accessors":[
+                  {{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[9,9,9],"max":[9,9,9]}},
+                  {{"componentType":5126,"count":4,"type":"VEC2"}},
+                  {{"componentType":5125,"count":6,"type":"SCALAR"}}],
+                "bufferViews":[
+                  {{"buffer":0,"byteOffset":0,"byteLength":36}},
+                  {{"buffer":0,"byteOffset":{draco_offset},"byteLength":{draco_len}}}],
+                "buffers":[{{"byteLength":{bin_len}}}]}}"#,
+                bin_len = bin.len(),
+            );
+
+            let scene = scene_from_slice(&glb(json.as_bytes(), &bin), None).unwrap();
+            let mesh = &scene.meshes[0].mesh;
+            assert_eq!(mesh.positions.len(), 4);
+            assert_eq!(mesh.indices.len(), 6);
+            // Every decoded corner is a quad corner (glTF (x, y, 0) is (x, 0, y)
+            // in Z-up), with the UV that went in beside it.
+            let uv_of = |p: [f32; 3]| [p[0] / 2.0, p[2] / 2.0];
+            let decoded_uvs = mesh.uvs.as_ref().expect("uvs");
+            for (position, uv) in mesh.positions.iter().zip(decoded_uvs) {
+                assert!(position[1].abs() < 1e-6 && position.iter().all(|v| *v != 9.0));
+                assert_eq!(*uv, uv_of(*position));
+            }
+        }
+    }
 }
 
 #[cfg(test)]
