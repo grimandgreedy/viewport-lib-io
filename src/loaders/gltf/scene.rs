@@ -11,6 +11,7 @@ use super::axis::reorient_mesh_z_up;
 use super::material::convert_material;
 use super::node::{collect_node, convert_lights, convert_nodes};
 use super::skin::convert_skeletons;
+use super::texture::ImageTable;
 
 /// Decode a glTF or GLB blob into a scene. `base` resolves external buffer and
 /// image URIs.
@@ -21,16 +22,11 @@ pub(super) fn build_scene(data: &[u8], base: Option<&Path>) -> Result<IoScene, I
     let buffers = gltf::import_buffers(&gltf, base, blob)
         .map_err(|error| IoError::Parse(format!("glTF buffers failed: {error:?}")))?;
     let document = gltf.document;
-    let images = gltf::import_images(&document, base, &buffers).unwrap_or_default();
-
-    // External texture URIs are resolved relative to `base`. When `base`
-    // is `None` we fall back to the current working directory only as a
-    // last resort; data URIs and embedded textures still work either way.
-    let texture_base = base.unwrap_or(Path::new("."));
+    let images = ImageTable::load(&document, base, &buffers);
 
     let materials = document
         .materials()
-        .map(|material| convert_material(&material, &images, texture_base))
+        .map(|material| convert_material(&material, &images))
         .collect();
 
     // Reject skeletons that overflow the fixed-size skinning palette

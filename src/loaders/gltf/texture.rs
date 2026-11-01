@@ -1,42 +1,72 @@
 //! The images behind material textures, converted to `TextureData` for the slot
 //! that samples them.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use viewport_lib_types::data::texture::TextureData;
 use viewport_lib_types::material::TextureSlot;
 
 use crate::types::TextureSource;
 
-/// Resolve the image behind a texture to a [`TextureSource`].
+/// Every image in the document, decoded once, for the materials to draw on.
 ///
-/// An image the document embedded (a GLB chunk or a data URI) comes back as
-/// decoded pixels labelled for `slot`; one stored beside the file comes back as
-/// a path resolved against `parent_dir`, so the caller can decide when to read
-/// it.
-pub(super) fn image_to_texture_source(
-    texture: &gltf::Texture,
-    slot: TextureSlot,
-    images: &[gltf::image::Data],
-    parent_dir: &Path,
-) -> Option<TextureSource> {
-    let source = texture.source();
-    let index = source.index();
+/// Each image decodes on its own, so one the loader cannot read (an unsupported
+/// encoding, a missing file) leaves the others intact.
+pub(super) struct ImageTable {
+    /// Decoded pixels per document image, `None` where the image did not decode.
+    decoded: Vec<Option<gltf::image::Data>>,
+    /// Directory that external image URIs resolve against.
+    parent_dir: PathBuf,
+}
 
-    if let Some(data) = images.get(index) {
-        return Some(TextureSource::Decoded(TextureData::for_slot(
-            data.width,
-            data.height,
-            to_rgba8(data),
-            slot,
-        )));
+impl ImageTable {
+    /// Decode every image in `document`. External URIs resolve against `base`;
+    /// with no base only embedded images (GLB chunks) decode.
+    pub(super) fn load(
+        document: &gltf::Document,
+        base: Option<&Path>,
+        buffers: &[gltf::buffer::Data],
+    ) -> Self {
+        let decoded = document
+            .images()
+            .map(|image| gltf::image::Data::from_source(image.source(), base, buffers).ok())
+            .collect();
+        Self {
+            decoded,
+            // With no base, a path is still returned relative to the working
+            // directory, as a last resort.
+            parent_dir: base.unwrap_or(Path::new(".")).to_path_buf(),
+        }
     }
 
-    match source.source() {
-        gltf::image::Source::Uri { uri, .. } if !uri.starts_with("data:") => {
-            Some(TextureSource::File(parent_dir.join(uri)))
+    /// Resolve the image behind a texture to a [`TextureSource`], labelled for
+    /// `slot`. `None` for a texture with no image.
+    ///
+    /// An image the document embedded (a GLB chunk or a data URI) comes back as
+    /// decoded pixels; one stored beside the file that did not decode comes back
+    /// as a path resolved against the base directory, so the caller can decide
+    /// when to read it.
+    pub(super) fn texture_source(
+        &self,
+        texture: &gltf::Texture,
+        slot: TextureSlot,
+    ) -> Option<TextureSource> {
+        let image = texture.source()?;
+        if let Some(Some(data)) = self.decoded.get(image.index()) {
+            return Some(TextureSource::Decoded(TextureData::for_slot(
+                data.width,
+                data.height,
+                to_rgba8(data),
+                slot,
+            )));
         }
-        _ => None,
+
+        match image.source() {
+            gltf::image::Source::Uri { uri, .. } if !uri.starts_with("data:") => {
+                Some(TextureSource::File(self.parent_dir.join(uri)))
+            }
+            _ => None,
+        }
     }
 }
 
@@ -134,5 +164,82 @@ pub(super) fn to_rgba8(data: &gltf::image::Data) -> Vec<u8> {
             }
             rgba
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::scene_from_slice;
+    use crate::types::TextureSource;
+    use viewport_lib_io_testkit::synth::glb;
+
+    /// A 1x1 RGBA PNG.
+    const PNG_1X1: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0xF8,
+        0xCF, 0xC0, 0xF0, 0x1F, 0x00, 0x05, 0x00, 0x01, 0xFF, 0x89, 0x99, 0x3D, 0x1D, 0x00, 0x00,
+        0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+
+    /// One triangle and three materials: one on an image that does not decode,
+    /// one on a good PNG, and one on a texture with no image at all.
+    fn three_texture_glb() -> Vec<u8> {
+        let mut bin = Vec::new();
+        for value in [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+            bin.extend_from_slice(&value.to_le_bytes());
+        }
+        let garbage_offset = bin.len();
+        bin.extend_from_slice(b"not a png at all");
+        let png_offset = bin.len();
+        bin.extend_from_slice(PNG_1X1);
+        while bin.len() % 4 != 0 {
+            bin.push(0);
+        }
+        let json = format!(
+            r#"{{"asset":{{"version":"2.0"}},"scene":0,
+            "scenes":[{{"nodes":[0,1,2]}}],
+            "nodes":[{{"mesh":0}},{{"mesh":1}},{{"mesh":2}}],
+            "meshes":[
+              {{"primitives":[{{"attributes":{{"POSITION":0}},"material":0}}]}},
+              {{"primitives":[{{"attributes":{{"POSITION":0}},"material":1}}]}},
+              {{"primitives":[{{"attributes":{{"POSITION":0}},"material":2}}]}}],
+            "materials":[
+              {{"pbrMetallicRoughness":{{"baseColorTexture":{{"index":0}}}}}},
+              {{"pbrMetallicRoughness":{{"baseColorTexture":{{"index":1}}}}}},
+              {{"pbrMetallicRoughness":{{"baseColorTexture":{{"index":2}}}}}}],
+            "textures":[{{"source":0}},{{"source":1}},{{}}],
+            "images":[
+              {{"bufferView":1,"mimeType":"image/png"}},
+              {{"bufferView":2,"mimeType":"image/png"}}],
+            "accessors":[{{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3",
+              "min":[0.0,0.0,0.0],"max":[1.0,1.0,0.0]}}],
+            "bufferViews":[
+              {{"buffer":0,"byteOffset":0,"byteLength":36}},
+              {{"buffer":0,"byteOffset":{garbage_offset},"byteLength":16}},
+              {{"buffer":0,"byteOffset":{png_offset},"byteLength":{png_len}}}],
+            "buffers":[{{"byteLength":{bin_len}}}]}}"#,
+            png_len = PNG_1X1.len(),
+            bin_len = bin.len(),
+        );
+        glb(json.as_bytes(), &bin)
+    }
+
+    #[test]
+    fn one_bad_image_leaves_the_others_and_a_sourceless_texture_is_skipped() {
+        let scene = scene_from_slice(&three_texture_glb(), None).unwrap();
+        assert_eq!(scene.materials.len(), 3);
+
+        assert!(
+            scene.materials[0].base_color_texture.is_none(),
+            "an embedded image that does not decode has nothing to fall back to"
+        );
+        match &scene.materials[1].base_color_texture {
+            Some(TextureSource::Decoded(image)) => {
+                assert_eq!((image.width(), image.height()), (1, 1));
+            }
+            other => panic!("expected the good PNG to decode, got {other:?}"),
+        }
+        assert!(scene.materials[2].base_color_texture.is_none());
     }
 }

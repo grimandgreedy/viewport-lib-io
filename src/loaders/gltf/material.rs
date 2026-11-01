@@ -1,13 +1,11 @@
 //! Materials and the textures they reference.
 
-use std::path::Path;
-
 use viewport_lib_types::material::{
     AlphaMode, MATERIAL_TEXTURE_SLOTS, TextureFilter, TextureSlot, UvTransform, WrapMode,
 };
 
 use super::material_extensions::read_material_extensions;
-use super::texture::image_to_texture_source;
+use super::texture::ImageTable;
 use crate::types::{IoMaterial, TextureSampler, uv_transform_from_origin_rotation};
 
 /// The per-slot sampling state a material is built up with: how each slot
@@ -24,11 +22,7 @@ struct SlotState {
 /// specular, clear coat, sheen and anisotropy extensions. A specular-glossiness
 /// material is converted to metallic-roughness first, since that is the only
 /// model the neutral type carries.
-pub(super) fn convert_material(
-    material: &gltf::Material,
-    images: &[gltf::image::Data],
-    parent_dir: &Path,
-) -> IoMaterial {
+pub(super) fn convert_material(material: &gltf::Material, images: &ImageTable) -> IoMaterial {
     let mut slots = SlotState {
         uv_transforms: [None; MATERIAL_TEXTURE_SLOTS],
         samplers: [None; MATERIAL_TEXTURE_SLOTS],
@@ -51,7 +45,7 @@ pub(super) fn convert_material(
             // roughness. There is no metallic-roughness texture on this path.
             let texture = sg.diffuse_texture().and_then(|info| {
                 record_info(&mut slots, TextureSlot::Albedo, &info);
-                image_to_texture_source(&info.texture(), TextureSlot::Albedo, images, parent_dir)
+                images.texture_source(&info.texture(), TextureSlot::Albedo)
             });
             (
                 rgb,
@@ -66,16 +60,11 @@ pub(super) fn convert_material(
             let base_color_factor = pbr.base_color_factor();
             let texture = pbr.base_color_texture().and_then(|info| {
                 record_info(&mut slots, TextureSlot::Albedo, &info);
-                image_to_texture_source(&info.texture(), TextureSlot::Albedo, images, parent_dir)
+                images.texture_source(&info.texture(), TextureSlot::Albedo)
             });
             let mr_texture = pbr.metallic_roughness_texture().and_then(|info| {
                 record_info(&mut slots, TextureSlot::MetallicRoughness, &info);
-                image_to_texture_source(
-                    &info.texture(),
-                    TextureSlot::MetallicRoughness,
-                    images,
-                    parent_dir,
-                )
+                images.texture_source(&info.texture(), TextureSlot::MetallicRoughness)
             });
             (
                 [
@@ -97,7 +86,7 @@ pub(super) fn convert_material(
     let emissive_strength = material.emissive_strength().unwrap_or(1.0);
     let emissive_texture = material.emissive_texture().and_then(|info| {
         record_info(&mut slots, TextureSlot::Emissive, &info);
-        image_to_texture_source(&info.texture(), TextureSlot::Emissive, images, parent_dir)
+        images.texture_source(&info.texture(), TextureSlot::Emissive)
     });
 
     let alpha_mode = match material.alpha_mode() {
@@ -119,7 +108,7 @@ pub(super) fn convert_material(
             info.extension_value(TEXTURE_TRANSFORM),
             &info.texture(),
         );
-        image_to_texture_source(&info.texture(), TextureSlot::Normal, images, parent_dir)
+        images.texture_source(&info.texture(), TextureSlot::Normal)
     });
 
     let occlusion_texture = material.occlusion_texture();
@@ -132,7 +121,7 @@ pub(super) fn convert_material(
             info.extension_value(TEXTURE_TRANSFORM),
             &info.texture(),
         );
-        image_to_texture_source(&info.texture(), TextureSlot::Ao, images, parent_dir)
+        images.texture_source(&info.texture(), TextureSlot::Ao)
     });
 
     let mut converted = IoMaterial {
