@@ -320,10 +320,17 @@ mod ktx2 {
         // A two-channel normal map stores X in RGB and Y in alpha, the layout
         // Basis Universal's normal-map mode writes. Grey RGB with alpha is the
         // tell; a three-channel normal map never has R = G = B throughout.
-        let rgba = transcoder
-            .transcode(0, TargetFormat::Rgba32, DecodeFlags::NONE)
-            .ok()?;
-        let two_channel_normal = role == Role::Normal && transcoder.has_alpha() && is_grey(&rgba);
+        let base_rgba = || {
+            transcoder
+                .transcode(0, TargetFormat::Rgba32, DecodeFlags::NONE)
+                .ok()
+        };
+        // Only a normal map with alpha needs its texels looked at.
+        let mut rgba = None;
+        let two_channel_normal = role == Role::Normal && transcoder.has_alpha() && {
+            rgba = base_rgba();
+            rgba.as_deref().is_some_and(is_grey)
+        };
 
         let chosen = match target {
             GltfTextureTarget::Rgba8 => None,
@@ -376,6 +383,10 @@ mod ktx2 {
             }
         }
 
+        let rgba = match rgba {
+            Some(rgba) => rgba,
+            None => base_rgba()?,
+        };
         let rgba = if two_channel_normal {
             rebuild_normals(&rgba)
         } else {
