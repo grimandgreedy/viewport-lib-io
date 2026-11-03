@@ -1,6 +1,6 @@
 [package]
 name = "viewport-lib-io"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 description = "File format loaders and exporters for viewport-lib"
 readme = "README.md"
@@ -89,7 +89,7 @@ serde_json = { version = "1", optional = true }
 stl_io = { version = "0.7", optional = true }
 thiserror = "2.0"
 tobj = { version = "4", optional = true }
-viewport-lib-types = { version = "0.2", default-features = false }
+viewport-lib-types = { version = "0.3", default-features = false }
 # The Gaussian splat payload. Default features off: they turn on the plugin's
 # `gpu` feature, which brings viewport-lib and wgpu back.
 viewport-lib-plugins = { version = "0.1", default-features = false, features = ["item-types"] }
