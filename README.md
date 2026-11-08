@@ -136,3 +136,15 @@ The stored units are undone on the way in: scales are logarithms, opacity is a
 logit, and the quaternion is written `w` first and unnormalised. The
 spherical-harmonic degree is read from how many `f_rest_*` properties the file
 carries.
+
+## Versions
+
+| viewport-lib-io | viewport-lib | viewport-lib-types |
+| --- | --- | --- |
+| 0.9.0 | 0.23 | 0.3 |
+| 0.8.0 | 0.23 | - |
+| 0.7.0 | 0.21 - 0.22 | - |
+| 0.4.0 | 0.20 | - |
+| 0.3.0 | 0.20 | - |
+| 0.2.0 | 0.17 - 0.19 | - |
+| 0.1.0 | 0.15 - 0.16 | - |
