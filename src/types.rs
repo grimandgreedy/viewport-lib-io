@@ -15,6 +15,9 @@ use viewport_lib_types::material::{
     TextureFilter, TextureSlot, UvTransform, WrapMode,
 };
 use viewport_lib_types::overlay::vector::{FillRule, SubPath};
+use viewport_lib_types::overlay::{
+    GradientStop, LineCap, LineJoin, OverlayFill, OverlayStroke, StrokePattern,
+};
 
 /// Maximum number of joints permitted in a single skeleton.
 ///
@@ -1064,17 +1067,172 @@ pub struct SceneData {
     pub node_animations: Vec<NodeAnimationClip>,
 }
 
+/// How a gradient carries on past its end stops.
+///
+/// Follows SVG's `spreadMethod`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum SpreadMethod {
+    /// The end colours extend outward. Default.
+    #[default]
+    Pad,
+    /// The gradient runs back and forth: each repeat is the mirror of the last.
+    Reflect,
+    /// The gradient starts again from the first stop.
+    Repeat,
+}
+
+/// A fill or stroke paint on a [`VectorShape`].
+///
+/// Gradients keep the source geometry rather than a renderer's approximation of
+/// it. Each is defined in its own frame, which `transform` maps into the art's
+/// coordinates (the frame of [`VectorShape::subpaths`]: X right, Y down). The
+/// transform folds in everything between the two: the gradient's own transform,
+/// the shape's bounding box for a gradient given in bounding-box units, and the
+/// transforms baked into the shape's geometry.
+///
+/// Stop colours are linear, with alpha carrying the stop opacity multiplied by
+/// the paint and group opacity.
+#[derive(Debug, Clone, PartialEq)]
+pub enum VectorPaint {
+    /// One colour, alpha carrying the paint opacity multiplied by any enclosing
+    /// group opacity.
+    Solid(Colour),
+    /// A linear gradient: position `0` at `start`, position `1` at `end`, and
+    /// constant along lines perpendicular to that axis in the gradient's frame.
+    LinearGradient {
+        /// Where position `0` sits, in the gradient's frame.
+        start: [f32; 2],
+        /// Where position `1` sits, in the gradient's frame.
+        end: [f32; 2],
+        /// Colour stops, sorted by position, positions in `0..=1`.
+        stops: Vec<GradientStop>,
+        /// What happens past the end stops.
+        spread: SpreadMethod,
+        /// Maps the gradient's frame into the art's coordinates.
+        transform: glam::Affine2,
+    },
+    /// A radial gradient: position `0` at `focal`, position `1` on the circle
+    /// of `radius` about `centre`, in the gradient's frame.
+    RadialGradient {
+        /// Centre of the end circle, in the gradient's frame.
+        centre: [f32; 2],
+        /// Radius of the end circle, in the gradient's frame.
+        radius: f32,
+        /// Where position `0` sits. Equal to `centre` unless the source moved
+        /// the focal point.
+        focal: [f32; 2],
+        /// Colour stops, sorted by position, positions in `0..=1`.
+        stops: Vec<GradientStop>,
+        /// What happens past the end stops.
+        spread: SpreadMethod,
+        /// Maps the gradient's frame into the art's coordinates. Under a
+        /// non-uniform scale or a skew the circle becomes an ellipse.
+        transform: glam::Affine2,
+    },
+}
+
+impl VectorPaint {
+    /// Convert to the overlay fill a renderer draws, for an item covering
+    /// `bounds` (`[min_x, min_y, max_x, max_y]`) in the art's coordinates.
+    ///
+    /// Overlay gradients are relative to the item's box: a linear gradient is
+    /// an angle across it and a radial one runs from its centre to its larger
+    /// half-extent. The stops are resampled so the colours land where the
+    /// source puts them within `bounds`:
+    ///
+    /// - A linear gradient converts exactly, whatever its spread or transform,
+    ///   provided the item is drawn at a uniform scale of the art. Repeating
+    ///   spreads become one stop run per repeat.
+    /// - A radial gradient converts exactly when its circle is centred on
+    ///   `bounds`, its focal point is its centre, and its transform has no
+    ///   skew or non-uniform scale, out to the larger half-extent of `bounds`.
+    ///   The overlay stops there, so the corners beyond hold that ring's
+    ///   colour. Otherwise it is approximated: an off-centre circle is drawn
+    ///   about the box centre, an ellipse as a circle of the mean radius, and
+    ///   the focal point is ignored.
+    ///
+    /// The overlay blends between stops in linear colour, where SVG blends in
+    /// sRGB, so a wide two-colour step can look slightly different midway.
+    pub fn to_overlay_fill(&self, bounds: [f32; 4]) -> OverlayFill {
+        let centre = [(bounds[0] + bounds[2]) * 0.5, (bounds[1] + bounds[3]) * 0.5];
+        let half = [
+            ((bounds[2] - bounds[0]) * 0.5).abs(),
+            ((bounds[3] - bounds[1]) * 0.5).abs(),
+        ];
+        match self {
+            VectorPaint::Solid(colour) => OverlayFill::Solid(*colour),
+            VectorPaint::LinearGradient {
+                start,
+                end,
+                stops,
+                spread,
+                transform,
+            } => match linear_gradient_axis(*start, *end, *transform) {
+                Some((origin, axis)) => {
+                    let (angle, t0, t1) = linear_gradient_span(origin, axis, centre, half);
+                    OverlayFill::LinearGradient {
+                        stops: resample_stops(stops, *spread, t0, t1),
+                        angle,
+                    }
+                }
+                // SVG paints a gradient with no length in its last stop.
+                None => OverlayFill::Solid(last_stop_colour(stops)),
+            },
+            VectorPaint::RadialGradient {
+                radius,
+                stops,
+                spread,
+                transform,
+                ..
+            } => {
+                let det = transform.matrix2.determinant().abs();
+                let radius = radius * det.sqrt();
+                if radius.is_nan() || radius <= 0.0 {
+                    return OverlayFill::Solid(last_stop_colour(stops));
+                }
+                // The overlay's position 1 sits at the larger half-extent.
+                let t1 = half[0].max(half[1]) / radius;
+                OverlayFill::RadialGradient {
+                    stops: resample_stops(stops, *spread, 0.0, t1),
+                }
+            }
+        }
+    }
+
+    /// One colour standing in for the paint: the solid colour, or a gradient's
+    /// average over its stops.
+    pub fn mean_colour(&self) -> Colour {
+        match self {
+            VectorPaint::Solid(colour) => *colour,
+            VectorPaint::LinearGradient { stops, .. }
+            | VectorPaint::RadialGradient { stops, .. } => mean_stop_colour(stops),
+        }
+    }
+}
+
+/// The dash pattern of a [`VectorStroke`], following SVG's `stroke-dasharray`
+/// and `stroke-dashoffset`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VectorDashes {
+    /// Alternating dash and gap lengths, starting with a dash, in the same user
+    /// units as the stroke width. Always an even count: an odd list from the
+    /// source is repeated once, as SVG specifies.
+    pub array: Vec<f32>,
+    /// How far into the pattern the stroke starts, in the same units.
+    pub offset: f32,
+}
+
 /// An outline stroke on a [`VectorShape`]: the contours drawn at `width` in the
-/// drawing's user units, in `colour`.
+/// drawing's user units, in `paint`.
 ///
 /// Open subpaths stroke as open lines and closed ones stroke their whole
 /// boundary, which is what makes stroke-drawn art (most icon and cursor sets)
 /// readable: those contours are lines, not the outlines of filled blobs.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct VectorStroke {
-    /// Stroke colour, alpha carrying the stroke opacity multiplied by any
+    /// Stroke paint, alpha carrying the stroke opacity multiplied by any
     /// enclosing group opacity.
-    pub colour: Colour,
+    pub paint: VectorPaint,
     /// Stroke width in the same user units as the contour coordinates.
     ///
     /// Scaled by the transform baked into the geometry, so it stays in step
@@ -1086,6 +1244,242 @@ pub struct VectorStroke {
     /// that `viewport-lib-ui` measures its own stroke width in logical pixels,
     /// so that scale factor is exactly the conversion.
     pub width: f32,
+    /// How open ends and dash ends are drawn.
+    pub cap: LineCap,
+    /// How corners between segments are drawn.
+    pub join: LineJoin,
+    /// The longest a mitre corner may run, as a multiple of the width, before
+    /// it is drawn as a bevel instead.
+    pub mitre_limit: f32,
+    /// The dash pattern, or `None` for a continuous stroke. Scaled with the
+    /// width.
+    pub dashes: Option<VectorDashes>,
+}
+
+impl VectorStroke {
+    /// Convert to the overlay stroke a renderer draws, with every length
+    /// multiplied by `scale`: the factor from the art's user units to the
+    /// overlay's logical pixels.
+    ///
+    /// Cap, join and mitre limit carry over exactly. A two-entry dash array
+    /// does too; a longer one becomes a single dash and gap, each the average
+    /// of its kind. The overlay strokes in one colour, so a gradient stroke
+    /// paint becomes its [`VectorPaint::mean_colour`].
+    pub fn to_overlay_stroke(&self, scale: f32) -> OverlayStroke {
+        let mut stroke = OverlayStroke::new(self.width * scale, self.paint.mean_colour())
+            .with_cap(self.cap)
+            .with_join(self.join)
+            .with_mitre_limit(self.mitre_limit);
+        if let Some(dashes) = &self.dashes {
+            stroke = stroke.with_pattern(dash_pattern(&dashes.array, dashes.offset, scale));
+        }
+        stroke
+    }
+}
+
+/// The point at position `0` and the gradient vector of a linear gradient, both
+/// in the art's coordinates: position at `p` is `dot(p - origin, axis)`.
+///
+/// Mapping the two end points is not enough under a skew or non-uniform scale,
+/// because lines of equal position stay parallel but stop being perpendicular
+/// to the mapped axis. The gradient is a linear function of the point, so it
+/// pulls back through the inverse transform exactly. `None` when the gradient
+/// or its transform has no extent.
+fn linear_gradient_axis(
+    start: [f32; 2],
+    end: [f32; 2],
+    transform: glam::Affine2,
+) -> Option<(glam::Vec2, glam::Vec2)> {
+    let d = glam::Vec2::from(end) - glam::Vec2::from(start);
+    let len2 = d.length_squared();
+    if len2.is_nan() || len2 <= 0.0 || transform.matrix2.determinant() == 0.0 {
+        return None;
+    }
+    let axis = transform.matrix2.inverse().transpose() * d / len2;
+    axis.is_finite()
+        .then(|| (transform.transform_point2(start.into()), axis))
+}
+
+/// The overlay angle for a linear gradient, and the source positions the
+/// overlay's `0` and `1` land on across a box of `half` extents about
+/// `centre`.
+fn linear_gradient_span(
+    origin: glam::Vec2,
+    axis: glam::Vec2,
+    centre: [f32; 2],
+    half: [f32; 2],
+) -> (f32, f32, f32) {
+    let dir = axis.normalize();
+    let angle = dir.y.atan2(dir.x);
+    // The overlay runs position 0 to 1 across the box's extent along `dir`.
+    let reach = (half[0] * dir.x).abs() + (half[1] * dir.y).abs();
+    let mid = (glam::Vec2::from(centre) - origin).dot(axis);
+    let span = reach * axis.length();
+    (angle, mid - span, mid + span)
+}
+
+/// Resample `stops` so the overlay's position `0..=1` shows the source
+/// gradient's positions `t0..=t1` (with `t0 < t1`), spread as `spread` says
+/// past its ends.
+///
+/// The output has a stop at each end and at every source stop and repeat
+/// boundary in between, so it is exact for an overlay that blends linearly
+/// between stops. A spread over a very long range is capped at a few hundred
+/// repeats.
+fn resample_stops(
+    stops: &[GradientStop],
+    spread: SpreadMethod,
+    t0: f32,
+    t1: f32,
+) -> Vec<GradientStop> {
+    const MAX_REPEATS: f32 = 256.0;
+    if stops.is_empty() {
+        return Vec::new();
+    }
+    if !(t1 - t0).is_finite() || t1 - t0 <= f32::EPSILON {
+        return vec![GradientStop::new(0.0, sample_spread(stops, spread, t0))];
+    }
+
+    // Source positions where the colour can bend: each stop, in every repeat
+    // the range crosses.
+    let mut breaks = vec![t0, t1];
+    match spread {
+        SpreadMethod::Pad => breaks.extend(stops.iter().map(|s| s.position)),
+        SpreadMethod::Repeat | SpreadMethod::Reflect => {
+            let mut period = t0.floor().max(t1.floor() - MAX_REPEATS);
+            while period <= t1.floor() {
+                breaks.push(period);
+                for stop in stops {
+                    breaks.push(period + stop.position);
+                    breaks.push(period + 1.0 - stop.position);
+                }
+                period += 1.0;
+            }
+        }
+    }
+    breaks.retain(|t| *t >= t0 && *t <= t1);
+    breaks.sort_by(f32::total_cmp);
+    breaks.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+
+    // A repeat boundary, or two source stops at one position, is a hard edge.
+    // The colour is read just either side of each inner break, and where the
+    // two differ both are kept at the same position, which the overlay draws
+    // as a step.
+    let last = breaks.len() - 1;
+    let mut out = Vec::with_capacity(breaks.len() * 2);
+    for (i, &t) in breaks.iter().enumerate() {
+        let position = (t - t0) / (t1 - t0);
+        let eps = 1e-4_f32.max(t.abs() * 1e-6);
+        let before = sample_spread(stops, spread, t - eps);
+        let after = sample_spread(stops, spread, t + eps);
+        if i == 0 {
+            out.push(GradientStop::new(position, after));
+        } else if i == last {
+            out.push(GradientStop::new(position, before));
+        } else if colour_close(before, after) {
+            out.push(GradientStop::new(position, sample_spread(stops, spread, t)));
+        } else {
+            out.push(GradientStop::new(position, before));
+            out.push(GradientStop::new(position, after));
+        }
+    }
+    out
+}
+
+fn colour_close(a: Colour, b: Colour) -> bool {
+    let (a, b) = (a.to_linear_rgba(), b.to_linear_rgba());
+    a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-3)
+}
+
+/// The colour at source position `t`, with the spread applied past the ends.
+fn sample_spread(stops: &[GradientStop], spread: SpreadMethod, t: f32) -> Colour {
+    let t = match spread {
+        SpreadMethod::Pad => t,
+        SpreadMethod::Repeat => t - t.floor(),
+        SpreadMethod::Reflect => {
+            let m = t.rem_euclid(2.0);
+            if m > 1.0 { 2.0 - m } else { m }
+        }
+    };
+    sample_stops(stops, t)
+}
+
+/// The colour at position `t` along sorted stops, clamped to the end stops.
+fn sample_stops(stops: &[GradientStop], t: f32) -> Colour {
+    let Some(first) = stops.first() else {
+        return Colour::linear(0.0, 0.0, 0.0, 0.0);
+    };
+    if t <= first.position {
+        return first.colour;
+    }
+    for pair in stops.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        if t <= b.position {
+            let span = b.position - a.position;
+            if span <= 0.0 {
+                return b.colour;
+            }
+            return a.colour.lerp(b.colour, (t - a.position) / span);
+        }
+    }
+    last_stop_colour(stops)
+}
+
+fn last_stop_colour(stops: &[GradientStop]) -> Colour {
+    stops
+        .last()
+        .map_or(Colour::linear(0.0, 0.0, 0.0, 0.0), |s| s.colour)
+}
+
+/// The average colour over positions `0..=1`, the end stops padding outward.
+fn mean_stop_colour(stops: &[GradientStop]) -> Colour {
+    let (Some(first), Some(last)) = (stops.first(), stops.last()) else {
+        return Colour::linear(0.0, 0.0, 0.0, 0.0);
+    };
+    let mut sum = [0.0f32; 4];
+    let mut add = |colour: [f32; 4], weight: f32| {
+        for (s, c) in sum.iter_mut().zip(colour) {
+            *s += c * weight;
+        }
+    };
+    add(
+        first.colour.to_linear_rgba(),
+        first.position.clamp(0.0, 1.0),
+    );
+    for pair in stops.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let weight = (b.position.clamp(0.0, 1.0) - a.position.clamp(0.0, 1.0)).max(0.0);
+        let mid = a.colour.lerp(b.colour, 0.5).to_linear_rgba();
+        add(mid, weight);
+    }
+    add(
+        last.colour.to_linear_rgba(),
+        1.0 - last.position.clamp(0.0, 1.0),
+    );
+    Colour::from_linear_array(sum)
+}
+
+/// The overlay pattern for an SVG dash array. Two entries map exactly; longer
+/// arrays average their dashes and their gaps. An array with no length is a
+/// continuous stroke.
+fn dash_pattern(array: &[f32], offset: f32, scale: f32) -> StrokePattern {
+    let mean = |values: Vec<f32>| -> f32 {
+        if values.is_empty() {
+            0.0
+        } else {
+            values.iter().sum::<f32>() / values.len() as f32
+        }
+    };
+    let dash = mean(array.iter().step_by(2).copied().collect());
+    let gap = mean(array.iter().skip(1).step_by(2).copied().collect());
+    if dash.is_nan() || gap.is_nan() || dash + gap <= 0.0 {
+        return StrokePattern::Solid;
+    }
+    StrokePattern::Dashed {
+        dash_length: dash * scale,
+        gap_length: gap * scale,
+        offset: offset * scale,
+    }
 }
 
 /// One shape from a vector drawing: its contours, fill rule, and the resolved
@@ -1094,9 +1488,9 @@ pub struct VectorStroke {
 /// `fill` and `stroke` are independent and either can be absent. A shape with a
 /// stroke and no fill is stroke-only: draw the contours as lines, not as filled
 /// area. The one case the two fields cannot tell apart is a shape whose only
-/// paint is a gradient or pattern the loader does not resolve: it arrives with
-/// both `None`, indistinguishable from a shape with no paint at all. The
-/// geometry is emitted either way.
+/// paint is a pattern, which the loader does not resolve: it arrives with both
+/// `None`, indistinguishable from a shape with no paint at all. The geometry is
+/// emitted either way.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VectorShape {
     /// Contours making up the shape. Curves are preserved, not flattened.
@@ -1107,17 +1501,11 @@ pub struct VectorShape {
     pub subpaths: Vec<SubPath>,
     /// How the subpaths combine into filled area.
     pub fill_rule: FillRule,
-    /// Resolved fill colour, alpha carrying the fill opacity multiplied by any
-    /// enclosing group opacity. `None` when the
-    /// source shape has no fill, or a gradient or pattern paint the loader does
-    /// not resolve to a single colour.
-    pub fill: Option<Colour>,
+    /// Resolved fill paint. `None` when the source shape has no fill, or a
+    /// pattern paint the loader does not resolve.
+    pub fill: Option<VectorPaint>,
     /// Resolved outline stroke. `None` when the source shape has no stroke, or
-    /// a gradient or pattern stroke paint the loader does not resolve to a
-    /// single colour.
-    ///
-    /// Stroke cap, join, dash, and miter limit are not carried: the renderer
-    /// draws a uniform outline of the contours and has no vocabulary for them.
+    /// a pattern stroke paint the loader does not resolve.
     pub stroke: Option<VectorStroke>,
     /// The source element's own id, or `None` when it has none. Basic shapes
     /// (`<rect>`, `<circle>`, and so on) carry theirs as well as `<path>`.
@@ -1196,6 +1584,251 @@ mod tests {
             uv[1] * t.scale[1] + t.offset[1] - 0.5,
         ];
         [cos * p[0] - sin * p[1] + 0.5, sin * p[0] + cos * p[1] + 0.5]
+    }
+
+    fn red_to_blue() -> Vec<GradientStop> {
+        vec![
+            GradientStop::new(0.0, Colour::linear(1.0, 0.0, 0.0, 1.0)),
+            GradientStop::new(0.4, Colour::linear(0.0, 1.0, 0.0, 1.0)),
+            GradientStop::new(1.0, Colour::linear(0.0, 0.0, 1.0, 1.0)),
+        ]
+    }
+
+    /// The colour SVG puts at `p`, evaluated straight from the source geometry.
+    fn svg_colour(paint: &VectorPaint, p: glam::Vec2) -> [f32; 4] {
+        match paint {
+            VectorPaint::Solid(c) => c.to_linear_rgba(),
+            VectorPaint::LinearGradient {
+                start,
+                end,
+                stops,
+                spread,
+                transform,
+            } => {
+                let q = transform.inverse().transform_point2(p);
+                let d = glam::Vec2::from(*end) - glam::Vec2::from(*start);
+                let t = (q - glam::Vec2::from(*start)).dot(d) / d.length_squared();
+                sample_spread(stops, *spread, t).to_linear_rgba()
+            }
+            VectorPaint::RadialGradient {
+                centre,
+                radius,
+                stops,
+                spread,
+                transform,
+                ..
+            } => {
+                let q = transform.inverse().transform_point2(p);
+                let t = (q - glam::Vec2::from(*centre)).length() / radius;
+                sample_spread(stops, *spread, t).to_linear_rgba()
+            }
+        }
+    }
+
+    /// Check the overlay fill against the source at a grid of points in `bounds`,
+    /// or only those within `reach` of its centre.
+    fn assert_fill_matches(paint: &VectorPaint, bounds: [f32; 4], reach: Option<f32>) {
+        let fill = paint.to_overlay_fill(bounds);
+        let centre = glam::vec2((bounds[0] + bounds[2]) * 0.5, (bounds[1] + bounds[3]) * 0.5);
+        let half = [(bounds[2] - bounds[0]) * 0.5, (bounds[3] - bounds[1]) * 0.5];
+        for i in 0..=8 {
+            for j in 0..=8 {
+                let p = glam::vec2(
+                    bounds[0] + (bounds[2] - bounds[0]) * i as f32 / 8.0,
+                    bounds[1] + (bounds[3] - bounds[1]) * j as f32 / 8.0,
+                );
+                if reach.is_some_and(|r| (p - centre).length() > r) {
+                    continue;
+                }
+                let want = svg_colour(paint, p);
+                let got = fill.sample_in_box((p - centre).into(), half);
+                for k in 0..4 {
+                    assert!(
+                        (want[k] - got[k]).abs() < 2e-3,
+                        "at {p:?}: source {want:?}, overlay {got:?}, fill {fill:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    fn linear(
+        start: [f32; 2],
+        end: [f32; 2],
+        spread: SpreadMethod,
+        transform: glam::Affine2,
+    ) -> VectorPaint {
+        VectorPaint::LinearGradient {
+            start,
+            end,
+            stops: red_to_blue(),
+            spread,
+            transform,
+        }
+    }
+
+    #[test]
+    fn a_bounding_box_linear_gradient_maps_to_an_angle_with_its_stops_unchanged() {
+        // A gradient in bounding-box units arrives with the box folded into its
+        // transform.
+        let bbox = glam::Affine2::from_scale_angle_translation(
+            glam::vec2(40.0, 10.0),
+            0.0,
+            glam::vec2(5.0, 5.0),
+        );
+        let paint = linear([0.0, 0.0], [1.0, 0.0], SpreadMethod::Pad, bbox);
+        let OverlayFill::LinearGradient { stops, angle } =
+            paint.to_overlay_fill([5.0, 5.0, 45.0, 15.0])
+        else {
+            panic!("expected a linear gradient");
+        };
+        assert!(angle.abs() < 1e-6, "left to right: {angle}");
+        let positions: Vec<f32> = stops.iter().map(|s| s.position).collect();
+        assert_eq!(positions.len(), 3, "{positions:?}");
+        for (got, want) in positions.iter().zip([0.0, 0.4, 1.0]) {
+            assert!((got - want).abs() < 1e-5, "{positions:?}");
+        }
+
+        let down = linear([0.0, 0.0], [0.0, 1.0], SpreadMethod::Pad, bbox);
+        let OverlayFill::LinearGradient { angle, .. } =
+            down.to_overlay_fill([5.0, 5.0, 45.0, 15.0])
+        else {
+            panic!("expected a linear gradient");
+        };
+        assert!(
+            (angle - std::f32::consts::FRAC_PI_2).abs() < 1e-6,
+            "top to bottom: {angle}"
+        );
+    }
+
+    #[test]
+    fn a_linear_gradient_matches_the_source_under_every_spread_and_transform() {
+        let transforms = [
+            glam::Affine2::IDENTITY,
+            glam::Affine2::from_scale_angle_translation(
+                glam::vec2(2.0, 0.5),
+                0.6,
+                glam::vec2(3.0, -2.0),
+            ),
+            // A skew: lines of equal position stop being perpendicular to the
+            // mapped axis.
+            glam::Affine2::from_cols_array(&[1.0, 0.0, 0.8, 1.0, 0.0, 0.0]),
+        ];
+        for transform in transforms {
+            for spread in [
+                SpreadMethod::Pad,
+                SpreadMethod::Repeat,
+                SpreadMethod::Reflect,
+            ] {
+                let paint = linear([2.0, 3.0], [9.0, 5.0], spread, transform);
+                assert_fill_matches(&paint, [-10.0, -6.0, 30.0, 18.0], None);
+            }
+        }
+    }
+
+    #[test]
+    fn a_centred_radial_gradient_matches_the_source() {
+        let transform = glam::Affine2::from_scale_angle_translation(
+            glam::Vec2::splat(2.0),
+            0.3,
+            glam::vec2(10.0, 10.0),
+        );
+        for spread in [
+            SpreadMethod::Pad,
+            SpreadMethod::Repeat,
+            SpreadMethod::Reflect,
+        ] {
+            let paint = VectorPaint::RadialGradient {
+                centre: [0.0, 0.0],
+                radius: 3.0,
+                focal: [0.0, 0.0],
+                stops: red_to_blue(),
+                spread,
+                transform,
+            };
+            // Centred on the circle, so the overlay's centre is the source's.
+            // The overlay ends at the larger half-extent; the corners past it
+            // hold that ring's colour.
+            assert_fill_matches(&paint, [0.0, 2.0, 20.0, 18.0], Some(10.0));
+        }
+    }
+
+    #[test]
+    fn a_gradient_with_no_length_paints_its_last_stop() {
+        let paint = linear(
+            [1.0, 1.0],
+            [1.0, 1.0],
+            SpreadMethod::Pad,
+            glam::Affine2::IDENTITY,
+        );
+        assert_eq!(
+            paint.to_overlay_fill([0.0, 0.0, 1.0, 1.0]),
+            OverlayFill::Solid(Colour::linear(0.0, 0.0, 1.0, 1.0))
+        );
+    }
+
+    #[test]
+    fn a_two_entry_dash_array_maps_exactly_and_longer_ones_average() {
+        assert_eq!(
+            dash_pattern(&[4.0, 2.0], 1.0, 2.0),
+            StrokePattern::Dashed {
+                dash_length: 8.0,
+                gap_length: 4.0,
+                offset: 2.0
+            }
+        );
+        assert_eq!(
+            dash_pattern(&[4.0, 1.0, 2.0, 3.0], 0.0, 1.0),
+            StrokePattern::Dashed {
+                dash_length: 3.0,
+                gap_length: 2.0,
+                offset: 0.0
+            }
+        );
+        assert_eq!(dash_pattern(&[0.0, 0.0], 0.0, 1.0), StrokePattern::Solid);
+    }
+
+    #[test]
+    fn a_stroke_converts_with_its_lengths_scaled_and_its_style_kept() {
+        let stroke = VectorStroke {
+            paint: VectorPaint::LinearGradient {
+                start: [0.0, 0.0],
+                end: [1.0, 0.0],
+                stops: GradientStop::pair(
+                    Colour::linear(1.0, 0.0, 0.0, 1.0),
+                    Colour::linear(0.0, 0.0, 1.0, 1.0),
+                ),
+                spread: SpreadMethod::Pad,
+                transform: glam::Affine2::IDENTITY,
+            },
+            width: 2.0,
+            cap: LineCap::Round,
+            join: LineJoin::Bevel,
+            mitre_limit: 7.0,
+            dashes: Some(VectorDashes {
+                array: vec![3.0, 1.0],
+                offset: 0.5,
+            }),
+        };
+        let overlay = stroke.to_overlay_stroke(3.0);
+        assert_eq!(overlay.width, 6.0);
+        assert_eq!(overlay.cap, LineCap::Round);
+        assert_eq!(overlay.join, LineJoin::Bevel);
+        assert_eq!(overlay.mitre_limit, 7.0);
+        assert_eq!(
+            overlay.pattern,
+            StrokePattern::Dashed {
+                dash_length: 9.0,
+                gap_length: 3.0,
+                offset: 1.5
+            }
+        );
+        // One colour stands in for the gradient: its average.
+        let mean = overlay.colour.to_linear_rgba();
+        assert!(
+            (mean[0] - 0.5).abs() < 1e-6 && (mean[2] - 0.5).abs() < 1e-6,
+            "{mean:?}"
+        );
     }
 
     #[test]

@@ -32,8 +32,9 @@ pub use types::{
     AnimationChannel, AnimationClip, AnimationInterpolation, AnimationSampler, AnimationTrack,
     AnimationTrackValues, DecodedDataSet, Joint, MAX_JOINTS, MaterialData, NodeAnimationClip,
     NodeAnimationTrack, PointSet, SceneData, SceneLight, SceneLightKind, SceneMesh, SceneNode,
-    Skeleton, SkinWeights, SparseGrid, StructuredVolume, TextureSampler, TextureSource, VectorArt,
-    VectorShape, VectorStroke, VolumeGridGeometry,
+    Skeleton, SkinWeights, SparseGrid, SpreadMethod, StructuredVolume, TextureSampler,
+    TextureSource, VectorArt, VectorDashes, VectorPaint, VectorShape, VectorStroke,
+    VolumeGridGeometry,
 };
 /// The shared payload vocabulary, re-exported so a consumer names the types
 /// these loaders return without depending on it separately.

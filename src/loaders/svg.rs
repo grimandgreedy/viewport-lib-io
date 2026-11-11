@@ -4,7 +4,7 @@ use viewport_lib_types::data::texture::TextureData;
 
 use crate::error::IoError;
 #[cfg(feature = "svg")]
-use crate::types::{VectorArt, VectorShape, VectorStroke};
+use crate::types::{VectorArt, VectorPaint, VectorShape, VectorStroke};
 #[cfg(feature = "svg")]
 use viewport_lib_types::colour::Colour;
 #[cfg(feature = "svg")]
@@ -213,7 +213,7 @@ fn path_to_shape(path: &resvg::usvg::Path, opacity: f32, groups: &[String]) -> O
             };
             (
                 rule,
-                solid_colour(fill.paint(), fill.opacity().get() * opacity),
+                solid_colour(fill.paint(), fill.opacity().get() * opacity).map(VectorPaint::Solid),
             )
         }
         None => (FillRule::NonZero, None),
@@ -222,11 +222,15 @@ fn path_to_shape(path: &resvg::usvg::Path, opacity: f32, groups: &[String]) -> O
     let stroke = path.stroke().and_then(|stroke| {
         let colour = solid_colour(stroke.paint(), stroke.opacity().get() * opacity)?;
         Some(VectorStroke {
-            colour,
+            paint: VectorPaint::Solid(colour),
             // usvg reports the width in the path's own units, so it needs the
             // same transform the geometry just had baked in. A non-uniform
             // scale has no single right answer; average the two factors.
             width: stroke.width().get() * transform_scale(path.abs_transform()),
+            cap: Default::default(),
+            join: Default::default(),
+            mitre_limit: 4.0,
+            dashes: None,
         })
     });
 
@@ -318,6 +322,13 @@ fn segments_to_subpaths(data: &resvg::tiny_skia::Path) -> Vec<SubPath> {
 mod tests {
     use super::*;
 
+    fn rgba(paint: &VectorPaint) -> [f32; 4] {
+        match paint {
+            VectorPaint::Solid(colour) => colour.to_linear_rgba(),
+            other => panic!("expected a solid paint, got {other:?}"),
+        }
+    }
+
     fn temp_path(name: &str) -> std::path::PathBuf {
         let unique = format!(
             "viewport_lib_io_{name}_{}_{}.svg",
@@ -388,10 +399,12 @@ mod tests {
         let shape = &art.shapes[0];
         assert_eq!(shape.subpaths.len(), 2, "outer contour plus the hole");
         assert_eq!(shape.fill_rule, FillRule::EvenOdd);
-        let fill = shape
-            .fill
-            .expect("solid fill resolves to a colour")
-            .to_linear_rgba();
+        let fill = rgba(
+            shape
+                .fill
+                .as_ref()
+                .expect("solid fill resolves to a colour"),
+        );
         assert!(
             fill[0] > 0.9 && fill[1] < 0.1 && fill[2] < 0.1,
             "red fill: {fill:?}"
@@ -431,10 +444,12 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         assert_eq!(art.shapes.len(), 1, "the hidden rect is not painted");
-        let fill = art.shapes[0]
-            .fill
-            .expect("solid fill resolves to a colour")
-            .to_linear_rgba();
+        let fill = rgba(
+            art.shapes[0]
+                .fill
+                .as_ref()
+                .expect("solid fill resolves to a colour"),
+        );
         assert!(
             fill[1] > 0.9 && fill[0] < 0.1,
             "green rect survives: {fill:?}"
@@ -458,12 +473,12 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         assert_eq!(art.shapes.len(), 2);
-        let nested = art.shapes[0].fill.expect("solid fill").alpha();
+        let nested = rgba(art.shapes[0].fill.as_ref().expect("solid fill"))[3];
         assert!(
             (nested - 0.25).abs() < 1e-5,
             "nested group opacity multiplies: {nested}"
         );
-        let own = art.shapes[1].fill.expect("solid fill").alpha();
+        let own = rgba(art.shapes[1].fill.as_ref().expect("solid fill"))[3];
         assert!((own - 0.5).abs() < 1e-5, "fill-opacity is unchanged: {own}");
     }
 
@@ -487,16 +502,19 @@ mod tests {
         assert_eq!(art.shapes.len(), 2);
         let stroke = art.shapes[0]
             .stroke
+            .as_ref()
             .expect("currentColor resolves to a solid stroke");
         assert!(
-            stroke.colour.to_linear_rgba()[0] > 0.9 && stroke.colour.to_linear_rgba()[1] < 0.1,
+            rgba(&stroke.paint)[0] > 0.9 && rgba(&stroke.paint)[1] < 0.1,
             "the stroke took the root colour: {:?}",
-            stroke.colour
+            stroke.paint
         );
-        let fill = art.shapes[1]
-            .fill
-            .expect("currentColor resolves to a fill")
-            .to_linear_rgba();
+        let fill = rgba(
+            art.shapes[1]
+                .fill
+                .as_ref()
+                .expect("currentColor resolves to a fill"),
+        );
         assert!(
             fill[0] > 0.9 && fill[1] < 0.1,
             "the fill took the root colour: {fill:?}"
@@ -517,13 +535,14 @@ mod tests {
         let art = vector_from_path(&path).unwrap();
         let _ = std::fs::remove_file(&path);
 
-        let stroke = art.shapes[0].stroke.expect("a stroke is still resolved");
+        let stroke = art.shapes[0]
+            .stroke
+            .as_ref()
+            .expect("a stroke is still resolved");
         assert!(
-            stroke.colour.to_linear_rgba()[..3]
-                .iter()
-                .all(|c| *c < 1e-5),
+            rgba(&stroke.paint)[..3].iter().all(|c| *c < 1e-5),
             "black, not absent: {:?}",
-            stroke.colour
+            stroke.paint
         );
     }
 
@@ -541,11 +560,14 @@ mod tests {
         assert_eq!(art.shapes.len(), 1);
         let shape = &art.shapes[0];
         assert!(shape.fill.is_none(), "no fill: stroke-only art");
-        let stroke = shape.stroke.expect("solid stroke resolves to a colour");
+        let stroke = shape
+            .stroke
+            .as_ref()
+            .expect("solid stroke resolves to a colour");
         assert!(
-            stroke.colour.to_linear_rgba()[0] > 0.9 && stroke.colour.to_linear_rgba()[1] < 0.1,
+            rgba(&stroke.paint)[0] > 0.9 && rgba(&stroke.paint)[1] < 0.1,
             "red stroke: {:?}",
-            stroke.colour
+            stroke.paint
         );
         assert!((stroke.width - 2.0).abs() < 1e-5, "width: {}", stroke.width);
         assert!(
@@ -567,13 +589,13 @@ mod tests {
 
         assert_eq!(art.shapes.len(), 1);
         let shape = &art.shapes[0];
-        let fill = shape.fill.expect("solid fill").to_linear_rgba();
+        let fill = rgba(shape.fill.as_ref().expect("solid fill"));
         assert!(fill[1] > 0.9, "green fill: {fill:?}");
-        let stroke = shape.stroke.expect("solid stroke");
+        let stroke = shape.stroke.as_ref().expect("solid stroke");
         assert!(
-            stroke.colour.to_linear_rgba()[2] > 0.9,
+            rgba(&stroke.paint)[2] > 0.9,
             "blue stroke: {:?}",
-            stroke.colour
+            stroke.paint
         );
     }
 
@@ -596,7 +618,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         assert_eq!(art.shapes.len(), 2);
-        let uniform = art.shapes[0].stroke.expect("solid stroke").width;
+        let uniform = art.shapes[0].stroke.as_ref().expect("solid stroke").width;
         assert!((uniform - 6.0).abs() < 1e-5, "2x scale: {uniform}");
         // The geometry also lands at twice the authored x, so the two agree.
         assert_eq!(art.shapes[0].subpaths[0].segments.len(), 1);
@@ -605,7 +627,7 @@ mod tests {
             PathSegment::Line { to } if (to[0] - 20.0).abs() < 1e-5
         ));
 
-        let non_uniform = art.shapes[1].stroke.expect("solid stroke").width;
+        let non_uniform = art.shapes[1].stroke.as_ref().expect("solid stroke").width;
         assert!(
             (non_uniform - 9.0).abs() < 1e-5,
             "average of 2x and 4x: {non_uniform}"
@@ -644,11 +666,11 @@ mod tests {
         let art = vector_from_path(&path).unwrap();
         let _ = std::fs::remove_file(&path);
 
-        let stroke = art.shapes[0].stroke.expect("solid stroke");
+        let stroke = art.shapes[0].stroke.as_ref().expect("solid stroke");
         assert!(
-            (stroke.colour.to_linear_rgba()[3] - 0.25).abs() < 1e-5,
+            (rgba(&stroke.paint)[3] - 0.25).abs() < 1e-5,
             "group opacity times stroke-opacity: {}",
-            stroke.colour.to_linear_rgba()[3]
+            rgba(&stroke.paint)[3]
         );
     }
 

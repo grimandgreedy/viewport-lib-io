@@ -147,7 +147,7 @@ fn report() -> String {
             out,
             "svg {} {:?}",
             art.shapes.len(),
-            art.shapes.iter().map(|s| s.fill).collect::<Vec<_>>()
+            art.shapes.iter().map(|s| &s.fill).collect::<Vec<_>>()
         );
     }
 

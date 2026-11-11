@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Vector fills and strokes carry a paint** - `VectorShape::fill` is an `Option<VectorPaint>` and `VectorStroke::colour` is now `VectorStroke::paint`, where a `VectorPaint` is a solid colour or a linear or radial gradient with its stops, `SpreadMethod` and the transform from its own frame into the art's. `VectorStroke` gains `cap`, `join`, `mitre_limit` and `dashes` (a `VectorDashes`), and is no longer `Copy`. `VectorPaint::to_overlay_fill` and `VectorStroke::to_overlay_stroke` convert to the overlay's types: linear gradients and two-entry dash arrays exactly, the rest approximated as their docs say.
+
 ## [0.9.0] - 2026-11-03
 
 ### Added
