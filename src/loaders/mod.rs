@@ -98,6 +98,10 @@ pub mod stl;
 #[cfg(feature = "svg")]
 pub mod svg;
 
+/// Tiled map and tileset decoding.
+#[cfg(feature = "tiled")]
+pub mod tiled;
+
 /// TGA image decoding.
 #[cfg(feature = "tga")]
 pub mod tga;

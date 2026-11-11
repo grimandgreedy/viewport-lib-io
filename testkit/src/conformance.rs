@@ -11,10 +11,10 @@
 //! ```
 
 use viewport_lib_io::error::IoError;
-use viewport_lib_io::types::{PointSet, SceneData};
+use viewport_lib_io::types::{PointSet, SceneData, TileMapData};
 use viewport_lib_io::viewport_lib_types::data::mesh::MeshData;
 
-use crate::invariants::{check_mesh, check_point_set, check_scene};
+use crate::invariants::{check_mesh, check_point_set, check_scene, check_tilemap};
 
 /// One mesh as a consumer addresses it: its name, its size, and what it points
 /// at. Enough to catch a reordered or re-indexed decode, small enough to print.
@@ -115,6 +115,24 @@ where
     assert!(
         first.positions == second.positions,
         "{label} decoded different points the second time"
+    );
+
+    first
+}
+
+/// Decode a tile map twice, check the invariants, and hand back the first.
+#[track_caller]
+pub fn tilemap<F>(label: &str, decode: F) -> TileMapData
+where
+    F: Fn() -> Result<TileMapData, IoError>,
+{
+    let first = decode().unwrap_or_else(|e| panic!("{label} failed to decode: {e}"));
+    check_tilemap(label, &first).expect_clean();
+
+    let second = decode().unwrap_or_else(|e| panic!("{label} failed to decode a second time: {e}"));
+    assert!(
+        first == second,
+        "{label} decoded a different map the second time"
     );
 
     first

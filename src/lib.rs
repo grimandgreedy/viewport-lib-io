@@ -30,11 +30,13 @@ pub use error::IoError;
 pub use lightmap::{LightmapData, LightmapEncoding};
 pub use types::{
     AnimationChannel, AnimationClip, AnimationInterpolation, AnimationSampler, AnimationTrack,
-    AnimationTrackValues, DecodedDataSet, Joint, MAX_JOINTS, MaterialData, NodeAnimationClip,
-    NodeAnimationTrack, PointSet, SceneData, SceneLight, SceneLightKind, SceneMesh, SceneNode,
-    Skeleton, SkinWeights, SparseGrid, SpreadMethod, StructuredVolume, TextureSampler,
-    TextureSource, VectorArt, VectorDashes, VectorPaint, VectorShape, VectorStroke,
-    VolumeGridGeometry,
+    AnimationTrackValues, DecodedDataSet, Joint, MAX_JOINTS, MapObject, MapObjectShape, MapText,
+    MaterialData, NodeAnimationClip, NodeAnimationTrack, ObjectDrawOrder, PixelRect, PointSet,
+    Properties, PropertyValue, SceneData, SceneLight, SceneLightKind, SceneMesh, SceneNode,
+    Skeleton, SkinWeights, SparseGrid, SpreadMethod, StaggerAxis, StaggerIndex, StructuredVolume,
+    TextAlign, TextureSampler, TextureSource, TileCell, TileData, TileFrame, TileGrid, TileImage,
+    TileLayerData, TileLayerKind, TileMapData, TileOrientation, TileRenderOrder, TileSetData,
+    VectorArt, VectorDashes, VectorPaint, VectorShape, VectorStroke, VolumeGridGeometry,
 };
 /// The shared payload vocabulary, re-exported so a consumer names the types
 /// these loaders return without depending on it separately.

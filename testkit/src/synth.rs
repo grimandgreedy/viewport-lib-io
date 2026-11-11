@@ -460,3 +460,240 @@ pub fn svg_filled_path(d: &str, fill: &str) -> String {
          <path d=\"{d}\" fill=\"{fill}\"/></svg>"
     )
 }
+
+/// The global tile ids of the ground layer in [`tiled_tmx`] and [`tiled_tmj`],
+/// row by row: plain, flipped each way, empty, and one from the second tileset.
+pub const TILED_GROUND: [u32; 6] = [1, 2 | 0x8000_0000, 3 | 0x4000_0000 | 0x2000_0000, 0, 4, 5];
+
+/// Standard base64 with padding, for encoded tile layer data.
+pub fn base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |acc, (i, b)| acc | (*b as u32) << (16 - 8 * i));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(TABLE[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+fn ground_base64() -> String {
+    let bytes: Vec<u8> = TILED_GROUND.iter().flat_map(|g| g.to_le_bytes()).collect();
+    base64(&bytes)
+}
+
+/// A 3x2 Tiled map as TMX, its ground layer stored as `encoding`: `"xml"`
+/// (`<tile>` elements), `"csv"` or `"base64"`.
+///
+/// It has an embedded atlas tileset with an animated tile and a tile with a
+/// collision shape; an external image-collection tileset, [`tiled_tsx`], at
+/// `props.tsx`; an object layer with one object of every shape plus a
+/// template instance of [`tiled_template`] at `crate.tx`; an image layer; a
+/// group; and a property of every type. [`tiled_tmj`] is the same map as JSON,
+/// and decodes identically.
+pub fn tiled_tmx(encoding: &str) -> String {
+    let data = match encoding {
+        "xml" => format!(
+            "<data>{}</data>",
+            TILED_GROUND
+                .iter()
+                .map(|g| format!("<tile gid=\"{g}\"/>"))
+                .collect::<String>()
+        ),
+        "csv" => format!(
+            "<data encoding=\"csv\">\n{}\n</data>",
+            TILED_GROUND.map(|g| g.to_string()).join(",")
+        ),
+        "base64" => format!(
+            "<data encoding=\"base64\">\n   {}\n  </data>",
+            ground_base64()
+        ),
+        other => panic!("no TMX encoding `{other}`"),
+    };
+    format!(
+        r##"<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" orientation="orthogonal" renderorder="right-down" width="3" height="2" tilewidth="16" tileheight="16" infinite="0" backgroundcolor="#336699" class="Level">
+ <properties>
+  <property name="title" value="Cave"/>
+  <property name="level" type="int" value="3"/>
+  <property name="gravity" type="float" value="9.5"/>
+  <property name="dark" type="bool" value="true"/>
+  <property name="fog" type="color" value="#80ff0000"/>
+  <property name="music" type="file" value="audio/cave.ogg"/>
+  <property name="door" type="object" value="2"/>
+  <property name="spawn" type="class" propertytype="Spawn">
+   <properties>
+    <property name="count" type="int" value="4"/>
+   </properties>
+  </property>
+ </properties>
+ <tileset firstgid="1" name="terrain" tilewidth="16" tileheight="16" tilecount="4" columns="2" spacing="0" margin="0">
+  <image source="terrain.png" width="32" height="32"/>
+  <tile id="0">
+   <properties>
+    <property name="solid" type="bool" value="true"/>
+   </properties>
+   <objectgroup draworder="index">
+    <object id="1" x="0" y="8" width="16" height="8"/>
+   </objectgroup>
+  </tile>
+  <tile id="1">
+   <animation>
+    <frame tileid="1" duration="100"/>
+    <frame tileid="2" duration="150"/>
+   </animation>
+  </tile>
+ </tileset>
+ <tileset firstgid="5" source="props.tsx"/>
+ <layer id="1" name="ground" width="3" height="2" opacity="0.5" offsetx="4" offsety="-2" parallaxx="0.5" tintcolor="#ff00ff00">
+  {data}
+ </layer>
+ <objectgroup id="2" name="things" color="#a0a0a4" draworder="index">
+  <object id="1" name="box" type="Trigger" x="1" y="2" width="16" height="8" rotation="45">
+   <properties>
+    <property name="target" type="object" value="3"/>
+   </properties>
+  </object>
+  <object id="2" name="pond" x="20" y="4" width="10" height="6">
+   <ellipse/>
+  </object>
+  <object id="3" name="spawn" x="8" y="8">
+   <point/>
+  </object>
+  <object id="4" name="wall" x="0" y="0">
+   <polygon points="0,0 16,0 8,12"/>
+  </object>
+  <object id="5" name="path" x="2" y="30" visible="0">
+   <polyline points="0,0 10,5.5"/>
+  </object>
+  <object id="6" name="sign" x="0" y="20" width="40" height="12">
+   <text fontfamily="Mono" pixelsize="10" wrap="1" color="#ffffff00" bold="1" halign="center" valign="bottom">Hello, cave</text>
+  </object>
+  <object id="7" name="barrel" gid="2147483653" x="16" y="32" width="16" height="24"/>
+  <object id="8" template="crate.tx" x="40" y="32"/>
+ </objectgroup>
+ <imagelayer id="3" name="sky" repeatx="1">
+  <image source="sky.png" width="64" height="32"/>
+ </imagelayer>
+ <group id="4" name="decor" visible="0">
+  <layer id="5" name="detail" width="3" height="2">
+   <data encoding="csv">0,0,0,0,0,1</data>
+  </layer>
+ </group>
+</map>
+"##
+    )
+}
+
+/// The map of [`tiled_tmx`] as Tiled JSON, its ground layer stored as
+/// `encoding`: `"array"` or `"base64"`.
+pub fn tiled_tmj(encoding: &str) -> String {
+    let data = match encoding {
+        "array" => format!(
+            "\"data\": [{}]",
+            TILED_GROUND.map(|g| g.to_string()).join(",")
+        ),
+        "base64" => format!(
+            "\"encoding\": \"base64\", \"data\": \"{}\"",
+            ground_base64()
+        ),
+        other => panic!("no TMJ encoding `{other}`"),
+    };
+    format!(
+        r##"{{
+ "type": "map", "version": "1.10", "orientation": "orthogonal", "renderorder": "right-down",
+ "width": 3, "height": 2, "tilewidth": 16, "tileheight": 16, "infinite": false,
+ "backgroundcolor": "#336699", "class": "Level",
+ "properties": [
+  {{"name": "title", "type": "string", "value": "Cave"}},
+  {{"name": "level", "type": "int", "value": 3}},
+  {{"name": "gravity", "type": "float", "value": 9.5}},
+  {{"name": "dark", "type": "bool", "value": true}},
+  {{"name": "fog", "type": "color", "value": "#80ff0000"}},
+  {{"name": "music", "type": "file", "value": "audio/cave.ogg"}},
+  {{"name": "door", "type": "object", "value": 2}},
+  {{"name": "spawn", "type": "class", "propertytype": "Spawn", "value": {{"count": 4}}}}
+ ],
+ "tilesets": [
+  {{"firstgid": 1, "name": "terrain", "tilewidth": 16, "tileheight": 16, "tilecount": 4,
+    "columns": 2, "spacing": 0, "margin": 0,
+    "image": "terrain.png", "imagewidth": 32, "imageheight": 32,
+    "tiles": [
+     {{"id": 0,
+       "properties": [{{"name": "solid", "type": "bool", "value": true}}],
+       "objectgroup": {{"type": "objectgroup", "draworder": "index",
+         "objects": [{{"id": 1, "x": 0, "y": 8, "width": 16, "height": 8}}]}}}},
+     {{"id": 1, "animation": [{{"tileid": 1, "duration": 100}}, {{"tileid": 2, "duration": 150}}]}}
+    ]}},
+  {{"firstgid": 5, "source": "props.tsx"}}
+ ],
+ "layers": [
+  {{"type": "tilelayer", "id": 1, "name": "ground", "width": 3, "height": 2, "opacity": 0.5,
+    "offsetx": 4, "offsety": -2, "parallaxx": 0.5, "tintcolor": "#ff00ff00", "visible": true,
+    {data}}},
+  {{"type": "objectgroup", "id": 2, "name": "things", "color": "#a0a0a4", "draworder": "index",
+    "objects": [
+     {{"id": 1, "name": "box", "type": "Trigger", "x": 1, "y": 2, "width": 16, "height": 8,
+       "rotation": 45, "properties": [{{"name": "target", "type": "object", "value": 3}}]}},
+     {{"id": 2, "name": "pond", "x": 20, "y": 4, "width": 10, "height": 6, "ellipse": true}},
+     {{"id": 3, "name": "spawn", "x": 8, "y": 8, "point": true}},
+     {{"id": 4, "name": "wall", "x": 0, "y": 0,
+       "polygon": [{{"x": 0, "y": 0}}, {{"x": 16, "y": 0}}, {{"x": 8, "y": 12}}]}},
+     {{"id": 5, "name": "path", "x": 2, "y": 30, "visible": false,
+       "polyline": [{{"x": 0, "y": 0}}, {{"x": 10, "y": 5.5}}]}},
+     {{"id": 6, "name": "sign", "x": 0, "y": 20, "width": 40, "height": 12,
+       "text": {{"text": "Hello, cave", "fontfamily": "Mono", "pixelsize": 10, "wrap": true,
+                "color": "#ffffff00", "bold": true, "halign": "center", "valign": "bottom"}}}},
+     {{"id": 7, "name": "barrel", "gid": 2147483653, "x": 16, "y": 32, "width": 16, "height": 24}},
+     {{"id": 8, "template": "crate.tx", "x": 40, "y": 32}}
+    ]}},
+  {{"type": "imagelayer", "id": 3, "name": "sky", "repeatx": true,
+    "image": "sky.png", "imagewidth": 64, "imageheight": 32}},
+  {{"type": "group", "id": 4, "name": "decor", "visible": false,
+    "layers": [{{"type": "tilelayer", "id": 5, "name": "detail", "width": 3, "height": 2,
+                 "data": [0,0,0,0,0,1]}}]}}
+ ]
+}}
+"##
+    )
+}
+
+/// The external tileset [`tiled_tmx`] references at `props.tsx`: an image
+/// collection of a barrel and a crate, one image file per tile.
+pub fn tiled_tsx() -> String {
+    r#"<?xml version="1.0" encoding="UTF-8"?>
+<tileset version="1.10" name="props" tilewidth="16" tileheight="24" tilecount="2" columns="0">
+ <tile id="0" type="Barrel">
+  <image source="art/barrel.png" width="16" height="24"/>
+ </tile>
+ <tile id="1">
+  <image source="art/crate.png" width="16" height="16"/>
+ </tile>
+</tileset>
+"#
+    .to_string()
+}
+
+/// The object template [`tiled_tmx`] instances at `crate.tx`: a crate tile
+/// from `props.tsx`, with a property the instance does not override.
+pub fn tiled_template() -> String {
+    r#"<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <tileset firstgid="1" source="props.tsx"/>
+ <object name="crate" type="Prop" gid="2" width="16" height="16">
+  <properties>
+   <property name="breakable" type="bool" value="true"/>
+  </properties>
+ </object>
+</template>
+"#
+    .to_string()
+}

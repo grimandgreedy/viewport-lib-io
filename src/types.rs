@@ -29,7 +29,7 @@ use viewport_lib_types::overlay::{
 pub const MAX_JOINTS: usize = 256;
 
 /// Where a scene material's texture content comes from.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum TextureSource {
     /// A file beside the scene, for the consumer to read when it chooses.
     /// Decode it for the slot it fills (each image loader has a `_for_slot`
@@ -1533,6 +1533,544 @@ pub struct VectorArt {
     pub shapes: Vec<VectorShape>,
     /// Source canvas size in user units (width, height).
     pub size: [f32; 2],
+}
+
+/// A rectangle of pixels in an image, in the image's own frame: X right and Y
+/// down from the top-left corner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct PixelRect {
+    /// Left edge, in pixels from the image's left.
+    pub x: u32,
+    /// Top edge, in pixels from the image's top.
+    pub y: u32,
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+}
+
+impl PixelRect {
+    /// A rectangle at `(x, y)` of `width` by `height` pixels.
+    pub const fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// The rectangle as texture coordinates `[u_min, v_min, u_max, v_max]` in an
+    /// image of `image_size` pixels.
+    ///
+    /// `v` follows the pixel rows: `0` at the image's top row. A texture
+    /// uploaded with its first row at the bottom wants `1 - v` instead.
+    pub fn uv(self, image_size: [u32; 2]) -> [f32; 4] {
+        let (w, h) = (image_size[0].max(1) as f32, image_size[1].max(1) as f32);
+        [
+            self.x as f32 / w,
+            self.y as f32 / h,
+            (self.x + self.width) as f32 / w,
+            (self.y + self.height) as f32 / h,
+        ]
+    }
+}
+
+/// Custom properties attached to a map, layer, tileset, tile or object, by
+/// name. Sorted, so two decodes of one file compare equal.
+pub type Properties = std::collections::BTreeMap<String, PropertyValue>;
+
+/// One typed custom property value.
+///
+/// An enum-typed property arrives as the string or integer it is stored as.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PropertyValue {
+    /// Text.
+    String(String),
+    /// A whole number.
+    Int(i64),
+    /// A real number.
+    Float(f64),
+    /// True or false.
+    Bool(bool),
+    /// A colour, or `None` when the property is set to no colour.
+    Colour(Option<Colour>),
+    /// A file, resolved against the directory of the file that names it when
+    /// that is known.
+    File(PathBuf),
+    /// A reference to a [`MapObject`] by its id, `0` for none.
+    Object(u32),
+    /// A value of a custom class: its class name and its members.
+    Class {
+        /// The class name.
+        class: String,
+        /// The members that are set.
+        members: Properties,
+    },
+}
+
+/// How a tile map lays its grid out on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum TileOrientation {
+    /// Square-on rows and columns.
+    #[default]
+    Orthogonal,
+    /// Diamond tiles, each row running down and to the right.
+    Isometric,
+    /// Diamond tiles in staggered rows or columns.
+    Staggered {
+        /// Which axis is staggered.
+        axis: StaggerAxis,
+        /// Whether the odd or the even rows (or columns) are shifted.
+        index: StaggerIndex,
+    },
+    /// Hexagonal tiles in staggered rows or columns.
+    Hexagonal {
+        /// Which axis is staggered.
+        axis: StaggerAxis,
+        /// Whether the odd or the even rows (or columns) are shifted.
+        index: StaggerIndex,
+        /// Length in pixels of the tile's flat side.
+        side_length: u32,
+    },
+}
+
+/// The staggered axis of a staggered or hexagonal map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum StaggerAxis {
+    /// Columns are staggered.
+    X,
+    /// Rows are staggered.
+    #[default]
+    Y,
+}
+
+/// Which rows or columns of a staggered or hexagonal map are shifted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum StaggerIndex {
+    /// The odd ones.
+    #[default]
+    Odd,
+    /// The even ones.
+    Even,
+}
+
+/// The order a map's editor draws its tiles in. It matters only where tiles
+/// overlap their neighbours.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum TileRenderOrder {
+    /// Left to right, top to bottom.
+    #[default]
+    RightDown,
+    /// Left to right, bottom to top.
+    RightUp,
+    /// Right to left, top to bottom.
+    LeftDown,
+    /// Right to left, bottom to top.
+    LeftUp,
+}
+
+/// A decoded 2D tile map: its grid, its layers in paint order, and the tilesets
+/// its cells refer to.
+///
+/// Everything is in the map's pixel frame: X right and Y down from the top-left
+/// corner, as the editor shows it. The crate's Z-up convention covers 3D scene
+/// geometry and does not apply here; a consumer places the map on a plane of
+/// its choosing.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TileMapData {
+    /// Size in tiles. For an infinite map this is the editor's nominal size;
+    /// each tile layer records the area it actually covers.
+    pub size: [u32; 2],
+    /// Size of one grid cell in pixels.
+    pub tile_size: [u32; 2],
+    /// How the grid is laid out. Only orthogonal maps draw as square rows and
+    /// columns; the others are decoded as stored and the projection is left to
+    /// the consumer.
+    pub orientation: TileOrientation,
+    /// The order the editor draws tiles in.
+    pub render_order: TileRenderOrder,
+    /// Whether the map is unbounded, its tile layers stored as chunks.
+    pub infinite: bool,
+    /// Background colour, if the map sets one.
+    pub background: Option<Colour>,
+    /// The point, in pixels, that parallax scrolling is relative to.
+    pub parallax_origin: [f32; 2],
+    /// The map's class name, empty when unset.
+    pub class: String,
+    /// Layers in paint order, first painted first.
+    pub layers: Vec<TileLayerData>,
+    /// Tilesets the map's cells and tile objects index into.
+    pub tilesets: Vec<TileSetData>,
+    /// The map's custom properties.
+    pub properties: Properties,
+}
+
+/// One layer of a [`TileMapData`]: the settings every layer has, and what it
+/// holds.
+///
+/// A layer inside a group is relative to it: offsets add, opacity and tint
+/// multiply, parallax multiplies and visibility needs both.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TileLayerData {
+    /// The layer's id, unique within the map. `0` when the file has none.
+    pub id: u32,
+    /// The layer's name.
+    pub name: String,
+    /// The layer's class name, empty when unset.
+    pub class: String,
+    /// Offset in pixels, X right and Y down.
+    pub offset: [f32; 2],
+    /// Opacity, `0..=1`.
+    pub opacity: f32,
+    /// Whether the layer is shown.
+    pub visible: bool,
+    /// Scroll factor relative to the camera on each axis: `1` moves with the
+    /// map, `0` stays fixed on screen.
+    pub parallax: [f32; 2],
+    /// Colour multiplied into everything the layer draws, if set.
+    pub tint: Option<Colour>,
+    /// The layer's custom properties.
+    pub properties: Properties,
+    /// What the layer holds.
+    pub kind: TileLayerKind,
+}
+
+/// The contents of a [`TileLayerData`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum TileLayerKind {
+    /// A grid of tile cells.
+    Tiles(TileGrid),
+    /// Free-placed objects: spawn points, triggers, collision shapes, tiles.
+    Objects {
+        /// Colour the editor draws the objects in, if set.
+        colour: Option<Colour>,
+        /// Whether objects draw in the order listed or sorted by their Y.
+        draw_order: ObjectDrawOrder,
+        /// The objects.
+        objects: Vec<MapObject>,
+    },
+    /// One image placed at the layer's offset.
+    Image {
+        /// The image, or `None` when the layer has none set.
+        image: Option<TileImage>,
+        /// Whether the image repeats across the X and Y axes.
+        repeat: [bool; 2],
+    },
+    /// A group of layers, in paint order.
+    Group(Vec<TileLayerData>),
+}
+
+/// The cells of a tile layer: a dense grid in row-major order, top row first.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TileGrid {
+    /// Map coordinates in tiles of the grid's top-left cell. `[0, 0]` for a
+    /// bounded map; an infinite map's layer can start anywhere.
+    pub origin: [i32; 2],
+    /// Width and height in tiles.
+    pub size: [u32; 2],
+    /// `size[0] * size[1]` cells, row by row from the top. A cell with no tile
+    /// is [`TileCell::EMPTY`].
+    pub cells: Vec<TileCell>,
+}
+
+impl TileGrid {
+    /// The cell at map coordinates `(x, y)` in tiles, or `None` outside the
+    /// grid.
+    pub fn get(&self, x: i32, y: i32) -> Option<TileCell> {
+        let (cx, cy) = (x - self.origin[0], y - self.origin[1]);
+        if cx < 0 || cy < 0 || cx as u32 >= self.size[0] || cy as u32 >= self.size[1] {
+            return None;
+        }
+        self.cells
+            .get(cy as usize * self.size[0] as usize + cx as usize)
+            .copied()
+    }
+}
+
+/// One cell of a tile layer, or a tile object's image: which tile, from which
+/// tileset, and how it is turned.
+///
+/// The flips follow the editor: the diagonal flip mirrors across the
+/// top-left to bottom-right diagonal and applies first, then the horizontal
+/// and vertical flips. Together they give the eight turns and mirrors of a
+/// square tile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TileCell {
+    /// Index into [`TileMapData::tilesets`].
+    pub tileset: u32,
+    /// The tile's index within that tileset.
+    pub index: u32,
+    /// Mirrored left to right.
+    pub flip_h: bool,
+    /// Mirrored top to bottom.
+    pub flip_v: bool,
+    /// Mirrored across the top-left to bottom-right diagonal.
+    pub flip_d: bool,
+    /// Turned 120 degrees clockwise, on a hexagonal map only.
+    pub rotate_120: bool,
+}
+
+impl TileCell {
+    /// A cell with no tile.
+    pub const EMPTY: Self = Self {
+        tileset: u32::MAX,
+        index: u32::MAX,
+        flip_h: false,
+        flip_v: false,
+        flip_d: false,
+        rotate_120: false,
+    };
+
+    /// Tile `index` of tileset `tileset`, unturned.
+    pub const fn new(tileset: u32, index: u32) -> Self {
+        Self {
+            tileset,
+            index,
+            ..Self::EMPTY
+        }
+    }
+
+    /// Whether the cell has no tile.
+    pub const fn is_empty(self) -> bool {
+        self.tileset == u32::MAX
+    }
+}
+
+/// An image a tileset, tile or image layer refers to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TileImage {
+    /// Where the pixels are. A file is resolved against the directory of the
+    /// file that names it when that is known; decode it with an image loader.
+    pub source: TextureSource,
+    /// Size in pixels as the file records it, `[0, 0]` when it does not.
+    pub size: [u32; 2],
+    /// A colour drawn as transparent, if the file sets one.
+    pub transparent: Option<Colour>,
+}
+
+/// A tileset: the tiles a map's cells index into, and what each tile carries.
+///
+/// Tiles come either from one atlas image cut into a grid or, for an image
+/// collection, from one image per tile. [`TileSetData::tile_rect`] answers
+/// where a tile's pixels are either way.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TileSetData {
+    /// The tileset's name.
+    pub name: String,
+    /// The tileset's class name, empty when unset.
+    pub class: String,
+    /// The global id of the tileset's first tile in the map that references it.
+    /// A cell's [`TileCell::index`] already has it taken off. `0` for a tileset
+    /// read on its own, or one only an object template uses.
+    pub first_gid: u32,
+    /// The external file the tileset came from, if it is not embedded.
+    pub source: Option<PathBuf>,
+    /// The size of a tile in pixels: for an atlas, the grid cell.
+    pub tile_size: [u32; 2],
+    /// Number of tiles.
+    pub tile_count: u32,
+    /// Atlas columns. `0` for an image collection.
+    pub columns: u32,
+    /// Pixels between neighbouring atlas tiles.
+    pub spacing: u32,
+    /// Pixels between the atlas edge and the first tiles.
+    pub margin: u32,
+    /// Offset in pixels to draw each tile at, X right and Y down.
+    pub tile_offset: [i32; 2],
+    /// The atlas image, or `None` for an image collection.
+    pub image: Option<TileImage>,
+    /// The tiles that carry more than their place in the grid, sorted by index:
+    /// properties, animation, collision, or an image of their own.
+    pub tiles: Vec<TileData>,
+    /// The tileset's custom properties.
+    pub properties: Properties,
+}
+
+impl TileSetData {
+    /// The extra data of tile `index`, if it has any.
+    pub fn tile(&self, index: u32) -> Option<&TileData> {
+        self.tiles
+            .binary_search_by_key(&index, |t| t.index)
+            .ok()
+            .map(|i| &self.tiles[i])
+    }
+
+    /// Where tile `index`'s pixels are: in the atlas image, or in the tile's own
+    /// image when it has one. `None` for a tile the tileset does not have.
+    pub fn tile_rect(&self, index: u32) -> Option<PixelRect> {
+        if let Some(tile) = self.tile(index) {
+            if let Some(rect) = tile.rect {
+                return Some(rect);
+            }
+            if let Some(image) = &tile.image {
+                return Some(PixelRect::new(0, 0, image.size[0], image.size[1]));
+            }
+        }
+        if self.image.is_none() || self.columns == 0 || index >= self.tile_count {
+            return None;
+        }
+        let (col, row) = (index % self.columns, index / self.columns);
+        Some(PixelRect::new(
+            self.margin + col * (self.tile_size[0] + self.spacing),
+            self.margin + row * (self.tile_size[1] + self.spacing),
+            self.tile_size[0],
+            self.tile_size[1],
+        ))
+    }
+}
+
+/// The extra data of one tile in a [`TileSetData`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TileData {
+    /// The tile's index within its tileset.
+    pub index: u32,
+    /// The tile's class name, empty when unset.
+    pub class: String,
+    /// The chance the editor's terrain tools pick this tile, relative to others.
+    pub probability: f32,
+    /// The tile's own image, in an image collection.
+    pub image: Option<TileImage>,
+    /// The part of the image the tile shows, when it is not the whole of its own
+    /// image or its place in the atlas grid.
+    pub rect: Option<PixelRect>,
+    /// Animation frames, in order, empty for a still tile.
+    pub animation: Vec<TileFrame>,
+    /// Collision shapes, in the tile's pixel frame.
+    pub collision: Vec<MapObject>,
+    /// The tile's custom properties.
+    pub properties: Properties,
+}
+
+/// One frame of a tile animation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TileFrame {
+    /// The tile shown, an index into the same tileset.
+    pub index: u32,
+    /// How long it shows, in milliseconds.
+    pub duration_ms: u32,
+}
+
+/// Whether an object layer draws in the order listed or sorted by position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ObjectDrawOrder {
+    /// Sorted by Y, lower objects in front.
+    #[default]
+    TopDown,
+    /// In the order listed.
+    Index,
+}
+
+/// An object placed on a map or attached to a tile: a shape with a name, a
+/// class and properties.
+///
+/// `position` is in pixels, X right and Y down. For a tile object it is the
+/// bottom-left corner of the tile's image; otherwise the top-left corner, or
+/// the first point of a polygon or polyline. `rotation` turns the object about
+/// `position`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct MapObject {
+    /// The object's id, unique within the map. `0` when the file has none.
+    pub id: u32,
+    /// The object's name.
+    pub name: String,
+    /// The object's class name (its type), empty when unset.
+    pub class: String,
+    /// Where the object is, in pixels.
+    pub position: [f32; 2],
+    /// Width and height in pixels. Zero for a point, and for a polygon or
+    /// polyline, whose extent is its points.
+    pub size: [f32; 2],
+    /// Rotation in degrees, clockwise.
+    pub rotation: f32,
+    /// Whether the object is shown.
+    pub visible: bool,
+    /// The object's shape.
+    pub shape: MapObjectShape,
+    /// The tile the object draws, for a tile object.
+    pub tile: Option<TileCell>,
+    /// The object's custom properties.
+    pub properties: Properties,
+}
+
+/// The shape of a [`MapObject`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum MapObjectShape {
+    /// A rectangle of the object's size. A tile object has this shape too.
+    #[default]
+    Rectangle,
+    /// An ellipse filling the object's size.
+    Ellipse,
+    /// A single point.
+    Point,
+    /// A closed polygon, its points relative to the object's position.
+    Polygon(Vec<[f32; 2]>),
+    /// An open line, its points relative to the object's position.
+    Polyline(Vec<[f32; 2]>),
+    /// A block of text filling the object's size.
+    Text(MapText),
+}
+
+/// The text of a text [`MapObject`] and how it is set.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MapText {
+    /// The text.
+    pub text: String,
+    /// Font family name.
+    pub font_family: String,
+    /// Font size in pixels.
+    pub pixel_size: u32,
+    /// Whether the text wraps to the object's width.
+    pub wrap: bool,
+    /// Text colour.
+    pub colour: Colour,
+    /// Bold.
+    pub bold: bool,
+    /// Italic.
+    pub italic: bool,
+    /// Underlined.
+    pub underline: bool,
+    /// Struck through.
+    pub strikeout: bool,
+    /// Whether kerning is applied.
+    pub kerning: bool,
+    /// Horizontal alignment within the object.
+    pub h_align: TextAlign,
+    /// Vertical alignment within the object.
+    pub v_align: TextAlign,
+}
+
+impl Default for MapText {
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            font_family: "sans-serif".into(),
+            pixel_size: 16,
+            wrap: false,
+            colour: Colour::srgb_u8(0, 0, 0, 255),
+            bold: false,
+            italic: false,
+            underline: false,
+            strikeout: false,
+            kerning: true,
+            h_align: TextAlign::Start,
+            v_align: TextAlign::Start,
+        }
+    }
+}
+
+/// Alignment along one axis of a text block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum TextAlign {
+    /// Left, or top.
+    #[default]
+    Start,
+    /// Centred.
+    Centre,
+    /// Right, or bottom.
+    End,
+    /// Spread to both edges. Horizontal only.
+    Justify,
 }
 
 // Naming-compat aliases the loaders use for these payload types. Each loader is

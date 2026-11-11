@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **SVG gradients and stroke style** - `loaders::svg::vector_from_path` and `vector_from_bytes` resolve linear and radial gradient fills and strokes into `VectorPaint` rather than leaving them `None`, and carry stroke caps, joins, mitre limit and dash arrays, with dash lengths scaled like the width. A `miter-clip` join becomes a mitre; pattern paints are still not resolved.
 
+- **Tiled maps** - feature `tiled`: `loaders::tiled::tilemap_from_path`, `tilemap_from_bytes(bytes, base)` and `tileset_from_path` decode TMX, TSX, TMJ and TSJ into a `TileMapData` in a Y-down pixel frame. Tile layers are `TileGrid`s of `TileCell`s with the tileset, index and flips decoded from the global id; object, image and group layers, tilesets with per-tile animation, collision shapes and images, object templates, and typed `Properties` at every level are carried. Layer data reads as XML, CSV or base64 with zlib or gzip; zstd is refused. Wang sets, terrain and embedded image data are not read.
+- **`PixelRect`** - a pixel rectangle in an image's Y-down frame, with `uv` for texture coordinates; `TileSetData::tile_rect` returns one for any tile, atlas or image collection.
+- **`TextureSource` is `PartialEq`**.
+
 ### Changed
 - **Vector fills and strokes carry a paint** - `VectorShape::fill` is an `Option<VectorPaint>` and `VectorStroke::colour` is now `VectorStroke::paint`, where a `VectorPaint` is a solid colour or a linear or radial gradient with its stops, `SpreadMethod` and the transform from its own frame into the art's. `VectorStroke` gains `cap`, `join`, `mitre_limit` and `dashes` (a `VectorDashes`), and is no longer `Copy`. `VectorPaint::to_overlay_fill` and `VectorStroke::to_overlay_stroke` convert to the overlay's types: linear gradients and two-entry dash arrays exactly, the rest approximated as their docs say.
 

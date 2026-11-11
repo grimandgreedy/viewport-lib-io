@@ -4,7 +4,10 @@
 //! run of a loader tells you everything wrong with its output instead of one
 //! thing at a time.
 
-use viewport_lib_io::types::{AnimationTrackValues, PointSet, SceneData, SceneMesh, Skeleton};
+use viewport_lib_io::types::{
+    AnimationTrackValues, MapObject, PointSet, SceneData, SceneMesh, Skeleton, TileCell,
+    TileLayerData, TileLayerKind, TileMapData, TileSetData,
+};
 use viewport_lib_io::viewport_lib_types::data::attribute::AttributeData;
 use viewport_lib_io::viewport_lib_types::data::mesh::MeshData;
 
@@ -522,4 +525,112 @@ pub fn check_point_set(subject: &str, points: &PointSet) -> Report {
     }
 
     report
+}
+
+/// Check a decoded tile map: every grid holds one cell per tile, every cell
+/// and tile object names a tileset the map has, atlas tiles and animation
+/// frames are inside their tileset, and per-tile data is sorted by index.
+pub fn check_tilemap(subject: &str, map: &TileMapData) -> Report {
+    let mut report = Report::default();
+
+    for (i, set) in map.tilesets.iter().enumerate() {
+        let sub = format!("{subject} / tileset[{i}] {}", set.name);
+        report.check(
+            set.tiles.windows(2).all(|w| w[0].index < w[1].index),
+            &sub,
+            "tileset-tiles-sorted",
+            "per-tile data is not in strictly increasing index order",
+        );
+        for tile in &set.tiles {
+            for frame in &tile.animation {
+                report.check(
+                    in_tileset(set, frame.index),
+                    &sub,
+                    "tile-animation-frame",
+                    format!(
+                        "tile {} animates to {}, outside the tileset",
+                        tile.index, frame.index
+                    ),
+                );
+            }
+            check_objects(&mut report, &sub, map, &tile.collision);
+        }
+    }
+    check_layers(&mut report, subject, map, &map.layers);
+    report
+}
+
+/// Whether `index` names a tile of `set`: inside the atlas grid, or one with
+/// data of its own in an image collection.
+fn in_tileset(set: &TileSetData, index: u32) -> bool {
+    if set.image.is_some() {
+        index < set.tile_count
+    } else {
+        set.tile(index).is_some()
+    }
+}
+
+fn check_cell(report: &mut Report, subject: &str, map: &TileMapData, cell: TileCell, what: &str) {
+    if cell.is_empty() {
+        return;
+    }
+    match map.tilesets.get(cell.tileset as usize) {
+        None => report.push(
+            subject,
+            "tile-cell-tileset",
+            format!(
+                "{what} names tileset {} of {}",
+                cell.tileset,
+                map.tilesets.len()
+            ),
+        ),
+        Some(set) => report.check(
+            in_tileset(set, cell.index),
+            subject,
+            "tile-cell-index",
+            format!("{what} names tile {} of tileset {}", cell.index, set.name),
+        ),
+    }
+}
+
+fn check_objects(report: &mut Report, subject: &str, map: &TileMapData, objects: &[MapObject]) {
+    for object in objects {
+        if let Some(tile) = object.tile {
+            check_cell(report, subject, map, tile, &format!("object {}", object.id));
+        }
+    }
+}
+
+fn check_layers(report: &mut Report, subject: &str, map: &TileMapData, layers: &[TileLayerData]) {
+    for layer in layers {
+        let sub = format!("{subject} / layer {}", layer.name);
+        report.check(
+            (0.0..=1.0).contains(&layer.opacity),
+            &sub,
+            "layer-opacity",
+            format!("opacity {}", layer.opacity),
+        );
+        match &layer.kind {
+            TileLayerKind::Tiles(grid) => {
+                let want = grid.size[0] as usize * grid.size[1] as usize;
+                report.check(
+                    grid.cells.len() == want,
+                    &sub,
+                    "tile-grid-size",
+                    format!(
+                        "{} cells for {}x{}",
+                        grid.cells.len(),
+                        grid.size[0],
+                        grid.size[1]
+                    ),
+                );
+                for (i, cell) in grid.cells.iter().enumerate() {
+                    check_cell(report, &sub, map, *cell, &format!("cell {i}"));
+                }
+            }
+            TileLayerKind::Objects { objects, .. } => check_objects(report, &sub, map, objects),
+            TileLayerKind::Group(children) => check_layers(report, &sub, map, children),
+            TileLayerKind::Image { .. } => {}
+        }
+    }
 }
