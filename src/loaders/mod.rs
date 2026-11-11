@@ -1,5 +1,9 @@
 //! Source-format loaders.
 
+/// BMFont bitmap font decoding.
+#[cfg(feature = "bmfont")]
+pub mod bmfont;
+
 /// BMP image decoding.
 #[cfg(feature = "bmp")]
 pub mod bmp;

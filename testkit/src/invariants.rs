@@ -5,8 +5,8 @@
 //! thing at a time.
 
 use viewport_lib_io::types::{
-    AnimationTrackValues, MapObject, PointSet, SceneData, SceneMesh, Skeleton, SpriteSheetData,
-    TileCell, TileLayerData, TileLayerKind, TileMapData, TileSetData,
+    AnimationTrackValues, BitmapFontData, MapObject, PointSet, SceneData, SceneMesh, Skeleton,
+    SpriteSheetData, TileCell, TileLayerData, TileLayerKind, TileMapData, TileSetData,
 };
 use viewport_lib_io::viewport_lib_types::data::attribute::AttributeData;
 use viewport_lib_io::viewport_lib_types::data::mesh::MeshData;
@@ -687,6 +687,40 @@ pub fn check_sprite_sheet(subject: &str, sheet: &SpriteSheetData) -> Report {
                 format!("key on frame {} of {count}", key.frame),
             );
         }
+    }
+    report
+}
+
+/// Check a decoded bitmap font: every glyph is on a page the font has and
+/// inside it, and every kerning pair names glyphs the font has.
+pub fn check_bitmap_font(subject: &str, font: &BitmapFontData) -> Report {
+    let mut report = Report::default();
+    for (id, glyph) in &font.glyphs {
+        let sub = format!("{subject} / glyph {id}");
+        report.check(
+            (glyph.page as usize) < font.pages.len(),
+            &sub,
+            "glyph-page",
+            format!("page {} of {}", glyph.page, font.pages.len()),
+        );
+        let r = glyph.rect;
+        report.check(
+            r.x + r.width <= font.page_size[0] && r.y + r.height <= font.page_size[1],
+            &sub,
+            "glyph-in-page",
+            format!(
+                "{r:?} in a {}x{} page",
+                font.page_size[0], font.page_size[1]
+            ),
+        );
+    }
+    for (first, second) in font.kernings.keys() {
+        report.check(
+            font.glyphs.contains_key(first) && font.glyphs.contains_key(second),
+            subject,
+            "kerning-glyphs",
+            format!("pair ({first}, {second}) names a glyph the font does not have"),
+        );
     }
     report
 }

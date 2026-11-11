@@ -905,3 +905,71 @@ pub fn texturepacker_sheet(hash: bool) -> String {
         body.join(",\n")
     )
 }
+
+/// A BMFont descriptor as text (`xml` false) or XML: a packed font over two
+/// 64x64 pages, with `A` in the red channel of page 0, `B` in green, `C` in
+/// blue, a space in every channel of page 1, and an `A` `B` kerning pair. Both
+/// forms decode identically.
+pub fn bmfont(xml: bool) -> String {
+    let glyphs = [
+        (32, 0, 0, 0, 0, 0, 1, 15),
+        (65, 0, 0, 10, 12, 1, 0, 4),
+        (66, 12, 0, 9, 12, 1, 0, 2),
+        (67, 24, 0, 11, 13, 0, 0, 1),
+    ];
+    let char_attrs = |(id, x, y, w, h, xo, page, chnl): (
+        u32,
+        u32,
+        u32,
+        u32,
+        u32,
+        i32,
+        u32,
+        u32,
+    )| {
+        format!(
+            r#"id="{id}" x="{x}" y="{y}" width="{w}" height="{h}" xoffset="{xo}" yoffset="-2" xadvance="{}" page="{page}" chnl="{chnl}""#,
+            w + 1
+        )
+    };
+    if xml {
+        let chars: String = glyphs
+            .iter()
+            .map(|g| format!("  <char {} />\n", char_attrs(*g)))
+            .collect();
+        format!(
+            r#"<?xml version="1.0"?>
+<font>
+ <info face="Pixel Sans" size="-16" bold="1" italic="0" charset="" unicode="1" stretchH="100" smooth="0" aa="1" padding="1,2,3,4" spacing="1,1" outline="0"/>
+ <common lineHeight="18" base="14" scaleW="64" scaleH="64" pages="2" packed="1" alphaChnl="0" redChnl="0" greenChnl="0" blueChnl="0"/>
+ <pages>
+  <page id="1" file="glyphs_1.png" />
+  <page id="0" file="glyphs_0.png" />
+ </pages>
+ <chars count="{}">
+{chars} </chars>
+ <kernings count="1">
+  <kerning first="65" second="66" amount="-1" />
+ </kernings>
+</font>
+"#,
+            glyphs.len()
+        )
+    } else {
+        let chars: String = glyphs
+            .iter()
+            .map(|g| format!("char {}\n", char_attrs(*g).replace('"', "")))
+            .collect();
+        format!(
+            r#"info face="Pixel Sans" size=-16 bold=1 italic=0 charset="" unicode=1 stretchH=100 smooth=0 aa=1 padding=1,2,3,4 spacing=1,1 outline=0
+common lineHeight=18 base=14 scaleW=64 scaleH=64 pages=2 packed=1 alphaChnl=0 redChnl=0 greenChnl=0 blueChnl=0
+page id=1 file="glyphs_1.png"
+page id=0 file="glyphs_0.png"
+chars count={}
+{chars}kernings count=1
+kerning first=65  second=66  amount=-1
+"#,
+            glyphs.len()
+        )
+    }
+}

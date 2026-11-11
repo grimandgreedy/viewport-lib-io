@@ -2270,6 +2270,96 @@ pub struct SpriteSliceKey {
     pub pivot: Option<[i32; 2]>,
 }
 
+/// A decoded bitmap font: glyph images packed into one or more page images,
+/// and the metrics to lay them out.
+///
+/// Everything is in pixels, X right and Y down: glyph rectangles in their page
+/// image's frame, offsets and the baseline from the top of a line.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct BitmapFontData {
+    /// The font face the glyphs were rendered from.
+    pub face: String,
+    /// The size they were rendered at. Negative when the generator matched the
+    /// character height rather than the cell height.
+    pub size: i32,
+    /// Rendered bold.
+    pub bold: bool,
+    /// Rendered italic.
+    pub italic: bool,
+    /// Distance in pixels from one line to the next.
+    pub line_height: u32,
+    /// Distance in pixels from the top of a line to the baseline.
+    pub base: u32,
+    /// Size of each page image in pixels.
+    pub page_size: [u32; 2],
+    /// Padding around each glyph: up, right, down, left.
+    pub padding: [i32; 4],
+    /// Spacing between glyphs in the pages, horizontal and vertical.
+    pub spacing: [i32; 2],
+    /// Outline thickness in pixels, `0` for none.
+    pub outline: u32,
+    /// Whether glyphs are packed into the separate colour channels of the
+    /// pages; see [`BitmapGlyph::channels`].
+    pub packed: bool,
+    /// The page images, in page id order, resolved against the descriptor's
+    /// directory when that is known.
+    pub pages: Vec<TextureSource>,
+    /// Glyphs by Unicode code point (or by the font's character id, for a
+    /// font generated without Unicode).
+    pub glyphs: std::collections::BTreeMap<u32, BitmapGlyph>,
+    /// Extra horizontal advance in pixels between a pair of characters, by
+    /// (first, second) code point.
+    pub kernings: std::collections::BTreeMap<(u32, u32), i32>,
+}
+
+/// One glyph of a [`BitmapFontData`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BitmapGlyph {
+    /// Index of the page image the glyph is in.
+    pub page: u32,
+    /// The glyph's pixels in its page image.
+    pub rect: PixelRect,
+    /// Where to draw `rect` relative to the pen position at the top of the
+    /// line, in pixels.
+    pub offset: [i32; 2],
+    /// How far to move the pen after the glyph, in pixels.
+    pub advance: i32,
+    /// The page channels the glyph occupies. All four unless the font is
+    /// packed.
+    pub channels: GlyphChannels,
+}
+
+impl BitmapGlyph {
+    /// The glyph's rectangle as texture coordinates `[u_min, v_min, u_max,
+    /// v_max]` in a page of `page_size`, `v` `0` at the image's top row.
+    pub fn uv(&self, page_size: [u32; 2]) -> [f32; 4] {
+        self.rect.uv(page_size)
+    }
+}
+
+/// Which colour channels of a page hold a glyph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct GlyphChannels {
+    /// The red channel.
+    pub red: bool,
+    /// The green channel.
+    pub green: bool,
+    /// The blue channel.
+    pub blue: bool,
+    /// The alpha channel.
+    pub alpha: bool,
+}
+
+impl GlyphChannels {
+    /// Every channel.
+    pub const ALL: Self = Self {
+        red: true,
+        green: true,
+        blue: true,
+        alpha: true,
+    };
+}
+
 // Naming-compat aliases the loaders use for these payload types. Each loader is
 // behind its own cargo feature, so a given alias is unused when its loaders are
 // disabled (the default build enables only some); the allow keeps that from

@@ -30,7 +30,8 @@ pub use error::IoError;
 pub use lightmap::{LightmapData, LightmapEncoding};
 pub use types::{
     AnimationChannel, AnimationClip, AnimationInterpolation, AnimationSampler, AnimationTrack,
-    AnimationDirection, AnimationTrackValues, DecodedDataSet, IntGridData, IntGridValue, Joint, MAX_JOINTS, MapObject, MapObjectShape, MapText,
+    AnimationDirection, AnimationTrackValues, BitmapFontData, BitmapGlyph, DecodedDataSet,
+    GlyphChannels, IntGridData, IntGridValue, Joint, MAX_JOINTS, MapObject, MapObjectShape, MapText,
     MaterialData, NodeAnimationClip, NodeAnimationTrack, ObjectDrawOrder, PixelRect, PointSet,
     Properties, PropertyValue, SceneData, SceneLight, SceneLightKind, SceneMesh, SceneNode,
     Skeleton, SkinWeights, SparseGrid, SpreadMethod, SpriteAnimation, SpriteFrame, SpriteSheetData,

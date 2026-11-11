@@ -11,11 +11,13 @@
 //! ```
 
 use viewport_lib_io::error::IoError;
-use viewport_lib_io::types::{PointSet, SceneData, SpriteSheetData, TileMapData, TileWorldData};
+use viewport_lib_io::types::{
+    BitmapFontData, PointSet, SceneData, SpriteSheetData, TileMapData, TileWorldData,
+};
 use viewport_lib_io::viewport_lib_types::data::mesh::MeshData;
 
 use crate::invariants::{
-    check_mesh, check_point_set, check_scene, check_sprite_sheet, check_tilemap,
+    check_bitmap_font, check_mesh, check_point_set, check_scene, check_sprite_sheet, check_tilemap,
 };
 
 /// One mesh as a consumer addresses it: its name, its size, and what it points
@@ -180,6 +182,24 @@ where
     assert!(
         first == second,
         "{label} decoded a different sheet the second time"
+    );
+
+    first
+}
+
+/// Decode a bitmap font twice, check the invariants, and hand back the first.
+#[track_caller]
+pub fn bitmap_font<F>(label: &str, decode: F) -> BitmapFontData
+where
+    F: Fn() -> Result<BitmapFontData, IoError>,
+{
+    let first = decode().unwrap_or_else(|e| panic!("{label} failed to decode: {e}"));
+    check_bitmap_font(label, &first).expect_clean();
+
+    let second = decode().unwrap_or_else(|e| panic!("{label} failed to decode a second time: {e}"));
+    assert!(
+        first == second,
+        "{label} decoded a different font the second time"
     );
 
     first
