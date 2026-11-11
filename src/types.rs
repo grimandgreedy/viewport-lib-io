@@ -2149,6 +2149,127 @@ pub enum TextAlign {
     Justify,
 }
 
+/// A decoded sprite sheet: an atlas image and the frames, animations and
+/// slices an exporter wrote beside it.
+///
+/// Everything is in the image's pixel frame: X right and Y down from the
+/// top-left corner.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SpriteSheetData {
+    /// The atlas image, resolved against the sheet's directory when that is
+    /// known, or `None` when the sheet does not name one.
+    pub image: Option<TextureSource>,
+    /// The atlas size in pixels. When the sheet does not record it, the extent
+    /// of its frames.
+    pub size: [u32; 2],
+    /// The scale the sheet was exported at, `1` when unset.
+    pub scale: f32,
+    /// The exporter that wrote the sheet, as it names itself, empty when unset.
+    pub app: String,
+    /// Frames in the order the sheet lists them. Animations index into this.
+    pub frames: Vec<SpriteFrame>,
+    /// Named runs of frames.
+    pub animations: Vec<SpriteAnimation>,
+    /// Named regions of the sprite, with nine-slice centres and pivots.
+    pub slices: Vec<SpriteSlice>,
+}
+
+/// One frame of a [`SpriteSheetData`].
+///
+/// Exporters trim the transparent border off a frame and pack what is left,
+/// so a frame has two sizes: the trimmed pixels in the atlas, `rect`, and the
+/// whole untrimmed sprite, `source_size`, with `source_offset` saying where
+/// the trimmed pixels sit within it. Draw the frame at `source_offset` inside
+/// a `source_size` box and every frame of an animation lines up.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpriteFrame {
+    /// The frame's name, usually the source file it was packed from.
+    pub name: String,
+    /// The pixels the frame occupies in the atlas. For a rotated frame this is
+    /// the turned rectangle, so its width and height are the sprite's height
+    /// and width.
+    pub rect: PixelRect,
+    /// `rect` as texture coordinates `[u_min, v_min, u_max, v_max]`, `v` `0`
+    /// at the image's top row. A texture uploaded with its first row at the
+    /// bottom wants `1 - v` instead.
+    pub uv: [f32; 4],
+    /// Whether the exporter turned the frame 90 degrees clockwise to pack it.
+    /// Turn it back anticlockwise to draw it upright.
+    pub rotated: bool,
+    /// Whether the exporter trimmed the frame's transparent border.
+    pub trimmed: bool,
+    /// The untrimmed sprite's size in pixels.
+    pub source_size: [u32; 2],
+    /// Where the trimmed pixels' top-left corner sits in the untrimmed sprite.
+    pub source_offset: [i32; 2],
+    /// The frame's pivot as a fraction of the untrimmed sprite, `[0, 0]` its
+    /// top-left and `[1, 1]` its bottom-right, when the sheet sets one.
+    pub pivot: Option<[f32; 2]>,
+    /// How long the frame shows in an animation, when the sheet says.
+    pub duration_ms: Option<u32>,
+}
+
+/// A named run of frames in a [`SpriteSheetData`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpriteAnimation {
+    /// The animation's name.
+    pub name: String,
+    /// Index of its first frame in [`SpriteSheetData::frames`].
+    pub first: u32,
+    /// Index of its last frame, inclusive.
+    pub last: u32,
+    /// The order the frames play in.
+    pub direction: AnimationDirection,
+    /// How many times it plays, or `None` to loop for ever.
+    pub repeat: Option<u32>,
+    /// The colour the editor shows the animation in, if set.
+    pub colour: Option<Colour>,
+    /// Free text the author attached, empty when unset.
+    pub data: String,
+}
+
+/// The order an animation's frames play in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum AnimationDirection {
+    /// First to last.
+    #[default]
+    Forward,
+    /// Last to first.
+    Reverse,
+    /// First to last and back, not repeating the end frames.
+    PingPong,
+    /// Last to first and back, not repeating the end frames.
+    PingPongReverse,
+}
+
+/// A named region of a sprite, which can change from frame to frame.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpriteSlice {
+    /// The slice's name.
+    pub name: String,
+    /// The colour the editor shows the slice in, if set.
+    pub colour: Option<Colour>,
+    /// Free text the author attached, empty when unset.
+    pub data: String,
+    /// The slice from each frame it changes on, in frame order. A key holds
+    /// until the next one.
+    pub keys: Vec<SpriteSliceKey>,
+}
+
+/// One key of a [`SpriteSlice`]: its bounds from a frame onward.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SpriteSliceKey {
+    /// The frame the key starts on.
+    pub frame: u32,
+    /// The slice's bounds in the untrimmed sprite, in pixels.
+    pub bounds: PixelRect,
+    /// The nine-slice centre, relative to `bounds`, if the slice has one: the
+    /// part that stretches, with the border around it drawn at its own size.
+    pub centre: Option<PixelRect>,
+    /// The pivot in pixels relative to `bounds`, if the slice has one.
+    pub pivot: Option<[i32; 2]>,
+}
+
 // Naming-compat aliases the loaders use for these payload types. Each loader is
 // behind its own cargo feature, so a given alias is unused when its loaders are
 // disabled (the default build enables only some); the allow keeps that from

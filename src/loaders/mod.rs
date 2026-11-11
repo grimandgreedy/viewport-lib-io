@@ -98,6 +98,10 @@ pub mod raw;
 #[cfg(feature = "stl")]
 pub mod stl;
 
+/// Sprite sheet metadata decoding (Aseprite and TexturePacker JSON).
+#[cfg(feature = "sprite-sheet")]
+pub mod sprite_sheet;
+
 /// SVG image decoding.
 #[cfg(feature = "svg")]
 pub mod svg;

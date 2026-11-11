@@ -5,8 +5,8 @@
 //! thing at a time.
 
 use viewport_lib_io::types::{
-    AnimationTrackValues, MapObject, PointSet, SceneData, SceneMesh, Skeleton, TileCell,
-    TileLayerData, TileLayerKind, TileMapData, TileSetData,
+    AnimationTrackValues, MapObject, PointSet, SceneData, SceneMesh, Skeleton, SpriteSheetData,
+    TileCell, TileLayerData, TileLayerKind, TileMapData, TileSetData,
 };
 use viewport_lib_io::viewport_lib_types::data::attribute::AttributeData;
 use viewport_lib_io::viewport_lib_types::data::mesh::MeshData;
@@ -633,10 +633,60 @@ fn check_layers(report: &mut Report, subject: &str, map: &TileMapData, layers: &
                 grid.values.len() == grid.size[0] as usize * grid.size[1] as usize,
                 &sub,
                 "int-grid-size",
-                format!("{} values for {}x{}", grid.values.len(), grid.size[0], grid.size[1]),
+                format!(
+                    "{} values for {}x{}",
+                    grid.values.len(),
+                    grid.size[0],
+                    grid.size[1]
+                ),
             ),
             TileLayerKind::Group(children) => check_layers(report, &sub, map, children),
             TileLayerKind::Image { .. } => {}
         }
     }
+}
+
+/// Check a decoded sprite sheet: every frame lies inside the atlas and its UV
+/// rectangle agrees with its pixel one, and every animation and slice key
+/// names frames the sheet has.
+pub fn check_sprite_sheet(subject: &str, sheet: &SpriteSheetData) -> Report {
+    let mut report = Report::default();
+    let count = sheet.frames.len() as u32;
+
+    for (i, frame) in sheet.frames.iter().enumerate() {
+        let sub = format!("{subject} / frame[{i}] {}", frame.name);
+        let r = frame.rect;
+        report.check(
+            r.x + r.width <= sheet.size[0] && r.y + r.height <= sheet.size[1],
+            &sub,
+            "sprite-frame-in-atlas",
+            format!("{r:?} in a {}x{} atlas", sheet.size[0], sheet.size[1]),
+        );
+        let want = r.uv(sheet.size);
+        report.check(
+            frame.uv.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-6),
+            &sub,
+            "sprite-frame-uv",
+            format!("uv {:?}, rect gives {want:?}", frame.uv),
+        );
+    }
+    for animation in &sheet.animations {
+        report.check(
+            animation.first <= animation.last && animation.last < count,
+            &format!("{subject} / animation {}", animation.name),
+            "sprite-animation-range",
+            format!("frames {}..={} of {count}", animation.first, animation.last),
+        );
+    }
+    for slice in &sheet.slices {
+        for key in &slice.keys {
+            report.check(
+                key.frame < count,
+                &format!("{subject} / slice {}", slice.name),
+                "sprite-slice-frame",
+                format!("key on frame {} of {count}", key.frame),
+            );
+        }
+    }
+    report
 }

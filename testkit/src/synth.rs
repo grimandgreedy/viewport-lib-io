@@ -811,3 +811,97 @@ pub fn ldtk_project(external: bool) -> (String, Vec<(String, String)>) {
     );
     (project, files)
 }
+
+/// An Aseprite sprite sheet export, in the JSON hash layout or the array one:
+/// four 16x16 frames of a 64x16 atlas, two of them trimmed, with per-frame
+/// durations, a forward `walk` tag over frames 0 to 2 and a ping-pong `blink`
+/// that repeats twice, and a `hitbox` slice with a nine-slice centre and a
+/// pivot keyed on two frames. Both layouts decode identically.
+pub fn aseprite_sheet(hash: bool) -> String {
+    let frames = [
+        ("hero 0.aseprite", 0, false, (0, 0, 16, 16), 100),
+        ("hero 1.aseprite", 16, true, (2, 1, 12, 14), 120),
+        ("hero 2.aseprite", 32, false, (0, 0, 16, 16), 100),
+        ("hero 10.aseprite", 48, true, (3, 0, 10, 16), 200),
+    ];
+    let body: Vec<String> = frames
+        .iter()
+        .map(|(name, x, trimmed, (sx, sy, w, h), duration)| {
+            let fields = format!(
+                r#""frame": {{"x": {x}, "y": 0, "w": {w}, "h": {h}}}, "rotated": false, "trimmed": {trimmed},
+   "spriteSourceSize": {{"x": {sx}, "y": {sy}, "w": {w}, "h": {h}}}, "sourceSize": {{"w": 16, "h": 16}},
+   "duration": {duration}"#
+            );
+            if hash {
+                format!("  \"{name}\": {{{fields}}}")
+            } else {
+                format!("  {{\"filename\": \"{name}\", {fields}}}")
+            }
+        })
+        .collect();
+    let (open, close) = if hash { ('{', '}') } else { ('[', ']') };
+    format!(
+        r##"{{ "frames": {open}
+{}
+ {close},
+ "meta": {{
+  "app": "https://www.aseprite.org/", "version": "1.3.7", "image": "hero.png",
+  "format": "RGBA8888", "size": {{"w": 64, "h": 16}}, "scale": "1",
+  "frameTags": [
+   {{"name": "walk", "from": 0, "to": 2, "direction": "forward", "color": "#000000ff"}},
+   {{"name": "blink", "from": 2, "to": 3, "direction": "pingpong", "repeat": "2", "color": "#ff0000ff", "data": "eyes"}}
+  ],
+  "layers": [{{"name": "Layer 1", "opacity": 255, "blendMode": "normal"}}],
+  "slices": [
+   {{"name": "hitbox", "color": "#0000ffff", "data": "solid", "keys": [
+     {{"frame": 0, "bounds": {{"x": 2, "y": 2, "w": 12, "h": 12}}, "center": {{"x": 3, "y": 3, "w": 6, "h": 6}}, "pivot": {{"x": 6, "y": 12}}}},
+     {{"frame": 2, "bounds": {{"x": 4, "y": 2, "w": 8, "h": 12}}}}
+   ]}}
+  ]
+ }}
+}}
+"##,
+        body.join(",\n")
+    )
+}
+
+/// A TexturePacker export in the JSON hash layout or the array one: two
+/// sprites in a 64x32 atlas, the second rotated to pack and trimmed, each
+/// with a pivot.
+pub fn texturepacker_sheet(hash: bool) -> String {
+    let frames = [
+        (
+            "coin.png",
+            r#""frame": {"x": 0, "y": 0, "w": 32, "h": 32}, "rotated": false, "trimmed": false,
+   "spriteSourceSize": {"x": 0, "y": 0, "w": 32, "h": 32}, "sourceSize": {"w": 32, "h": 32},
+   "pivot": {"x": 0.5, "y": 0.5}"#,
+        ),
+        (
+            "sword.png",
+            r#""frame": {"x": 32, "y": 0, "w": 30, "h": 14}, "rotated": true, "trimmed": true,
+   "spriteSourceSize": {"x": 1, "y": 9, "w": 30, "h": 14}, "sourceSize": {"w": 32, "h": 32},
+   "pivot": {"x": 0.1, "y": 0.9}"#,
+        ),
+    ];
+    let body: Vec<String> = frames
+        .iter()
+        .map(|(name, fields)| {
+            if hash {
+                format!("  \"{name}\": {{{fields}}}")
+            } else {
+                format!("  {{\"filename\": \"{name}\", {fields}}}")
+            }
+        })
+        .collect();
+    let (open, close) = if hash { ('{', '}') } else { ('[', ']') };
+    format!(
+        r#"{{"frames": {open}
+{}
+ {close},
+ "meta": {{"app": "https://www.codeandweb.com/texturepacker", "version": "1.0",
+  "image": "items.png", "format": "RGBA8888", "size": {{"w": 64, "h": 32}}, "scale": "0.5"}}
+}}
+"#,
+        body.join(",\n")
+    )
+}
