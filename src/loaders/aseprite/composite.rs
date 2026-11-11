@@ -8,58 +8,34 @@
 //! at the end.
 
 use super::raw::{ColourDepth, Document, LayerKind};
+use crate::types::LayerBlendMode as Blend;
 
-/// A blend mode, by Aseprite's id.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum Blend {
-    Normal,
-    Multiply,
-    Screen,
-    Overlay,
-    Darken,
-    Lighten,
-    ColourDodge,
-    ColourBurn,
-    HardLight,
-    SoftLight,
-    Difference,
-    Exclusion,
-    Hue,
-    Saturation,
-    Colour,
-    Luminosity,
-    Addition,
-    Subtract,
-    Divide,
-}
-
-impl Blend {
-    /// The mode for an id, normal for one this reader does not know.
-    pub(super) fn from_id(id: u16) -> Self {
-        use Blend::*;
-        const ALL: [Blend; 19] = [
-            Normal,
-            Multiply,
-            Screen,
-            Overlay,
-            Darken,
-            Lighten,
-            ColourDodge,
-            ColourBurn,
-            HardLight,
-            SoftLight,
-            Difference,
-            Exclusion,
-            Hue,
-            Saturation,
-            Colour,
-            Luminosity,
-            Addition,
-            Subtract,
-            Divide,
-        ];
-        ALL.get(id as usize).copied().unwrap_or(Normal)
-    }
+/// The blend mode for an Aseprite id, normal for one this reader does not
+/// know.
+pub(super) fn blend_from_id(id: u16) -> Blend {
+    use Blend::*;
+    const ALL: [Blend; 19] = [
+        Normal,
+        Multiply,
+        Screen,
+        Overlay,
+        Darken,
+        Lighten,
+        ColourDodge,
+        ColourBurn,
+        HardLight,
+        SoftLight,
+        Difference,
+        Exclusion,
+        Hue,
+        Saturation,
+        Colour,
+        Luminosity,
+        Addition,
+        Subtract,
+        Divide,
+    ];
+    ALL.get(id as usize).copied().unwrap_or(Normal)
 }
 
 /// One separable blend of backdrop `b` and source `s`, each `0..=1`.
@@ -398,7 +374,7 @@ pub(super) fn layer_infos(doc: &Document) -> Vec<LayerInfo> {
             kind: l.kind,
             visible: l.visible,
             reference: l.reference,
-            blend: Blend::from_id(l.blend),
+            blend: blend_from_id(l.blend),
             opacity: l.opacity as f32 / 255.0,
         })
         .collect()
@@ -501,10 +477,10 @@ mod tests {
 
     #[test]
     fn ids_map_in_order_and_unknown_ones_are_normal() {
-        assert_eq!(Blend::from_id(0), Blend::Normal);
-        assert_eq!(Blend::from_id(12), Blend::Hue);
-        assert_eq!(Blend::from_id(18), Blend::Divide);
-        assert_eq!(Blend::from_id(40), Blend::Normal);
+        assert_eq!(blend_from_id(0), Blend::Normal);
+        assert_eq!(blend_from_id(12), Blend::Hue);
+        assert_eq!(blend_from_id(18), Blend::Divide);
+        assert_eq!(blend_from_id(40), Blend::Normal);
     }
 
     #[test]

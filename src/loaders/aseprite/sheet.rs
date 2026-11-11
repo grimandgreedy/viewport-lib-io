@@ -14,7 +14,8 @@ use viewport_lib_types::data::texture::TextureData;
 use super::{AsepriteLoadOptions, composite, raw};
 use crate::error::IoError;
 use crate::types::{
-    AnimationDirection, PixelRect, SpriteAnimation, SpriteFrame, SpriteSheetData, SpriteSlice,
+    AnimationDirection, LayeredSpriteData, PixelRect, SpriteAnimation, SpriteCel, SpriteColourMode,
+    SpriteFrame, SpriteLayer, SpriteLayerFrame, SpriteLayerKind, SpriteSheetData, SpriteSlice,
     SpriteSliceKey, TextureSource,
 };
 
@@ -335,51 +336,8 @@ pub(super) fn from_document(
         scale: 1.0,
         app: "aseprite".into(),
         frames,
-        animations: doc
-            .tags
-            .iter()
-            .map(|t| SpriteAnimation {
-                name: t.name.clone(),
-                first: t.from,
-                last: t.to,
-                direction: match t.direction {
-                    1 => AnimationDirection::Reverse,
-                    2 => AnimationDirection::PingPong,
-                    3 => AnimationDirection::PingPongReverse,
-                    _ => AnimationDirection::Forward,
-                },
-                repeat: (t.repeat > 0).then_some(t.repeat as u32),
-                colour: Some(rgba_colour(
-                    t.user.colour.unwrap_or([t.rgb[0], t.rgb[1], t.rgb[2], 255]),
-                )),
-                data: t.user.text.clone(),
-            })
-            .collect(),
-        slices: doc
-            .slices
-            .iter()
-            .map(|s| {
-                let rect = |r: [i64; 4]| {
-                    let at = |v: i64| v.clamp(0, u32::MAX as i64) as u32;
-                    PixelRect::new(at(r[0]), at(r[1]), at(r[2]), at(r[3]))
-                };
-                SpriteSlice {
-                    name: s.name.clone(),
-                    colour: s.user.colour.map(rgba_colour),
-                    data: s.user.text.clone(),
-                    keys: s
-                        .keys
-                        .iter()
-                        .map(|k| SpriteSliceKey {
-                            frame: k.frame,
-                            bounds: rect(k.bounds),
-                            centre: k.centre.map(rect),
-                            pivot: k.pivot,
-                        })
-                        .collect(),
-                }
-            })
-            .collect(),
+        animations: animations(doc),
+        slices: slices(doc),
         pixel_ratio: doc.pixel_ratio,
         unsupported: doc.unsupported.clone(),
     }
@@ -509,6 +467,117 @@ fn slice(slice: &Map<String, Value>) -> SpriteSlice {
                 pivot: object(k, "pivot").map(|p| [int_of(p, "x") as i32, int_of(p, "y") as i32]),
             })
             .collect(),
+    }
+}
+
+/// A document's tags as animations: repeat `0` loops for ever, and the
+/// colour is the user data's, else the one in the tag itself.
+fn animations(doc: &raw::Document) -> Vec<SpriteAnimation> {
+    doc.tags
+        .iter()
+        .map(|t| SpriteAnimation {
+            name: t.name.clone(),
+            first: t.from,
+            last: t.to,
+            direction: match t.direction {
+                1 => AnimationDirection::Reverse,
+                2 => AnimationDirection::PingPong,
+                3 => AnimationDirection::PingPongReverse,
+                _ => AnimationDirection::Forward,
+            },
+            repeat: (t.repeat > 0).then_some(t.repeat as u32),
+            colour: Some(rgba_colour(
+                t.user.colour.unwrap_or([t.rgb[0], t.rgb[1], t.rgb[2], 255]),
+            )),
+            data: t.user.text.clone(),
+        })
+        .collect()
+}
+
+/// A document's slices. Negative coordinates clamp to zero.
+fn slices(doc: &raw::Document) -> Vec<SpriteSlice> {
+    let rect = |r: [i64; 4]| {
+        let at = |v: i64| v.clamp(0, u32::MAX as i64) as u32;
+        PixelRect::new(at(r[0]), at(r[1]), at(r[2]), at(r[3]))
+    };
+    doc.slices
+        .iter()
+        .map(|s| SpriteSlice {
+            name: s.name.clone(),
+            colour: s.user.colour.map(rgba_colour),
+            data: s.user.text.clone(),
+            keys: s
+                .keys
+                .iter()
+                .map(|k| SpriteSliceKey {
+                    frame: k.frame,
+                    bounds: rect(k.bounds),
+                    centre: k.centre.map(rect),
+                    pivot: k.pivot,
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+/// A document's layers and cels as they are, each cel resolved to RGBA the
+/// way compositing resolves it.
+pub(super) fn layered_from_document(doc: &raw::Document) -> LayeredSpriteData {
+    let infos = composite::layer_infos(doc);
+    LayeredSpriteData {
+        size: doc.size,
+        pixel_ratio: doc.pixel_ratio,
+        colour_mode: match doc.depth {
+            raw::ColourDepth::Rgba => SpriteColourMode::Rgba,
+            raw::ColourDepth::Greyscale => SpriteColourMode::Greyscale,
+            raw::ColourDepth::Indexed => SpriteColourMode::Indexed,
+        },
+        groups_isolated: doc.groups_isolated,
+        layers: doc
+            .layers
+            .iter()
+            .zip(&infos)
+            .map(|(l, info)| SpriteLayer {
+                name: l.name.clone(),
+                kind: match l.kind {
+                    raw::LayerKind::Image => SpriteLayerKind::Image,
+                    raw::LayerKind::Group => SpriteLayerKind::Group,
+                    raw::LayerKind::Tilemap => SpriteLayerKind::Tilemap,
+                },
+                parent: info.parent.map(|p| p as u32),
+                visible: l.visible,
+                reference: l.reference,
+                background: l.background,
+                blend: info.blend,
+                opacity: info.opacity,
+                data: l.user.text.clone(),
+                colour: l.user.colour.map(rgba_colour),
+            })
+            .collect(),
+        frames: (0..doc.frames.len())
+            .map(|f| SpriteLayerFrame {
+                duration_ms: doc.frames[f].duration_ms,
+                cels: composite::cel_images(doc, f)
+                    .into_iter()
+                    .zip(&doc.frames[f].cels)
+                    .map(|(image, cel)| SpriteCel {
+                        layer: image.layer as u32,
+                        position: image.position,
+                        opacity: image.opacity,
+                        z_index: image.z_index as i32,
+                        image: TextureData::srgb(image.size[0], image.size[1], image.rgba),
+                        data: cel.user.text.clone(),
+                        colour: cel.user.colour.map(rgba_colour),
+                    })
+                    .collect(),
+            })
+            .collect(),
+        palette: doc.palette.iter().copied().map(rgba_colour).collect(),
+        transparent_index: (doc.depth == raw::ColourDepth::Indexed)
+            .then_some(doc.transparent_index as u32),
+        animations: animations(doc),
+        slices: slices(doc),
+        unsupported: doc.unsupported.clone(),
     }
 }
 
@@ -795,5 +864,183 @@ mod tests {
         assert_eq!(opaque_bounds(&rgba, [3, 2]), None);
         rgba[(3 + 2) * 4 + 3] = 1;
         assert_eq!(opaque_bounds(&rgba, [3, 2]), Some([2, 1, 1, 1]));
+    }
+
+    /// A document with a bit of everything that changes how frames flatten:
+    /// a multiply layer, an isolated group at half opacity, a hidden layer,
+    /// a reference layer, a cel moved by z-index, and an indexed twin with a
+    /// background layer.
+    fn busy(depth: u16) -> Vec<u8> {
+        use viewport_lib_io_testkit::synth::{AseCel, AseDocument, AseFrame, AseImage, AseLayer};
+        let indexed = depth == 8;
+        let px = |rgba: [u8; 4], index: u8| -> Vec<u8> {
+            if indexed {
+                vec![index; 4]
+            } else {
+                rgba.repeat(4)
+            }
+        };
+        let image = |rgba, index| AseImage::Raw {
+            size: [2, 2],
+            pixels: px(rgba, index),
+        };
+        let mut doc = AseDocument::new([3, 3], depth);
+        doc.flags = 1 | 2;
+        doc.palette = vec![
+            [0, 0, 0, 0],
+            [200, 40, 40, 255],
+            [40, 40, 200, 255],
+            [90, 200, 90, 255],
+        ];
+        doc.layers = vec![
+            AseLayer {
+                flags: 1 | 8,
+                ..AseLayer::image("bg")
+            },
+            AseLayer {
+                blend: 1,
+                ..AseLayer::image("shade")
+            },
+            AseLayer {
+                kind: 1,
+                opacity: 128,
+                ..AseLayer::image("group")
+            },
+            AseLayer {
+                child_level: 1,
+                ..AseLayer::image("inner")
+            },
+            AseLayer {
+                flags: 0,
+                ..AseLayer::image("hidden")
+            },
+            AseLayer {
+                flags: 1 | 64,
+                ..AseLayer::image("guide")
+            },
+        ];
+        let frame = |shift: i16, z: i16| AseFrame {
+            duration_ms: 100,
+            cels: vec![
+                AseCel::new(0, [0, 0], image([10, 10, 10, 255], 0)),
+                AseCel {
+                    z_index: z,
+                    ..AseCel::new(1, [shift, 0], image([200, 40, 40, 255], 1))
+                },
+                AseCel::new(3, [1, 1], image([40, 40, 200, 255], 2)),
+                AseCel::new(4, [0, 1], image([90, 200, 90, 255], 3)),
+                AseCel::new(5, [1, 0], image([90, 200, 90, 255], 3)),
+            ],
+        };
+        doc.frames = vec![frame(0, 0), frame(1, 5)];
+        doc.to_bytes()
+    }
+
+    #[test]
+    fn flattening_the_layered_sprite_gives_the_sheet_frames() {
+        use super::composite::{CelImage, LayerInfo, flatten};
+        use crate::types::SpriteLayerKind;
+
+        for depth in [32, 8] {
+            let bytes = busy(depth);
+            let doc = raw::read(&bytes).unwrap();
+            let sheet = from_document(&doc, None, AsepriteLoadOptions::default());
+            let layered = layered_from_document(&doc);
+            let Some(TextureSource::Decoded(atlas)) = &sheet.image else {
+                panic!("expected a decoded atlas");
+            };
+            let viewport_lib_types::data::texture::TexturePayload::Rgba8(atlas_pixels) =
+                atlas.payload()
+            else {
+                panic!("expected RGBA8");
+            };
+
+            let layers: Vec<LayerInfo> = layered
+                .layers
+                .iter()
+                .map(|l| LayerInfo {
+                    parent: l.parent.map(|p| p as usize),
+                    kind: match l.kind {
+                        SpriteLayerKind::Image => raw::LayerKind::Image,
+                        SpriteLayerKind::Group => raw::LayerKind::Group,
+                        SpriteLayerKind::Tilemap => raw::LayerKind::Tilemap,
+                    },
+                    visible: l.visible,
+                    reference: l.reference,
+                    blend: l.blend,
+                    opacity: l.opacity,
+                })
+                .collect();
+            for (f, frame) in layered.frames.iter().enumerate() {
+                let cels: Vec<CelImage> = frame
+                    .cels
+                    .iter()
+                    .map(|c| {
+                        let viewport_lib_types::data::texture::TexturePayload::Rgba8(rgba) =
+                            c.image.payload()
+                        else {
+                            panic!("expected RGBA8 cels");
+                        };
+                        CelImage {
+                            layer: c.layer as usize,
+                            position: c.position,
+                            opacity: c.opacity,
+                            z_index: c.z_index as i16,
+                            size: [c.image.width(), c.image.height()],
+                            rgba: rgba.clone(),
+                        }
+                    })
+                    .collect();
+                let flat = flatten(layered.size, &layers, &cels, layered.groups_isolated);
+                let r = sheet.frames[f].rect;
+                let from_atlas = crop(atlas_pixels, sheet.size, [r.x, r.y, r.width, r.height]);
+                assert_eq!(flat, from_atlas, "depth {depth}, frame {f}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_layered_sprite_carries_the_layer_tree_and_cels() {
+        let layered = layered_from_document(&raw::read(&busy(8)).unwrap());
+        assert_eq!(layered.colour_mode, SpriteColourMode::Indexed);
+        assert_eq!(layered.transparent_index, Some(0));
+        assert!(layered.groups_isolated);
+        assert_eq!(layered.palette.len(), 4);
+        let names: Vec<_> = layered.layers.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["bg", "shade", "group", "inner", "hidden", "guide"]);
+        assert_eq!(layered.layers[3].parent, Some(2));
+        assert_eq!(layered.layers[2].kind, SpriteLayerKind::Group);
+        assert_eq!(
+            layered.layers[1].blend,
+            crate::types::LayerBlendMode::Multiply
+        );
+        assert!((layered.layers[2].opacity - 128.0 / 255.0).abs() < 1e-6);
+        assert!(layered.layers[0].background && layered.layers[5].reference);
+        assert!(!layered.layers[4].visible);
+
+        let second = &layered.frames[1];
+        assert_eq!(second.cels.len(), 5);
+        assert_eq!(
+            (second.cels[1].position, second.cels[1].z_index),
+            ([1, 0], 5)
+        );
+        // Indexed cels resolve to RGBA: the background draws index 0 opaque in
+        // its palette colour, other layers would leave it clear.
+        let viewport_lib_types::data::texture::TexturePayload::Rgba8(bg) =
+            second.cels[0].image.payload()
+        else {
+            panic!("expected RGBA8");
+        };
+        assert_eq!(bg[..4], [0, 0, 0, 0], "palette entry 0 is itself clear");
+    }
+
+    #[test]
+    fn a_json_sheet_has_no_layers() {
+        let err =
+            crate::loaders::aseprite::layered_sprite_from_bytes(br#"{"frames": []}"#).unwrap_err();
+        assert!(
+            matches!(&err, IoError::Parse(m) if m.contains("layers")),
+            "{err:?}"
+        );
     }
 }

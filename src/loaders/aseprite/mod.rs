@@ -9,6 +9,10 @@
 //! files and embedded colour profiles are not decoded; each is named in
 //! [`unsupported`](crate::types::SpriteSheetData::unsupported).
 //!
+//! [`layered_sprite_from_path`] reads a document without flattening it: the
+//! canvas, the layers and each frame's cels, for a consumer that draws a
+//! sprite in parts or hides a layer.
+//!
 //! TexturePacker writes the same JSON shape as Aseprite, so its sheets read
 //! here too, as does any other JSON with a `frames` member in that shape, in
 //! the hash or the array layout. TexturePacker's multi-pack references are not
@@ -17,7 +21,7 @@
 use std::path::Path;
 
 use crate::error::IoError;
-use crate::types::SpriteSheetData;
+use crate::types::{LayeredSpriteData, SpriteSheetData};
 
 mod composite;
 mod options;
@@ -96,6 +100,50 @@ pub fn sprite_sheet_from_bytes_with_options(
         Err(IoError::MissingFeature {
             feature: "aseprite",
             context: "sprite sheet decoding",
+        })
+    }
+}
+
+/// Decode an Aseprite document into its layers and cels, without flattening
+/// them into frames.
+///
+/// Flattening the result with each layer's blend mode and opacity gives the
+/// frames [`sprite_sheet_from_path`] returns for the same file. A JSON sheet
+/// has no layers, so it is an [`IoError::Parse`].
+pub fn layered_sprite_from_path(path: &Path) -> Result<LayeredSpriteData, IoError> {
+    #[cfg(feature = "aseprite")]
+    {
+        layered_sprite_from_bytes(&std::fs::read(path)?)
+    }
+
+    #[cfg(not(feature = "aseprite"))]
+    {
+        let _ = path;
+        Err(IoError::MissingFeature {
+            feature: "aseprite",
+            context: "Aseprite layer decoding",
+        })
+    }
+}
+
+/// Decode an Aseprite document already read into its layers and cels.
+pub fn layered_sprite_from_bytes(bytes: &[u8]) -> Result<LayeredSpriteData, IoError> {
+    #[cfg(feature = "aseprite")]
+    {
+        if !raw::is_document(bytes) {
+            return Err(IoError::Parse(
+                "not an Aseprite document; only a document has layers".into(),
+            ));
+        }
+        Ok(sheet::layered_from_document(&raw::read(bytes)?))
+    }
+
+    #[cfg(not(feature = "aseprite"))]
+    {
+        let _ = bytes;
+        Err(IoError::MissingFeature {
+            feature: "aseprite",
+            context: "Aseprite layer decoding",
         })
     }
 }

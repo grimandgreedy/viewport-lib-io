@@ -2293,6 +2293,172 @@ pub struct SpriteSliceKey {
     pub pivot: Option<[i32; 2]>,
 }
 
+/// A layered sprite: the canvas, its layers and each frame's cels, before
+/// they are flattened into one image per frame.
+///
+/// Everything is in the canvas's pixel frame: X right and Y down from the
+/// top-left corner. Flattening the visible cels with their blend modes and
+/// opacity gives the frames [`SpriteSheetData`] holds for the same source.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayeredSpriteData {
+    /// Canvas width and height in pixels.
+    pub size: [u32; 2],
+    /// The width and height of one pixel as the artist drew it; see
+    /// [`SpriteSheetData::pixel_ratio`].
+    pub pixel_ratio: [u32; 2],
+    /// How the source stored its pixels. Every cel image here is RGBA
+    /// whatever this says.
+    pub colour_mode: SpriteColourMode,
+    /// Whether a group composites its children on their own and then blends
+    /// the result with its own mode and opacity. Without it a group's mode and
+    /// opacity do not apply, and its children draw straight onto what is
+    /// below.
+    pub groups_isolated: bool,
+    /// Layers, bottom first.
+    pub layers: Vec<SpriteLayer>,
+    /// Frames, in order.
+    pub frames: Vec<SpriteLayerFrame>,
+    /// The palette, for a consumer that recolours an indexed sprite. Empty
+    /// when the source has none.
+    pub palette: Vec<Colour>,
+    /// The palette index an indexed sprite draws as transparent on every
+    /// layer but the background. `None` for other colour modes.
+    pub transparent_index: Option<u32>,
+    /// Named runs of frames.
+    pub animations: Vec<SpriteAnimation>,
+    /// Named regions of the sprite.
+    pub slices: Vec<SpriteSlice>,
+    /// What the source holds that is not decoded; see
+    /// [`SpriteSheetData::unsupported`].
+    pub unsupported: Vec<String>,
+}
+
+/// How a layered sprite's source stored its pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum SpriteColourMode {
+    /// Red, green, blue and alpha.
+    #[default]
+    Rgba,
+    /// A grey value and alpha.
+    Greyscale,
+    /// An index into the palette.
+    Indexed,
+}
+
+/// One layer of a [`LayeredSpriteData`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpriteLayer {
+    /// The layer's name.
+    pub name: String,
+    /// What the layer holds.
+    pub kind: SpriteLayerKind,
+    /// Index of the group the layer is in, or `None` at the top level.
+    pub parent: Option<u32>,
+    /// The layer's own visibility. It draws only when every group around it
+    /// is visible too.
+    pub visible: bool,
+    /// A guide the artist traced over. It never draws.
+    pub reference: bool,
+    /// The background layer, which is opaque and draws the transparent index.
+    pub background: bool,
+    /// How the layer's cels combine with what is below.
+    pub blend: LayerBlendMode,
+    /// Opacity, `0..=1`.
+    pub opacity: f32,
+    /// Free text the artist attached, empty when unset.
+    pub data: String,
+    /// The colour the editor shows the layer in, if set.
+    pub colour: Option<Colour>,
+}
+
+/// What a [`SpriteLayer`] holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum SpriteLayerKind {
+    /// Cels of pixels.
+    #[default]
+    Image,
+    /// Other layers, which name this one as their parent.
+    Group,
+    /// Tiles from a tileset. Not decoded: its cels are absent and it is listed
+    /// in [`LayeredSpriteData::unsupported`].
+    Tilemap,
+}
+
+/// How a layer's pixels combine with what is below them, following the
+/// usual compositing definitions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum LayerBlendMode {
+    /// The layer covers what is below.
+    #[default]
+    Normal,
+    /// Colours multiply, darkening.
+    Multiply,
+    /// The inverse of multiplying the inverses, lightening.
+    Screen,
+    /// Multiply or screen, by the colour below.
+    Overlay,
+    /// The darker of the two.
+    Darken,
+    /// The lighter of the two.
+    Lighten,
+    /// Brightens what is below to reflect the layer.
+    ColourDodge,
+    /// Darkens what is below to reflect the layer.
+    ColourBurn,
+    /// Multiply or screen, by the layer's colour.
+    HardLight,
+    /// A softer hard light.
+    SoftLight,
+    /// The absolute difference.
+    Difference,
+    /// Like difference, lower in contrast.
+    Exclusion,
+    /// The layer's hue with the saturation and luminosity below.
+    Hue,
+    /// The layer's saturation with the hue and luminosity below.
+    Saturation,
+    /// The layer's hue and saturation with the luminosity below.
+    Colour,
+    /// The layer's luminosity with the hue and saturation below.
+    Luminosity,
+    /// The sum, clamped.
+    Addition,
+    /// What is below minus the layer, clamped.
+    Subtract,
+    /// What is below divided by the layer, clamped.
+    Divide,
+}
+
+/// One frame of a [`LayeredSpriteData`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpriteLayerFrame {
+    /// How long the frame shows, in milliseconds.
+    pub duration_ms: u32,
+    /// The frame's cels, at most one per layer.
+    pub cels: Vec<SpriteCel>,
+}
+
+/// One layer's pixels in one frame.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpriteCel {
+    /// Index into [`LayeredSpriteData::layers`].
+    pub layer: u32,
+    /// The image's top-left corner on the canvas, in pixels.
+    pub position: [i32; 2],
+    /// Opacity, `0..=1`, multiplied by the layer's.
+    pub opacity: f32,
+    /// Moves the cel among the frame's other cels: it draws at its layer's
+    /// index plus this, the lower z-index first on a tie.
+    pub z_index: i32,
+    /// The pixels, straight-alpha RGBA labelled sRGB. A cel the source linked
+    /// to an earlier frame is a copy.
+    pub image: TextureData,
+    /// Free text the artist attached, empty when unset.
+    pub data: String,
+    /// The colour the editor shows the cel in, if set.
+    pub colour: Option<Colour>,
+}
+
 /// A decoded bitmap font: glyph images packed into one or more page images,
 /// and the metrics to lay them out.
 ///

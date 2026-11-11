@@ -31,10 +31,11 @@ pub use lightmap::{LightmapData, LightmapEncoding};
 pub use types::{
     AnimationChannel, AnimationClip, AnimationInterpolation, AnimationSampler, AnimationTrack,
     AnimationDirection, AnimationTrackValues, BitmapFontData, BitmapGlyph, DecodedDataSet,
-    GlyphChannels, IntGridData, IntGridValue, Joint, MAX_JOINTS, MapObject, MapObjectShape, MapText,
+    GlyphChannels, LayerBlendMode, LayeredSpriteData, IntGridData, IntGridValue, Joint, MAX_JOINTS, MapObject, MapObjectShape, MapText,
     MaterialData, NodeAnimationClip, NodeAnimationTrack, ObjectDrawOrder, PixelRect, PointSet,
     Properties, PropertyValue, SceneData, SceneLight, SceneLightKind, SceneMesh, SceneNode,
-    Skeleton, SkinWeights, SparseGrid, SpreadMethod, SpriteAnimation, SpriteFrame, SpriteSheetData,
+    Skeleton, SkinWeights, SparseGrid, SpreadMethod, SpriteAnimation, SpriteCel, SpriteColourMode, SpriteFrame, SpriteLayer,
+    SpriteLayerFrame, SpriteLayerKind, SpriteSheetData,
     SpriteSlice, SpriteSliceKey, StaggerAxis, StaggerIndex, StructuredVolume,
     TextAlign, TextureSampler, TextureSource, TileCell, TileData, TileFrame, TileGrid, TileImage,
     TileLayerData, TileLayerKind, TileMapData, TileOrientation, TileRenderOrder, TileSetData,
