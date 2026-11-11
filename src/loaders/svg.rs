@@ -4,11 +4,12 @@ use viewport_lib_types::data::texture::TextureData;
 
 use crate::error::IoError;
 #[cfg(feature = "svg")]
-use crate::types::{VectorArt, VectorPaint, VectorShape, VectorStroke};
+use crate::types::{SpreadMethod, VectorArt, VectorDashes, VectorPaint, VectorShape, VectorStroke};
 #[cfg(feature = "svg")]
 use viewport_lib_types::colour::Colour;
 #[cfg(feature = "svg")]
 use viewport_lib_types::overlay::vector::{FillRule, PathSegment, SubPath};
+use viewport_lib_types::overlay::{GradientStop, LineCap, LineJoin};
 
 /// Rasterise an SVG file into an 8-bit RGBA texture labelled sRGB colour, at
 /// the canvas size in pixels.
@@ -70,7 +71,7 @@ fn rasterise(bytes: &[u8], resources_dir: Option<&Path>) -> Result<TextureData, 
 ///
 /// Walks the parsed path tree and emits one [`VectorShape`] per painted path,
 /// with its subpaths (curves preserved, not flattened), fill rule, and resolved
-/// solid fill and stroke paint, plus its element id and the ids of the groups
+/// fill and stroke, plus its element id and the ids of the groups
 /// enclosing it. Coordinates are baked into the drawing's user-unit space
 /// (each path's absolute transform is applied), so the output places directly
 /// without further transform bookkeeping. This is the SVG canvas frame: X to
@@ -78,16 +79,19 @@ fn rasterise(bytes: &[u8], resources_dir: Option<&Path>) -> Result<TextureData, 
 /// convention, which covers 3D geometry only. Feed the result into
 /// `viewport_lib::OverlayShapeItem::vector` to draw it.
 ///
-/// Only solid paints are resolved to a colour; gradient and pattern paints leave
+/// Solid colours and linear and radial gradients are resolved into a
+/// [`VectorPaint`], gradients keeping their stops, spread and geometry with a
+/// transform into the art's coordinates. Pattern paints leave
 /// [`VectorShape::fill`] or [`VectorShape::stroke`] as `None` (the geometry is
-/// still emitted). Enclosing group opacity is folded into both alphas. Invisible
-/// paths (`visibility="hidden"`) are skipped, matching what
+/// still emitted). Enclosing group opacity is folded into every alpha.
+/// Invisible paths (`visibility="hidden"`) are skipped, matching what
 /// [`texture_from_path`] rasterizes.
 ///
-/// Stroke width is scaled by the transform baked into the geometry, so it stays
-/// in step with the contours; see [`VectorStroke::width`] for the non-uniform
-/// case. Stroke cap, join, dash, and miter limit are not carried. Group clip
-/// paths, masks, and filters are ignored. Use [`texture_from_path`] instead when
+/// Stroke width and dash lengths are scaled by the transform baked into the
+/// geometry, so they stay in step with the contours; see
+/// [`VectorStroke::width`] for the non-uniform case. Caps, joins and the mitre
+/// limit are carried as written, except that `miter-clip` becomes a mitre.
+/// Group clip paths, masks, and filters are ignored. Use [`texture_from_path`] instead when
 /// a baked raster image is wanted.
 pub fn vector_from_path(path: &Path) -> Result<VectorArt, IoError> {
     #[cfg(feature = "svg")]
@@ -213,24 +217,48 @@ fn path_to_shape(path: &resvg::usvg::Path, opacity: f32, groups: &[String]) -> O
             };
             (
                 rule,
-                solid_colour(fill.paint(), fill.opacity().get() * opacity).map(VectorPaint::Solid),
+                resolve_paint(
+                    fill.paint(),
+                    fill.opacity().get() * opacity,
+                    path.abs_transform(),
+                ),
             )
         }
         None => (FillRule::NonZero, None),
     };
 
     let stroke = path.stroke().and_then(|stroke| {
-        let colour = solid_colour(stroke.paint(), stroke.opacity().get() * opacity)?;
+        let paint = resolve_paint(
+            stroke.paint(),
+            stroke.opacity().get() * opacity,
+            path.abs_transform(),
+        )?;
+        // usvg reports stroke lengths in the path's own units, so they need the
+        // same transform the geometry just had baked in. A non-uniform scale
+        // has no single right answer; average the two factors.
+        let scale = transform_scale(path.abs_transform());
         Some(VectorStroke {
-            paint: VectorPaint::Solid(colour),
-            // usvg reports the width in the path's own units, so it needs the
-            // same transform the geometry just had baked in. A non-uniform
-            // scale has no single right answer; average the two factors.
-            width: stroke.width().get() * transform_scale(path.abs_transform()),
-            cap: Default::default(),
-            join: Default::default(),
-            mitre_limit: 4.0,
-            dashes: None,
+            paint,
+            width: stroke.width().get() * scale,
+            cap: match stroke.linecap() {
+                resvg::usvg::LineCap::Butt => LineCap::Butt,
+                resvg::usvg::LineCap::Round => LineCap::Round,
+                resvg::usvg::LineCap::Square => LineCap::Square,
+            },
+            join: match stroke.linejoin() {
+                // `miter-clip` cuts the corner at the limit rather than
+                // bevelling it; a mitre is the nearest join that is carried.
+                resvg::usvg::LineJoin::Miter | resvg::usvg::LineJoin::MiterClip => LineJoin::Mitre,
+                resvg::usvg::LineJoin::Round => LineJoin::Round,
+                resvg::usvg::LineJoin::Bevel => LineJoin::Bevel,
+            },
+            mitre_limit: stroke.miterlimit().get(),
+            // usvg has already repeated an odd list and dropped one that sums
+            // to zero.
+            dashes: stroke.dasharray().map(|array| VectorDashes {
+                array: array.iter().map(|length| length * scale).collect(),
+                offset: stroke.dashoffset() * scale,
+            }),
         })
     });
 
@@ -246,16 +274,66 @@ fn path_to_shape(path: &resvg::usvg::Path, opacity: f32, groups: &[String]) -> O
     })
 }
 
-/// Resolve a solid paint to a colour at `alpha`. SVG colours are sRGB. Gradients
-/// and patterns are not reduced to a single colour, so they yield `None`.
-#[cfg(feature = "svg")]
-fn solid_colour(paint: &resvg::usvg::Paint, alpha: f32) -> Option<Colour> {
+/// Resolve a paint at `alpha`, with `transform` the one baked into the shape's
+/// geometry. SVG colours are sRGB. Patterns are not resolved and yield `None`.
+fn resolve_paint(
+    paint: &resvg::usvg::Paint,
+    alpha: f32,
+    transform: resvg::tiny_skia::Transform,
+) -> Option<VectorPaint> {
+    use resvg::usvg::Paint;
+
     match paint {
-        resvg::usvg::Paint::Color(c) => {
-            Some(Colour::srgb_u8(c.red, c.green, c.blue, 255).with_alpha(alpha))
-        }
-        _ => None,
+        Paint::Color(c) => Some(VectorPaint::Solid(srgb(*c, alpha))),
+        // usvg has already turned bounding-box units into user space, folding
+        // the box into the gradient's transform.
+        Paint::LinearGradient(g) => Some(VectorPaint::LinearGradient {
+            start: [g.x1(), g.y1()],
+            end: [g.x2(), g.y2()],
+            stops: gradient_stops(g.stops(), alpha),
+            spread: spread_method(g.spread_method()),
+            transform: affine(transform.pre_concat(g.transform())),
+        }),
+        Paint::RadialGradient(g) => Some(VectorPaint::RadialGradient {
+            centre: [g.cx(), g.cy()],
+            radius: g.r().get(),
+            focal: [g.fx(), g.fy()],
+            stops: gradient_stops(g.stops(), alpha),
+            spread: spread_method(g.spread_method()),
+            transform: affine(transform.pre_concat(g.transform())),
+        }),
+        Paint::Pattern(_) => None,
     }
+}
+
+fn srgb(c: resvg::usvg::Color, alpha: f32) -> Colour {
+    Colour::srgb_u8(c.red, c.green, c.blue, 255).with_alpha(alpha)
+}
+
+/// Gradient stops with each stop's opacity multiplied by `alpha`. usvg has
+/// already clamped the offsets and sorted them.
+fn gradient_stops(stops: &[resvg::usvg::Stop], alpha: f32) -> Vec<GradientStop> {
+    stops
+        .iter()
+        .map(|stop| {
+            GradientStop::new(
+                stop.offset().get(),
+                srgb(stop.color(), stop.opacity().get() * alpha),
+            )
+        })
+        .collect()
+}
+
+fn spread_method(spread: resvg::usvg::SpreadMethod) -> SpreadMethod {
+    match spread {
+        resvg::usvg::SpreadMethod::Pad => SpreadMethod::Pad,
+        resvg::usvg::SpreadMethod::Reflect => SpreadMethod::Reflect,
+        resvg::usvg::SpreadMethod::Repeat => SpreadMethod::Repeat,
+    }
+}
+
+fn affine(t: resvg::tiny_skia::Transform) -> glam::Affine2 {
+    glam::Affine2::from_cols_array(&[t.sx, t.ky, t.kx, t.sy, t.tx, t.ty])
 }
 
 /// The scalar a length in a transform's source space multiplies by. `get_scale`
@@ -634,9 +712,147 @@ mod tests {
         );
     }
 
+    fn linear_fill(shape: &VectorShape) -> (Vec<GradientStop>, f32) {
+        match shape
+            .fill
+            .as_ref()
+            .map(|f| f.to_overlay_fill(shape_bounds(shape)))
+        {
+            Some(viewport_lib_types::overlay::OverlayFill::LinearGradient { stops, angle }) => {
+                (stops, angle)
+            }
+            other => panic!("expected a linear gradient fill, got {other:?}"),
+        }
+    }
+
+    /// The bounding box of a shape's end points, which for the rectangles here
+    /// is the rectangle.
+    fn shape_bounds(shape: &VectorShape) -> [f32; 4] {
+        let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        for sub in &shape.subpaths {
+            let ends = std::iter::once(sub.start).chain(sub.segments.iter().map(|seg| match seg {
+                PathSegment::Line { to }
+                | PathSegment::Quad { to, .. }
+                | PathSegment::Cubic { to, .. } => *to,
+            }));
+            for p in ends {
+                b = [
+                    b[0].min(p[0]),
+                    b[1].min(p[1]),
+                    b[2].max(p[0]),
+                    b[3].max(p[1]),
+                ];
+            }
+        }
+        b
+    }
+
+    fn assert_near(got: f32, want: f32, what: &str) {
+        assert!((got - want).abs() < 1e-4, "{what}: {got}, want {want}");
+    }
+
     #[test]
-    fn gradient_stroke_leaves_the_stroke_unset() {
-        let path = temp_path("svg_gradient_stroke");
+    fn a_bounding_box_gradient_fill_converts_to_an_angle_across_the_shape() {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+  <defs>
+    <linearGradient id="across"><stop offset="0" stop-color="#ff0000"/><stop offset="1" stop-color="#0000ff"/></linearGradient>
+    <linearGradient id="down" x2="0" y2="1"><stop offset="0" stop-color="#ff0000"/><stop offset="1" stop-color="#0000ff"/></linearGradient>
+  </defs>
+  <rect x="10" y="20" width="60" height="30" fill="url(#across)"/>
+  <rect x="10" y="60" width="60" height="30" fill="url(#down)"/>
+</svg>"##;
+
+        let art = vector_from_bytes(svg.as_bytes()).unwrap();
+
+        let (stops, angle) = linear_fill(&art.shapes[0]);
+        assert_near(angle, 0.0, "left to right");
+        assert_eq!(stops.len(), 2, "{stops:?}");
+        assert_near(stops[0].position, 0.0, "first stop");
+        assert_near(stops[1].position, 1.0, "last stop");
+        assert!(stops[0].colour.to_linear_rgba()[0] > 0.99, "{stops:?}");
+        assert!(stops[1].colour.to_linear_rgba()[2] > 0.99, "{stops:?}");
+
+        let (_, angle) = linear_fill(&art.shapes[1]);
+        assert_near(angle, std::f32::consts::FRAC_PI_2, "top to bottom");
+    }
+
+    #[test]
+    fn a_user_space_gradient_follows_the_transform_baked_into_the_geometry() {
+        // The gradient spans the rectangle in the path's own units; the group
+        // moves and scales both, so it still spans it on the canvas.
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+  <defs>
+    <linearGradient id="g" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="10" y2="0">
+      <stop offset="0" stop-color="#ff0000"/><stop offset="1" stop-color="#0000ff"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(20 5) scale(2)">
+    <rect x="0" y="0" width="10" height="10" fill="url(#g)"/>
+  </g>
+</svg>"##;
+
+        let art = vector_from_bytes(svg.as_bytes()).unwrap();
+
+        let shape = &art.shapes[0];
+        assert_eq!(shape_bounds(shape), [20.0, 5.0, 40.0, 25.0]);
+        let (stops, angle) = linear_fill(shape);
+        assert_near(angle, 0.0, "left to right");
+        assert_near(stops[0].position, 0.0, "first stop");
+        assert_near(stops.last().unwrap().position, 1.0, "last stop");
+        assert_eq!(
+            stops.len(),
+            2,
+            "the gradient spans the rectangle: {stops:?}"
+        );
+    }
+
+    #[test]
+    fn a_radial_gradient_keeps_its_geometry_spread_and_stop_opacity() {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+  <defs>
+    <radialGradient id="r" cx="0.5" cy="0.5" r="0.5" fx="0.25" fy="0.5" spreadMethod="reflect">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.5"/>
+    </radialGradient>
+  </defs>
+  <g opacity="0.5">
+    <rect x="0" y="0" width="40" height="40" fill="url(#r)"/>
+  </g>
+</svg>"##;
+
+        let art = vector_from_bytes(svg.as_bytes()).unwrap();
+
+        let Some(VectorPaint::RadialGradient {
+            centre,
+            radius,
+            focal,
+            stops,
+            spread,
+            transform,
+        }) = &art.shapes[0].fill
+        else {
+            panic!("expected a radial gradient, got {:?}", art.shapes[0].fill);
+        };
+        assert_eq!(*spread, SpreadMethod::Reflect);
+        // In bounding-box units, with the box folded into the transform.
+        let to_canvas = |p: [f32; 2]| transform.transform_point2(p.into());
+        assert!((to_canvas(*centre) - glam::vec2(20.0, 20.0)).length() < 1e-4);
+        assert!((to_canvas(*focal) - glam::vec2(10.0, 20.0)).length() < 1e-4);
+        assert_near(
+            radius * transform.matrix2.x_axis.length(),
+            20.0,
+            "radius on the canvas",
+        );
+        assert_near(stops[0].colour.alpha(), 0.5, "group opacity");
+        assert_near(
+            stops[1].colour.alpha(),
+            0.25,
+            "stop opacity times group opacity",
+        );
+    }
+
+    #[test]
+    fn gradient_stroke_is_carried() {
         let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
   <defs>
     <linearGradient id="g"><stop offset="0" stop-color="#ff0000"/><stop offset="1" stop-color="#0000ff"/></linearGradient>
@@ -644,13 +860,82 @@ mod tests {
   <path d="M0 0 L10 10" fill="none" stroke="url(#g)" stroke-width="2"/>
 </svg>"##;
 
-        std::fs::write(&path, svg).unwrap();
-        let art = vector_from_path(&path).unwrap();
-        let _ = std::fs::remove_file(&path);
+        let art = vector_from_bytes(svg.as_bytes()).unwrap();
+
+        let stroke = art.shapes[0]
+            .stroke
+            .as_ref()
+            .expect("the gradient stroke is resolved");
+        let VectorPaint::LinearGradient { stops, .. } = &stroke.paint else {
+            panic!("expected a linear gradient stroke, got {:?}", stroke.paint);
+        };
+        assert_eq!(stops.len(), 2);
+        // The overlay strokes in one colour: the gradient's average.
+        let mean = stroke.to_overlay_stroke(1.0).colour.to_linear_rgba();
+        assert!(mean[0] > 0.4 && mean[2] > 0.4 && mean[1] < 1e-6, "{mean:?}");
+    }
+
+    #[test]
+    fn pattern_paint_is_not_resolved() {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+  <defs>
+    <pattern id="p" width="2" height="2" patternUnits="userSpaceOnUse"><rect width="1" height="1" fill="#000"/></pattern>
+  </defs>
+  <rect x="0" y="0" width="10" height="10" fill="url(#p)"/>
+</svg>"##;
+
+        let art = vector_from_bytes(svg.as_bytes()).unwrap();
 
         assert_eq!(art.shapes.len(), 1, "the geometry is still emitted");
-        assert!(art.shapes[0].stroke.is_none(), "gradient is not one colour");
-        assert!(!art.shapes[0].subpaths.is_empty());
+        assert!(art.shapes[0].fill.is_none());
+    }
+
+    #[test]
+    fn caps_joins_and_dashes_round_trip_scaled_with_the_width() {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+  <g transform="scale(2)">
+    <path d="M0 0 L10 0 L10 10" fill="none" stroke="#000" stroke-width="1"
+          stroke-linecap="round" stroke-linejoin="bevel" stroke-miterlimit="7"
+          stroke-dasharray="4 2" stroke-dashoffset="1"/>
+    <path d="M0 20 L10 20" fill="none" stroke="#000" stroke-dasharray="3 1 2"
+          stroke-linejoin="miter-clip" stroke-linecap="square"/>
+    <path d="M0 30 L10 30" fill="none" stroke="#000"/>
+  </g>
+</svg>"##;
+
+        let art = vector_from_bytes(svg.as_bytes()).unwrap();
+
+        let styled = art.shapes[0].stroke.as_ref().unwrap();
+        assert_eq!(styled.cap, LineCap::Round);
+        assert_eq!(styled.join, LineJoin::Bevel);
+        assert_eq!(styled.mitre_limit, 7.0, "a ratio, so it does not scale");
+        assert_eq!(
+            styled.dashes,
+            Some(VectorDashes {
+                array: vec![8.0, 4.0],
+                offset: 2.0
+            }),
+            "dash lengths scale with the width"
+        );
+
+        let odd = art.shapes[1].stroke.as_ref().unwrap();
+        assert_eq!(odd.cap, LineCap::Square);
+        assert_eq!(
+            odd.join,
+            LineJoin::Mitre,
+            "miter-clip falls back to a mitre"
+        );
+        assert_eq!(
+            odd.dashes.as_ref().map(|d| d.array.clone()),
+            Some(vec![6.0, 2.0, 4.0, 6.0, 2.0, 4.0]),
+            "an odd list is repeated to an even one"
+        );
+
+        let plain = art.shapes[2].stroke.as_ref().unwrap();
+        assert_eq!(plain.cap, LineCap::Butt);
+        assert_eq!(plain.join, LineJoin::Mitre);
+        assert_eq!(plain.mitre_limit, 4.0, "the SVG default");
+        assert_eq!(plain.dashes, None);
     }
 
     #[test]

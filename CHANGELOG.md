@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **SVG gradients and stroke style** - `loaders::svg::vector_from_path` and `vector_from_bytes` resolve linear and radial gradient fills and strokes into `VectorPaint` rather than leaving them `None`, and carry stroke caps, joins, mitre limit and dash arrays, with dash lengths scaled like the width. A `miter-clip` join becomes a mitre; pattern paints are still not resolved.
+
 ### Changed
 - **Vector fills and strokes carry a paint** - `VectorShape::fill` is an `Option<VectorPaint>` and `VectorStroke::colour` is now `VectorStroke::paint`, where a `VectorPaint` is a solid colour or a linear or radial gradient with its stops, `SpreadMethod` and the transform from its own frame into the art's. `VectorStroke` gains `cap`, `join`, `mitre_limit` and `dashes` (a `VectorDashes`), and is no longer `Copy`. `VectorPaint::to_overlay_fill` and `VectorStroke::to_overlay_stroke` convert to the overlay's types: linear gradients and two-entry dash arrays exactly, the rest approximated as their docs say.
 
