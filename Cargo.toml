@@ -49,7 +49,7 @@ tiled = ["dep:quick-xml", "dep:serde_json", "dep:flate2"]
 # LDtk projects, with levels in the project file or saved separately.
 ldtk = ["dep:serde_json"]
 # Aseprite sprite sheet JSON, which also reads TexturePacker's.
-aseprite = ["dep:serde", "dep:serde_json"]
+aseprite = ["dep:serde", "dep:serde_json", "dep:flate2"]
 # BMFont bitmap font descriptors, text or XML.
 bmfont = ["dep:quick-xml"]
 numpy = ["dep:flate2"]

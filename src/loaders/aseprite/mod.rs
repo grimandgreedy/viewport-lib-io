@@ -14,6 +14,9 @@ use std::path::Path;
 use crate::error::IoError;
 use crate::types::SpriteSheetData;
 
+// Read only by the tests until the document path is wired into the sheet.
+#[allow(dead_code)]
+mod raw;
 mod sheet;
 
 /// Decode a sprite sheet's JSON metadata into a [`SpriteSheetData`].

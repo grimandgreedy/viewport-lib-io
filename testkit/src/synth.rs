@@ -973,3 +973,399 @@ kerning first=65  second=66  amount=-1
         )
     }
 }
+
+/// An Aseprite document to write with [`AseDocument::to_bytes`]: the header
+/// fields, layers, frames of cels, palette, tags and slices, in the file's own
+/// numbering (blend mode ids, layer flag bits, colour depth in bits).
+#[derive(Debug, Clone, Default)]
+pub struct AseDocument {
+    /// Canvas width and height in pixels.
+    pub size: [u16; 2],
+    /// 32 for RGBA, 16 for greyscale, 8 for indexed.
+    pub depth: u16,
+    /// Header flags: 1 layer opacity is valid, 2 groups composite on their own.
+    pub flags: u32,
+    /// The palette index drawn as transparent, in an indexed document.
+    pub transparent_index: u8,
+    /// Width and height of one pixel; `[0, 0]` and `[1, 1]` are square.
+    pub pixel_ratio: [u8; 2],
+    /// RGBA palette entries, written as a new palette chunk when not empty.
+    pub palette: Vec<[u8; 4]>,
+    /// Layers, bottom first, as the file lists them.
+    pub layers: Vec<AseLayer>,
+    /// Frames, each with its duration and cels.
+    pub frames: Vec<AseFrame>,
+    /// Tags, written in the first frame.
+    pub tags: Vec<AseTag>,
+    /// Slices, written in the first frame.
+    pub slices: Vec<AseSlice>,
+    /// Further chunks for the first frame, as (type, data), written before the
+    /// palette: old palettes, colour profiles, unknown chunks.
+    pub extra_chunks: Vec<(u16, Vec<u8>)>,
+}
+
+/// A layer of an [`AseDocument`].
+#[derive(Debug, Clone, Default)]
+pub struct AseLayer {
+    /// The layer's name.
+    pub name: String,
+    /// Flag bits: 1 visible, 8 background, 64 reference.
+    pub flags: u16,
+    /// 0 image, 1 group, 2 tilemap.
+    pub kind: u16,
+    /// Nesting depth: a layer's parent is the nearest earlier layer one level up.
+    pub child_level: u16,
+    /// Blend mode id, 0 normal to 18 divide.
+    pub blend: u16,
+    /// Opacity, 0 to 255.
+    pub opacity: u8,
+    /// User data text, written as a user data chunk after the layer.
+    pub user_text: Option<String>,
+}
+
+impl AseLayer {
+    /// A visible, opaque image layer with normal blending.
+    pub fn image(name: &str) -> Self {
+        Self {
+            name: name.into(),
+            flags: 1,
+            opacity: 255,
+            ..Self::default()
+        }
+    }
+}
+
+/// One frame of an [`AseDocument`].
+#[derive(Debug, Clone, Default)]
+pub struct AseFrame {
+    /// Duration in milliseconds.
+    pub duration_ms: u16,
+    /// The frame's cels.
+    pub cels: Vec<AseCel>,
+}
+
+/// A cel of an [`AseFrame`].
+#[derive(Debug, Clone)]
+pub struct AseCel {
+    /// Index of the layer, counting every layer including groups.
+    pub layer: u16,
+    /// Top-left position on the canvas.
+    pub position: [i16; 2],
+    /// Opacity, 0 to 255.
+    pub opacity: u8,
+    /// Order offset against the other cels in the frame.
+    pub z_index: i16,
+    /// The cel's image.
+    pub image: AseImage,
+}
+
+impl AseCel {
+    /// An opaque cel at `position` holding `image`.
+    pub fn new(layer: u16, position: [i16; 2], image: AseImage) -> Self {
+        Self {
+            layer,
+            position,
+            opacity: 255,
+            z_index: 0,
+            image,
+        }
+    }
+}
+
+/// The image of an [`AseCel`]. Pixels are in the document's depth: four bytes
+/// RGBA, two bytes value and alpha, or one palette index.
+#[derive(Debug, Clone)]
+pub enum AseImage {
+    /// Stored as is.
+    Raw {
+        /// Width and height.
+        size: [u16; 2],
+        /// The pixels.
+        pixels: Vec<u8>,
+    },
+    /// Stored as a zlib stream, written with uncompressed deflate blocks.
+    Compressed {
+        /// Width and height.
+        size: [u16; 2],
+        /// The pixels, before compression.
+        pixels: Vec<u8>,
+    },
+    /// The same layer's cel in an earlier frame.
+    Linked(u16),
+}
+
+/// A tag of an [`AseDocument`].
+#[derive(Debug, Clone, Default)]
+pub struct AseTag {
+    /// First frame.
+    pub from: u16,
+    /// Last frame, inclusive.
+    pub to: u16,
+    /// 0 forward, 1 reverse, 2 ping-pong, 3 ping-pong reverse.
+    pub direction: u8,
+    /// Times to play, 0 for ever.
+    pub repeat: u16,
+    /// The tag's name.
+    pub name: String,
+    /// The tag colour in the chunk itself, which newer files leave to user data.
+    pub rgb: [u8; 3],
+    /// User data text and colour, written after the tags chunk.
+    pub user: Option<(String, [u8; 4])>,
+}
+
+/// A slice of an [`AseDocument`].
+#[derive(Debug, Clone, Default)]
+pub struct AseSlice {
+    /// The slice's name.
+    pub name: String,
+    /// Its keys.
+    pub keys: Vec<AseSliceKey>,
+    /// User data text and colour, written after the slice chunk.
+    pub user: Option<(String, [u8; 4])>,
+}
+
+/// A key of an [`AseSlice`]. A nine-slice centre or a pivot on any key sets
+/// the flag for every key, as the format requires.
+#[derive(Debug, Clone, Default)]
+pub struct AseSliceKey {
+    /// The frame the key starts on.
+    pub frame: u32,
+    /// x, y, width, height.
+    pub bounds: [i32; 4],
+    /// Nine-slice centre relative to the bounds.
+    pub centre: Option<[i32; 4]>,
+    /// Pivot relative to the bounds.
+    pub pivot: Option<[i32; 2]>,
+}
+
+fn ase_string(out: &mut Vec<u8>, s: &str) {
+    out.extend((s.len() as u16).to_le_bytes());
+    out.extend(s.as_bytes());
+}
+
+fn ase_chunk(out: &mut Vec<Vec<u8>>, kind: u16, data: Vec<u8>) {
+    let mut chunk = Vec::with_capacity(data.len() + 6);
+    chunk.extend((data.len() as u32 + 6).to_le_bytes());
+    chunk.extend(kind.to_le_bytes());
+    chunk.extend(data);
+    out.push(chunk);
+}
+
+fn ase_user_data(out: &mut Vec<Vec<u8>>, text: Option<&str>, colour: Option<[u8; 4]>) {
+    let mut d = Vec::new();
+    let flags = text.is_some() as u32 | (colour.is_some() as u32) << 1;
+    d.extend(flags.to_le_bytes());
+    if let Some(text) = text {
+        ase_string(&mut d, text);
+    }
+    if let Some(c) = colour {
+        d.extend(c);
+    }
+    ase_chunk(out, 0x2020, d);
+}
+
+/// `bytes` as a zlib stream of uncompressed deflate blocks: valid zlib that
+/// any inflater reads, with no compressor needed to write it.
+pub fn zlib_stored(bytes: &[u8]) -> Vec<u8> {
+    let mut out = vec![0x78, 0x01];
+    let blocks: Vec<&[u8]> = if bytes.is_empty() {
+        vec![&[]]
+    } else {
+        bytes.chunks(65535).collect()
+    };
+    for (i, block) in blocks.iter().enumerate() {
+        out.push((i == blocks.len() - 1) as u8);
+        let len = block.len() as u16;
+        out.extend(len.to_le_bytes());
+        out.extend((!len).to_le_bytes());
+        out.extend(*block);
+    }
+    let (mut a, mut b) = (1u32, 0u32);
+    for byte in bytes {
+        a = (a + *byte as u32) % 65521;
+        b = (b + a) % 65521;
+    }
+    out.extend(((b << 16) | a).to_be_bytes());
+    out
+}
+
+impl AseDocument {
+    /// A document of `size` pixels at `depth` bits per pixel, with valid layer
+    /// opacity and nothing in it.
+    pub fn new(size: [u16; 2], depth: u16) -> Self {
+        Self {
+            size,
+            depth,
+            flags: 1,
+            ..Self::default()
+        }
+    }
+
+    /// The document as the bytes of an `.aseprite` file.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut frames = Vec::new();
+        for (index, frame) in self.frames.iter().enumerate() {
+            let mut chunks = Vec::new();
+            if index == 0 {
+                for (kind, data) in &self.extra_chunks {
+                    ase_chunk(&mut chunks, *kind, data.clone());
+                }
+                if !self.palette.is_empty() {
+                    let mut d = Vec::new();
+                    d.extend((self.palette.len() as u32).to_le_bytes());
+                    d.extend(0u32.to_le_bytes());
+                    d.extend((self.palette.len() as u32 - 1).to_le_bytes());
+                    d.extend([0; 8]);
+                    for c in &self.palette {
+                        d.extend(0u16.to_le_bytes());
+                        d.extend(c);
+                    }
+                    ase_chunk(&mut chunks, 0x2019, d);
+                }
+                for layer in &self.layers {
+                    let mut d = Vec::new();
+                    for v in [
+                        layer.flags,
+                        layer.kind,
+                        layer.child_level,
+                        0,
+                        0,
+                        layer.blend,
+                    ] {
+                        d.extend(v.to_le_bytes());
+                    }
+                    d.push(layer.opacity);
+                    d.extend([0; 3]);
+                    ase_string(&mut d, &layer.name);
+                    if layer.kind == 2 {
+                        d.extend(0u32.to_le_bytes());
+                    }
+                    ase_chunk(&mut chunks, 0x2004, d);
+                    if let Some(text) = &layer.user_text {
+                        ase_user_data(&mut chunks, Some(text), None);
+                    }
+                }
+                if !self.tags.is_empty() {
+                    let mut d = Vec::new();
+                    d.extend((self.tags.len() as u16).to_le_bytes());
+                    d.extend([0; 8]);
+                    for tag in &self.tags {
+                        d.extend(tag.from.to_le_bytes());
+                        d.extend(tag.to.to_le_bytes());
+                        d.push(tag.direction);
+                        d.extend(tag.repeat.to_le_bytes());
+                        d.extend([0; 6]);
+                        d.extend(tag.rgb);
+                        d.push(0);
+                        ase_string(&mut d, &tag.name);
+                    }
+                    ase_chunk(&mut chunks, 0x2018, d);
+                    for tag in &self.tags {
+                        match &tag.user {
+                            Some((text, colour)) => {
+                                ase_user_data(&mut chunks, Some(text), Some(*colour))
+                            }
+                            None => ase_user_data(&mut chunks, None, None),
+                        }
+                    }
+                }
+            }
+            for cel in &frame.cels {
+                let mut d = Vec::new();
+                d.extend(cel.layer.to_le_bytes());
+                d.extend(cel.position[0].to_le_bytes());
+                d.extend(cel.position[1].to_le_bytes());
+                d.push(cel.opacity);
+                let kind: u16 = match cel.image {
+                    AseImage::Raw { .. } => 0,
+                    AseImage::Linked(_) => 1,
+                    AseImage::Compressed { .. } => 2,
+                };
+                d.extend(kind.to_le_bytes());
+                d.extend(cel.z_index.to_le_bytes());
+                d.extend([0; 5]);
+                match &cel.image {
+                    AseImage::Raw { size, pixels } => {
+                        d.extend(size[0].to_le_bytes());
+                        d.extend(size[1].to_le_bytes());
+                        d.extend(pixels);
+                    }
+                    AseImage::Compressed { size, pixels } => {
+                        d.extend(size[0].to_le_bytes());
+                        d.extend(size[1].to_le_bytes());
+                        d.extend(zlib_stored(pixels));
+                    }
+                    AseImage::Linked(frame) => d.extend(frame.to_le_bytes()),
+                }
+                ase_chunk(&mut chunks, 0x2005, d);
+            }
+            if index == 0 {
+                for slice in &self.slices {
+                    let nine = slice.keys.iter().any(|k| k.centre.is_some()) as u32;
+                    let pivot = slice.keys.iter().any(|k| k.pivot.is_some()) as u32;
+                    let mut d = Vec::new();
+                    d.extend((slice.keys.len() as u32).to_le_bytes());
+                    d.extend((nine | pivot << 1).to_le_bytes());
+                    d.extend(0u32.to_le_bytes());
+                    ase_string(&mut d, &slice.name);
+                    for key in &slice.keys {
+                        d.extend(key.frame.to_le_bytes());
+                        d.extend(key.bounds[0].to_le_bytes());
+                        d.extend(key.bounds[1].to_le_bytes());
+                        d.extend((key.bounds[2] as u32).to_le_bytes());
+                        d.extend((key.bounds[3] as u32).to_le_bytes());
+                        if nine == 1 {
+                            let c = key.centre.unwrap_or_default();
+                            d.extend(c[0].to_le_bytes());
+                            d.extend(c[1].to_le_bytes());
+                            d.extend((c[2] as u32).to_le_bytes());
+                            d.extend((c[3] as u32).to_le_bytes());
+                        }
+                        if pivot == 1 {
+                            let p = key.pivot.unwrap_or_default();
+                            d.extend(p[0].to_le_bytes());
+                            d.extend(p[1].to_le_bytes());
+                        }
+                    }
+                    ase_chunk(&mut chunks, 0x2022, d);
+                    if let Some((text, colour)) = &slice.user {
+                        ase_user_data(&mut chunks, Some(text), Some(*colour));
+                    }
+                }
+            }
+
+            let body: Vec<u8> = chunks.concat();
+            let count = chunks.len() as u32;
+            let mut f = Vec::new();
+            f.extend((body.len() as u32 + 16).to_le_bytes());
+            f.extend(0xF1FAu16.to_le_bytes());
+            f.extend((count.min(0xFFFF) as u16).to_le_bytes());
+            f.extend(frame.duration_ms.to_le_bytes());
+            f.extend([0; 2]);
+            f.extend(count.to_le_bytes());
+            f.extend(body);
+            frames.push(f);
+        }
+
+        let body: Vec<u8> = frames.concat();
+        let mut out = Vec::with_capacity(128 + body.len());
+        out.extend((128 + body.len() as u32).to_le_bytes());
+        out.extend(0xA5E0u16.to_le_bytes());
+        out.extend((self.frames.len() as u16).to_le_bytes());
+        out.extend(self.size[0].to_le_bytes());
+        out.extend(self.size[1].to_le_bytes());
+        out.extend(self.depth.to_le_bytes());
+        out.extend(self.flags.to_le_bytes());
+        out.extend(100u16.to_le_bytes());
+        out.extend([0; 8]);
+        out.push(self.transparent_index);
+        out.extend([0; 3]);
+        out.extend((self.palette.len() as u16).to_le_bytes());
+        out.extend(self.pixel_ratio);
+        out.extend([0; 8]);
+        out.extend([0; 84]);
+        debug_assert_eq!(out.len(), 128);
+        out.extend(body);
+        out
+    }
+}
