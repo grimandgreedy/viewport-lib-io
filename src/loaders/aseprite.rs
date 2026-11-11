@@ -1,8 +1,9 @@
-//! Sprite sheet metadata decoding: the JSON an atlas packer or Aseprite writes
-//! beside the atlas image.
+//! Aseprite sprite sheet decoding: the JSON Aseprite writes beside the atlas
+//! image when it exports a sprite sheet.
 //!
-//! Reads the JSON hash and JSON array layouts that Aseprite and TexturePacker
-//! both export, and any other JSON with a `frames` member in that shape.
+//! TexturePacker exports the same shape, so its JSON reads through here too, as
+//! does any other JSON with a `frames` member in that shape. Both the hash and
+//! the array layout are read.
 //! Frame tags and slices are read where the sheet has them, which in practice
 //! means Aseprite. Aseprite's binary `.ase` and `.aseprite` files are refused:
 //! export a JSON sheet from them instead. Aseprite's layer list and
@@ -27,17 +28,17 @@ use crate::types::{
 /// The atlas image path is resolved against the sheet's directory; the image
 /// itself is not read.
 pub fn sprite_sheet_from_path(path: &Path) -> Result<SpriteSheetData, IoError> {
-    #[cfg(feature = "sprite-sheet")]
+    #[cfg(feature = "aseprite")]
     {
         let bytes = std::fs::read(path)?;
         sprite_sheet_from_bytes(&bytes, Some(path.parent().unwrap_or(Path::new("."))))
     }
 
-    #[cfg(not(feature = "sprite-sheet"))]
+    #[cfg(not(feature = "aseprite"))]
     {
         let _ = path;
         Err(IoError::MissingFeature {
-            feature: "sprite-sheet",
+            feature: "aseprite",
             context: "sprite sheet decoding",
         })
     }
@@ -50,16 +51,16 @@ pub fn sprite_sheet_from_bytes(
     bytes: &[u8],
     base: Option<&Path>,
 ) -> Result<SpriteSheetData, IoError> {
-    #[cfg(feature = "sprite-sheet")]
+    #[cfg(feature = "aseprite")]
     {
         decode(bytes, base)
     }
 
-    #[cfg(not(feature = "sprite-sheet"))]
+    #[cfg(not(feature = "aseprite"))]
     {
         let _ = (bytes, base);
         Err(IoError::MissingFeature {
-            feature: "sprite-sheet",
+            feature: "aseprite",
             context: "sprite sheet decoding",
         })
     }

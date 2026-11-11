@@ -1,13 +1,13 @@
-//! Sprite sheet conformance: Aseprite and TexturePacker exports in both JSON
+//! Aseprite sprite sheet conformance: Aseprite and TexturePacker exports in both JSON
 //! layouts clear the floor, each pair decodes the same, and the fields an
 //! exporter writes (trim, rotation, pivots, durations, tags, slices) come
 //! through.
 
-#![cfg(feature = "sprite-sheet")]
+#![cfg(feature = "aseprite")]
 
 use std::path::PathBuf;
 
-use viewport_lib_io::loaders::sprite_sheet;
+use viewport_lib_io::loaders::aseprite;
 use viewport_lib_io::types::{
     AnimationDirection, PixelRect, SpriteSheetData, SpriteSliceKey, TextureSource,
 };
@@ -17,7 +17,7 @@ use viewport_lib_io_testkit::{conformance, synth};
 fn decode(label: &str, contents: &str) -> (PathBuf, SpriteSheetData) {
     let path = synth::temp_path("sprite_sheet", "sheet.json");
     synth::write(&path, contents);
-    let sheet = conformance::sprite_sheet(label, || sprite_sheet::sprite_sheet_from_path(&path));
+    let sheet = conformance::sprite_sheet(label, || aseprite::sprite_sheet_from_path(&path));
     (path, sheet)
 }
 
@@ -137,7 +137,6 @@ fn texturepacker_rotation_and_pivots_come_through() {
 fn bytes_decode_like_the_path() {
     let contents = synth::aseprite_sheet(true);
     let (path, from_path) = decode("aseprite hash", &contents);
-    let from_bytes =
-        sprite_sheet::sprite_sheet_from_bytes(contents.as_bytes(), path.parent()).unwrap();
+    let from_bytes = aseprite::sprite_sheet_from_bytes(contents.as_bytes(), path.parent()).unwrap();
     assert_eq!(from_bytes, from_path);
 }

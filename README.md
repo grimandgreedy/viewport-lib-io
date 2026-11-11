@@ -37,7 +37,7 @@ viewport-lib-io = { version = "0.9", features = ["all-formats"] }
 One feature per format: `png`, `jpeg`, `tga`, `bmp`, `hdr`, `exr`, `svg`, `stl`,
 `obj`, `msh`, `gltf`, `fbx`, `bvh`, `ply`, `csv`, `numpy`, `raw`, `vtk`, `xdmf`,
 `exodus`, `ensight`, `tecplot`, `cgns`, `netcdf`, and for 2D assets `tiled`,
-`ldtk`, `sprite-sheet` and `bmfont`. `xdmf`, `exodus` and `cgns`
+`ldtk`, `aseprite` (which also reads TexturePacker JSON) and `bmfont`. `xdmf`, `exodus` and `cgns`
 build the HDF5 C library statically and need `cmake`.
 
 Three more extend `gltf` to compressed assets: `gltf-draco`
@@ -178,7 +178,7 @@ let first_level = &worlds[0].levels[0].map;
 Sprite sheets (Aseprite or TexturePacker JSON) and bitmap fonts (BMFont):
 
 ```rust
-let sheet = viewport_lib_io::loaders::sprite_sheet::sprite_sheet_from_path("hero.json".as_ref())?;
+let sheet = viewport_lib_io::loaders::aseprite::sprite_sheet_from_path("hero.json".as_ref())?;
 let walk = sheet.animations.iter().find(|a| a.name == "walk");
 let uv = sheet.frames[0].uv; // [u_min, v_min, u_max, v_max], v down
 

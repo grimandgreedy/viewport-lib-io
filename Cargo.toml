@@ -48,8 +48,8 @@ csv = []
 tiled = ["dep:quick-xml", "dep:serde_json", "dep:flate2"]
 # LDtk projects, with levels in the project file or saved separately.
 ldtk = ["dep:serde_json"]
-# Sprite sheet metadata: Aseprite and TexturePacker JSON.
-sprite-sheet = ["dep:serde", "dep:serde_json"]
+# Aseprite sprite sheet JSON, which also reads TexturePacker's.
+aseprite = ["dep:serde", "dep:serde_json"]
 # BMFont bitmap font descriptors, text or XML.
 bmfont = ["dep:quick-xml"]
 numpy = ["dep:flate2"]
@@ -66,7 +66,7 @@ netcdf = ["dep:netcdf-reader", "_scientific-common"]
 # format, so it is not in all-formats and is not meant to be enabled directly:
 # the format features above pull it in.
 _scientific-common = ["dep:quick-xml"]
-all-formats = ["png", "jpeg", "tga", "bmp", "svg", "hdr", "exr", "stl", "obj", "msh", "gltf", "gltf-draco", "gltf-meshopt", "gltf-ktx2", "fbx", "bvh", "ply", "csv", "tiled", "ldtk", "sprite-sheet", "bmfont", "numpy", "raw", "vtk", "xdmf", "exodus", "ensight", "tecplot", "cgns", "netcdf"]
+all-formats = ["png", "jpeg", "tga", "bmp", "svg", "hdr", "exr", "stl", "obj", "msh", "gltf", "gltf-draco", "gltf-meshopt", "gltf-ktx2", "fbx", "bvh", "ply", "csv", "tiled", "ldtk", "aseprite", "bmfont", "numpy", "raw", "vtk", "xdmf", "exodus", "ensight", "tecplot", "cgns", "netcdf"]
 
 [dev-dependencies]
 # The shared checks and fixture builders, as a crate rather than a feature so a

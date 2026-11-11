@@ -1,5 +1,9 @@
 //! Source-format loaders.
 
+/// Aseprite sprite sheet decoding, which also reads TexturePacker's JSON.
+#[cfg(feature = "aseprite")]
+pub mod aseprite;
+
 /// BMFont bitmap font decoding.
 #[cfg(feature = "bmfont")]
 pub mod bmfont;
@@ -101,10 +105,6 @@ pub mod raw;
 /// STL surface mesh decoding.
 #[cfg(feature = "stl")]
 pub mod stl;
-
-/// Sprite sheet metadata decoding (Aseprite and TexturePacker JSON).
-#[cfg(feature = "sprite-sheet")]
-pub mod sprite_sheet;
 
 /// SVG image decoding.
 #[cfg(feature = "svg")]
