@@ -2154,7 +2154,7 @@ pub enum TextAlign {
 ///
 /// Everything is in the image's pixel frame: X right and Y down from the
 /// top-left corner.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SpriteSheetData {
     /// The atlas image, resolved against the sheet's directory when that is
     /// known, or `None` when the sheet does not name one.
@@ -2172,6 +2172,29 @@ pub struct SpriteSheetData {
     pub animations: Vec<SpriteAnimation>,
     /// Named regions of the sprite, with nine-slice centres and pivots.
     pub slices: Vec<SpriteSlice>,
+    /// The width and height of one pixel as the artist drew it: `[1, 1]` for
+    /// square pixels, `[2, 1]` for pixels twice as wide as tall. Draw each
+    /// frame stretched by this. JSON sheets do not record it and give `[1, 1]`.
+    pub pixel_ratio: [u32; 2],
+    /// What the source holds that is not decoded, one entry per kind, such as
+    /// `tilemap layer "Ground"`. Empty when everything was read.
+    pub unsupported: Vec<String>,
+}
+
+impl Default for SpriteSheetData {
+    fn default() -> Self {
+        Self {
+            image: None,
+            size: [0, 0],
+            scale: 1.0,
+            app: String::new(),
+            frames: Vec::new(),
+            animations: Vec::new(),
+            slices: Vec::new(),
+            pixel_ratio: [1, 1],
+            unsupported: Vec::new(),
+        }
+    }
 }
 
 /// One frame of a [`SpriteSheetData`].

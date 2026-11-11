@@ -7,7 +7,7 @@
 //! composited source-over, in sRGB values from `0` to `1`, rounded to 8 bits
 //! at the end.
 
-use super::raw::{ColourDepth, LayerKind};
+use super::raw::{ColourDepth, Document, LayerKind};
 
 /// A blend mode, by Aseprite's id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -385,6 +385,53 @@ fn draw_cel(cel: &CelImage, layer: &LayerInfo, canvas: [u32; 2], out: &mut [u8])
             out[d..d + 4].copy_from_slice(&blend_pixel(layer.blend, dst, src, opacity));
         }
     }
+}
+
+/// How compositing sees each of a document's layers.
+pub(super) fn layer_infos(doc: &Document) -> Vec<LayerInfo> {
+    let levels: Vec<u16> = doc.layers.iter().map(|l| l.child_level).collect();
+    doc.layers
+        .iter()
+        .zip(parents(&levels))
+        .map(|(l, parent)| LayerInfo {
+            parent,
+            kind: l.kind,
+            visible: l.visible,
+            reference: l.reference,
+            blend: Blend::from_id(l.blend),
+            opacity: l.opacity as f32 / 255.0,
+        })
+        .collect()
+}
+
+/// One frame's cels as straight-alpha RGBA.
+pub(super) fn cel_images(doc: &Document, frame: usize) -> Vec<CelImage> {
+    doc.frames[frame]
+        .cels
+        .iter()
+        .map(|c| CelImage {
+            layer: c.layer,
+            position: c.position,
+            opacity: c.opacity as f32 / 255.0,
+            z_index: c.z_index,
+            size: c.size,
+            rgba: to_rgba(
+                doc.depth,
+                &c.pixels,
+                &doc.palette,
+                doc.transparent_index,
+                doc.layers[c.layer].background,
+            ),
+        })
+        .collect()
+}
+
+/// Every frame of a document flattened at the canvas size, in frame order.
+pub(super) fn frame_images(doc: &Document) -> Vec<Vec<u8>> {
+    let layers = layer_infos(doc);
+    (0..doc.frames.len())
+        .map(|f| flatten(doc.size, &layers, &cel_images(doc, f), doc.groups_isolated))
+        .collect()
 }
 
 #[cfg(test)]

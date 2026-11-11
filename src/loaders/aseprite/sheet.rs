@@ -1,4 +1,5 @@
-//! The JSON sheet an export writes, read into the sheet types.
+//! The sheet types, built from the JSON an export writes or from a decoded
+//! document.
 
 use std::fmt;
 use std::path::Path;
@@ -8,6 +9,9 @@ use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value};
 use viewport_lib_types::colour::Colour;
 
+use viewport_lib_types::data::texture::TextureData;
+
+use super::{composite, raw};
 use crate::error::IoError;
 use crate::types::{
     AnimationDirection, PixelRect, SpriteAnimation, SpriteFrame, SpriteSheetData, SpriteSlice,
@@ -81,18 +85,15 @@ impl<'de> Deserialize<'de> for Frames {
     }
 }
 
-/// Whether the bytes are an Aseprite document rather than an export: its
-/// header has the magic number `0xA5E0` at byte 4.
-fn is_aseprite_binary(bytes: &[u8]) -> bool {
-    bytes.len() >= 6 && bytes[4..6] == [0xE0, 0xA5]
-}
-
-pub(super) fn decode(bytes: &[u8], base: Option<&Path>) -> Result<SpriteSheetData, IoError> {
-    if is_aseprite_binary(bytes) {
-        return Err(IoError::Parse(
-            "this is an Aseprite document, which is not read; export a JSON sprite sheet from it"
-                .into(),
-        ));
+/// Decode a JSON sheet or an Aseprite document. `name` is the document's file
+/// name, which its frames are named after as an export names them.
+pub(super) fn decode(
+    bytes: &[u8],
+    base: Option<&Path>,
+    name: Option<&str>,
+) -> Result<SpriteSheetData, IoError> {
+    if raw::is_document(bytes) {
+        return Ok(from_document(&raw::read(bytes)?, name));
     }
     let document: Document = serde_json::from_slice(bytes)
         .map_err(|e| IoError::Parse(format!("sprite sheet JSON: {e}")))?;
@@ -147,7 +148,156 @@ pub(super) fn decode(bytes: &[u8], base: Option<&Path>) -> Result<SpriteSheetDat
             .map(slice)
             .collect(),
         frames,
+        ..SpriteSheetData::default()
     })
+}
+
+/// Place rectangles of `sizes` on shelves, left to right and top to bottom, in
+/// order, `gutter` pixels apart. Returns each top-left corner and the atlas
+/// size.
+///
+/// A shelf is as wide as `ceil(sqrt(n))` rectangles of the average width, or
+/// the widest one if that is wider, so a run of equal frames packs into a
+/// near-square grid.
+pub(super) fn pack(sizes: &[[u32; 2]], gutter: u32) -> (Vec<[u32; 2]>, [u32; 2]) {
+    let n = sizes.len() as u64;
+    let widest = sizes.iter().map(|s| s[0]).max().unwrap_or(0);
+    let cell_sum: u64 = sizes.iter().map(|s| (s[0] + gutter) as u64).sum();
+    let columns = (n as f64).sqrt().ceil() as u64;
+    let shelf_width = if n == 0 {
+        0
+    } else {
+        ((columns * cell_sum).div_ceil(n) as u32).saturating_sub(gutter)
+    }
+    .max(widest);
+
+    let mut corners = Vec::with_capacity(sizes.len());
+    let (mut x, mut y, mut shelf_height) = (0u32, 0u32, 0u32);
+    let mut atlas = [0u32, 0u32];
+    for size in sizes {
+        if x > 0 && x + size[0] > shelf_width {
+            x = 0;
+            y += shelf_height + gutter;
+            shelf_height = 0;
+        }
+        corners.push([x, y]);
+        atlas = [atlas[0].max(x + size[0]), atlas[1].max(y + size[1])];
+        x += size[0] + gutter;
+        shelf_height = shelf_height.max(size[1]);
+    }
+    (corners, atlas)
+}
+
+/// A frame's name as an export writes it: `hero 3.aseprite`, or `hero.aseprite`
+/// for a sprite of one frame. With no file name, the frame's index.
+fn frame_name(name: Option<&str>, index: usize, count: usize) -> String {
+    let Some(name) = name else {
+        return index.to_string();
+    };
+    if count == 1 {
+        return name.to_string();
+    }
+    match name.rsplit_once('.') {
+        Some((stem, ext)) => format!("{stem} {index}.{ext}"),
+        None => format!("{name} {index}"),
+    }
+}
+
+fn rgba_colour(c: [u8; 4]) -> Colour {
+    Colour::srgb_u8(c[0], c[1], c[2], c[3])
+}
+
+/// Copy `image` (`size` pixels) into `atlas` (`atlas_width` wide) at `at`.
+fn blit(atlas: &mut [u8], atlas_width: u32, image: &[u8], size: [u32; 2], at: [u32; 2]) {
+    for row in 0..size[1] as usize {
+        let src = row * size[0] as usize * 4;
+        let dst = ((at[1] as usize + row) * atlas_width as usize + at[0] as usize) * 4;
+        let len = size[0] as usize * 4;
+        atlas[dst..dst + len].copy_from_slice(&image[src..src + len]);
+    }
+}
+
+/// The sheet a default export of `doc` describes: every frame composited at
+/// the full canvas size, untrimmed, packed into one decoded atlas.
+pub(super) fn from_document(doc: &raw::Document, name: Option<&str>) -> SpriteSheetData {
+    let images = composite::frame_images(doc);
+    let sizes = vec![doc.size; images.len()];
+    let (corners, size) = pack(&sizes, 0);
+
+    let mut atlas = vec![0u8; size[0] as usize * size[1] as usize * 4];
+    let mut frames = Vec::with_capacity(images.len());
+    for (index, (image, at)) in images.iter().zip(&corners).enumerate() {
+        blit(&mut atlas, size[0], image, doc.size, *at);
+        let rect = PixelRect::new(at[0], at[1], doc.size[0], doc.size[1]);
+        frames.push(SpriteFrame {
+            name: frame_name(name, index, images.len()),
+            rect,
+            uv: rect.uv(size),
+            rotated: false,
+            trimmed: false,
+            source_size: doc.size,
+            source_offset: [0, 0],
+            pivot: None,
+            duration_ms: Some(doc.frames[index].duration_ms),
+        });
+    }
+
+    SpriteSheetData {
+        image: Some(TextureSource::Decoded(TextureData::srgb(
+            size[0], size[1], atlas,
+        ))),
+        size,
+        scale: 1.0,
+        app: "aseprite".into(),
+        frames,
+        animations: doc
+            .tags
+            .iter()
+            .map(|t| SpriteAnimation {
+                name: t.name.clone(),
+                first: t.from,
+                last: t.to,
+                direction: match t.direction {
+                    1 => AnimationDirection::Reverse,
+                    2 => AnimationDirection::PingPong,
+                    3 => AnimationDirection::PingPongReverse,
+                    _ => AnimationDirection::Forward,
+                },
+                repeat: (t.repeat > 0).then_some(t.repeat as u32),
+                colour: Some(rgba_colour(
+                    t.user.colour.unwrap_or([t.rgb[0], t.rgb[1], t.rgb[2], 255]),
+                )),
+                data: t.user.text.clone(),
+            })
+            .collect(),
+        slices: doc
+            .slices
+            .iter()
+            .map(|s| {
+                let rect = |r: [i64; 4]| {
+                    let at = |v: i64| v.clamp(0, u32::MAX as i64) as u32;
+                    PixelRect::new(at(r[0]), at(r[1]), at(r[2]), at(r[3]))
+                };
+                SpriteSlice {
+                    name: s.name.clone(),
+                    colour: s.user.colour.map(rgba_colour),
+                    data: s.user.text.clone(),
+                    keys: s
+                        .keys
+                        .iter()
+                        .map(|k| SpriteSliceKey {
+                            frame: k.frame,
+                            bounds: rect(k.bounds),
+                            centre: k.centre.map(rect),
+                            pivot: k.pivot,
+                        })
+                        .collect(),
+                }
+            })
+            .collect(),
+        pixel_ratio: doc.pixel_ratio,
+        unsupported: doc.unsupported.clone(),
+    }
 }
 
 fn array<'a>(object: &'a Map<String, Value>, key: &str) -> &'a [Value] {
@@ -331,8 +481,8 @@ mod tests {
     }
 
     #[test]
-    fn an_aseprite_document_is_refused_by_name() {
-        let mut header = vec![0u8; 128];
+    fn a_truncated_document_is_a_parse_error() {
+        let mut header = vec![0u8; 20];
         header[4] = 0xE0;
         header[5] = 0xA5;
         let err = sprite_sheet_from_bytes(&header, None).unwrap_err();
@@ -340,6 +490,116 @@ mod tests {
             matches!(&err, IoError::Parse(m) if m.contains("Aseprite")),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn equal_frames_pack_into_a_near_square_grid() {
+        let (corners, atlas) = pack(&[[16, 16]; 5], 0);
+        assert_eq!(atlas, [48, 32]);
+        assert_eq!(corners, [[0, 0], [16, 0], [32, 0], [0, 16], [16, 16]]);
+
+        let (corners, atlas) = pack(&[[4, 4]; 4], 1);
+        assert_eq!(corners, [[0, 0], [5, 0], [0, 5], [5, 5]]);
+        assert_eq!(atlas, [9, 9], "gutters between frames, not after the last");
+
+        assert_eq!(pack(&[], 0), (vec![], [0, 0]));
+    }
+
+    #[test]
+    fn frames_are_named_as_an_export_names_them() {
+        assert_eq!(frame_name(Some("hero.aseprite"), 3, 4), "hero 3.aseprite");
+        assert_eq!(frame_name(Some("hero.ase"), 0, 1), "hero.ase");
+        assert_eq!(frame_name(Some("hero"), 1, 2), "hero 1");
+        assert_eq!(frame_name(None, 2, 4), "2");
+    }
+
+    #[test]
+    fn a_document_decodes_to_the_sheet_its_export_describes() {
+        use viewport_lib_io_testkit::synth::{
+            AseCel, AseDocument, AseFrame, AseImage, AseLayer, AseSlice, AseSliceKey, AseTag,
+        };
+
+        let pixel = |rgba: [u8; 4]| AseImage::Raw {
+            size: [1, 1],
+            pixels: rgba.to_vec(),
+        };
+        let mut doc = AseDocument::new([2, 1], 32);
+        doc.pixel_ratio = [2, 1];
+        doc.layers = vec![
+            AseLayer::image("base"),
+            AseLayer {
+                kind: 2,
+                ..AseLayer::image("Ground")
+            },
+        ];
+        doc.frames = vec![
+            AseFrame {
+                duration_ms: 100,
+                cels: vec![AseCel::new(0, [0, 0], pixel([255, 0, 0, 255]))],
+            },
+            AseFrame {
+                duration_ms: 150,
+                cels: vec![AseCel::new(0, [1, 0], pixel([0, 0, 255, 255]))],
+            },
+        ];
+        doc.tags = vec![AseTag {
+            from: 0,
+            to: 1,
+            direction: 2,
+            repeat: 2,
+            name: "blink".into(),
+            user: Some(("eyes".into(), [255, 0, 0, 255])),
+            ..AseTag::default()
+        }];
+        doc.slices = vec![AseSlice {
+            name: "hit".into(),
+            keys: vec![AseSliceKey {
+                frame: 0,
+                bounds: [0, 0, 2, 1],
+                centre: None,
+                pivot: Some([1, 1]),
+            }],
+            user: None,
+        }];
+
+        let sheet = decode(&doc.to_bytes(), None, Some("hero.aseprite")).unwrap();
+
+        assert_eq!(sheet.app, "aseprite");
+        assert_eq!((sheet.pixel_ratio, sheet.scale), ([2, 1], 1.0));
+        assert_eq!(sheet.unsupported, ["tilemap layer \"Ground\""]);
+        assert_eq!(sheet.size, [4, 1], "two 2x1 frames side by side");
+        let names: Vec<_> = sheet.frames.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["hero 0.aseprite", "hero 1.aseprite"]);
+        let second = &sheet.frames[1];
+        assert_eq!(second.rect, PixelRect::new(2, 0, 2, 1));
+        assert_eq!((second.source_size, second.source_offset), ([2, 1], [0, 0]));
+        assert!(!second.trimmed && !second.rotated);
+        assert_eq!(second.duration_ms, Some(150));
+        assert_eq!(second.uv, [0.5, 0.0, 1.0, 1.0]);
+
+        let Some(TextureSource::Decoded(atlas)) = &sheet.image else {
+            panic!("expected a decoded atlas, got {:?}", sheet.image);
+        };
+        let viewport_lib_types::data::texture::TexturePayload::Rgba8(pixels) = atlas.payload()
+        else {
+            panic!("expected RGBA8");
+        };
+        assert_eq!(
+            pixels,
+            &[255, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255],
+            "each frame composited in its own cell"
+        );
+
+        let blink = &sheet.animations[0];
+        assert_eq!((blink.first, blink.last), (0, 1));
+        assert_eq!(
+            (blink.direction, blink.repeat),
+            (AnimationDirection::PingPong, Some(2))
+        );
+        assert_eq!(blink.data, "eyes");
+        assert_eq!(blink.colour, Some(Colour::srgb_u8(255, 0, 0, 255)));
+        assert_eq!(sheet.slices[0].keys[0].pivot, Some([1, 1]));
+        assert_eq!(sheet.slices[0].keys[0].bounds, PixelRect::new(0, 0, 2, 1));
     }
 
     #[test]

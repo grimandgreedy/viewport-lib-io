@@ -1,35 +1,43 @@
-//! Aseprite sprite sheet decoding: the JSON Aseprite writes beside the atlas
-//! image when it exports a sprite sheet.
+//! Aseprite sprite sheets: the document an artist saves (`.aseprite`,
+//! `.ase`) and the JSON sheet an export writes beside its atlas image.
 //!
-//! TexturePacker exports the same shape, so its JSON reads through here too, as
-//! does any other JSON with a `frames` member in that shape. Both the hash and
-//! the array layout are read.
-//! Frame tags and slices are read where the sheet has them, which in practice
-//! means Aseprite. Aseprite's binary `.ase` and `.aseprite` files are refused:
-//! export a JSON sheet from them instead. Aseprite's layer list and
-//! TexturePacker's multi-pack references are not carried.
+//! A document decodes to the sheet a default export of it would describe:
+//! each frame composited from its visible, non-reference layers with their
+//! blend modes and opacity, at the full canvas size and untrimmed, packed into
+//! one atlas carried as decoded pixels. Frame durations, tags and slices come
+//! through, with their user data text and colour. Tilemap layers, external
+//! files and embedded colour profiles are not decoded; each is named in
+//! [`unsupported`](crate::types::SpriteSheetData::unsupported).
+//!
+//! TexturePacker writes the same JSON shape as Aseprite, so its sheets read
+//! here too, as does any other JSON with a `frames` member in that shape, in
+//! the hash or the array layout. TexturePacker's multi-pack references are not
+//! carried.
 
 use std::path::Path;
 
 use crate::error::IoError;
 use crate::types::SpriteSheetData;
 
-// Read only by the tests until the document path is wired into the sheet.
-#[allow(dead_code)]
 mod composite;
-#[allow(dead_code)]
 mod raw;
 mod sheet;
 
-/// Decode a sprite sheet's JSON metadata into a [`SpriteSheetData`].
+/// Decode an Aseprite document or a JSON sprite sheet into a
+/// [`SpriteSheetData`].
 ///
-/// The atlas image path is resolved against the sheet's directory; the image
-/// itself is not read.
+/// A JSON sheet's atlas image path is resolved against the sheet's directory
+/// and the image itself is not read. A document's frames are named after the
+/// file, as an export names them (`hero 0.aseprite`).
 pub fn sprite_sheet_from_path(path: &Path) -> Result<SpriteSheetData, IoError> {
     #[cfg(feature = "aseprite")]
     {
         let bytes = std::fs::read(path)?;
-        sprite_sheet_from_bytes(&bytes, Some(path.parent().unwrap_or(Path::new("."))))
+        sheet::decode(
+            &bytes,
+            Some(path.parent().unwrap_or(Path::new("."))),
+            path.file_name().and_then(|n| n.to_str()),
+        )
     }
 
     #[cfg(not(feature = "aseprite"))]
@@ -42,16 +50,18 @@ pub fn sprite_sheet_from_path(path: &Path) -> Result<SpriteSheetData, IoError> {
     }
 }
 
-/// Decode sprite sheet metadata from bytes already read. `base` is the
-/// directory the atlas image path is relative to; without one the path is
-/// left as the file wrote it.
+/// Decode an Aseprite document or a JSON sprite sheet from bytes already read.
+///
+/// `base` is the directory a JSON sheet's atlas image path is relative to;
+/// without one the path is left as the file wrote it. With no file name, a
+/// document's frames are named by their index.
 pub fn sprite_sheet_from_bytes(
     bytes: &[u8],
     base: Option<&Path>,
 ) -> Result<SpriteSheetData, IoError> {
     #[cfg(feature = "aseprite")]
     {
-        sheet::decode(bytes, base)
+        sheet::decode(bytes, base, None)
     }
 
     #[cfg(not(feature = "aseprite"))]
