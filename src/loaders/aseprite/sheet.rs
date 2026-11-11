@@ -11,7 +11,7 @@ use viewport_lib_types::colour::Colour;
 
 use viewport_lib_types::data::texture::TextureData;
 
-use super::{composite, raw};
+use super::{AsepriteLoadOptions, composite, raw};
 use crate::error::IoError;
 use crate::types::{
     AnimationDirection, PixelRect, SpriteAnimation, SpriteFrame, SpriteSheetData, SpriteSlice,
@@ -91,9 +91,10 @@ pub(super) fn decode(
     bytes: &[u8],
     base: Option<&Path>,
     name: Option<&str>,
+    options: AsepriteLoadOptions,
 ) -> Result<SpriteSheetData, IoError> {
     if raw::is_document(bytes) {
-        return Ok(from_document(&raw::read(bytes)?, name));
+        return Ok(from_document(&raw::read(bytes)?, name, options));
     }
     let document: Document = serde_json::from_slice(bytes)
         .map_err(|e| IoError::Parse(format!("sprite sheet JSON: {e}")))?;
@@ -217,26 +218,110 @@ fn blit(atlas: &mut [u8], atlas_width: u32, image: &[u8], size: [u32; 2], at: [u
     }
 }
 
-/// The sheet a default export of `doc` describes: every frame composited at
-/// the full canvas size, untrimmed, packed into one decoded atlas.
-pub(super) fn from_document(doc: &raw::Document, name: Option<&str>) -> SpriteSheetData {
-    let images = composite::frame_images(doc);
-    let sizes = vec![doc.size; images.len()];
-    let (corners, size) = pack(&sizes, 0);
+/// The bounds `[x, y, width, height]` of an image's pixels with any alpha, or
+/// `None` when every pixel is transparent.
+pub(super) fn opaque_bounds(rgba: &[u8], size: [u32; 2]) -> Option<[u32; 4]> {
+    let (mut lo, mut hi) = ([u32::MAX; 2], [0u32; 2]);
+    for y in 0..size[1] {
+        for x in 0..size[0] {
+            if rgba[((y * size[0] + x) * 4 + 3) as usize] != 0 {
+                lo = [lo[0].min(x), lo[1].min(y)];
+                hi = [hi[0].max(x + 1), hi[1].max(y + 1)];
+            }
+        }
+    }
+    (lo[0] != u32::MAX).then(|| [lo[0], lo[1], hi[0] - lo[0], hi[1] - lo[1]])
+}
+
+/// The part of `rgba` (`size` pixels) inside `rect`.
+fn crop(rgba: &[u8], size: [u32; 2], rect: [u32; 4]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(rect[2] as usize * rect[3] as usize * 4);
+    for y in rect[1]..rect[1] + rect[3] {
+        let start = ((y * size[0] + rect[0]) * 4) as usize;
+        out.extend_from_slice(&rgba[start..start + rect[2] as usize * 4]);
+    }
+    out
+}
+
+/// The sheet an export of `doc` with `options` describes: every frame
+/// composited at the canvas size, trimmed and merged as asked, packed into one
+/// decoded atlas.
+pub(super) fn from_document(
+    doc: &raw::Document,
+    name: Option<&str>,
+    options: AsepriteLoadOptions,
+) -> SpriteSheetData {
+    let canvas = doc.size;
+
+    // Each frame's pixels and where they sit in the untrimmed frame.
+    let cut: Vec<(Vec<u8>, [u32; 4])> = composite::frame_images(doc)
+        .into_iter()
+        .map(|image| {
+            if !options.trim {
+                return (image, [0, 0, canvas[0], canvas[1]]);
+            }
+            match opaque_bounds(&image, canvas) {
+                Some(bounds) => (crop(&image, canvas, bounds), bounds),
+                None => (Vec::new(), [0, 0, 0, 0]),
+            }
+        })
+        .collect();
+
+    // Which frames get a cell of their own: all of them, or the first of each
+    // set of identical ones. Empty frames take no space.
+    let mut cell_of: Vec<Option<usize>> = Vec::with_capacity(cut.len());
+    let mut cells: Vec<usize> = Vec::new();
+    for (i, (pixels, bounds)) in cut.iter().enumerate() {
+        if bounds[2] == 0 || bounds[3] == 0 {
+            cell_of.push(None);
+            continue;
+        }
+        let same = options.merge_duplicates.then(|| {
+            cells
+                .iter()
+                .position(|c| cut[*c].0 == *pixels && cut[*c].1[2..] == bounds[2..])
+        });
+        match same.flatten() {
+            Some(cell) => cell_of.push(Some(cell)),
+            None => {
+                cells.push(i);
+                cell_of.push(Some(cells.len() - 1));
+            }
+        }
+    }
+    let sizes: Vec<[u32; 2]> = cells.iter().map(|c| [cut[*c].1[2], cut[*c].1[3]]).collect();
+    let (corners, size) = pack(&sizes, options.gutter);
 
     let mut atlas = vec![0u8; size[0] as usize * size[1] as usize * 4];
-    let mut frames = Vec::with_capacity(images.len());
-    for (index, (image, at)) in images.iter().zip(&corners).enumerate() {
-        blit(&mut atlas, size[0], image, doc.size, *at);
-        let rect = PixelRect::new(at[0], at[1], doc.size[0], doc.size[1]);
+    for (cell, frame) in cells.iter().enumerate() {
+        blit(
+            &mut atlas,
+            size[0],
+            &cut[*frame].0,
+            sizes[cell],
+            corners[cell],
+        );
+    }
+
+    let mut frames = Vec::with_capacity(cut.len());
+    for (index, (_, bounds)) in cut.iter().enumerate() {
+        let rect = match cell_of[index] {
+            Some(cell) => PixelRect::new(
+                corners[cell][0],
+                corners[cell][1],
+                sizes[cell][0],
+                sizes[cell][1],
+            ),
+            None => PixelRect::default(),
+        };
         frames.push(SpriteFrame {
-            name: frame_name(name, index, images.len()),
+            name: frame_name(name, index, cut.len()),
             rect,
             uv: rect.uv(size),
             rotated: false,
-            trimmed: false,
-            source_size: doc.size,
-            source_offset: [0, 0],
+            trimmed: bounds[2] != canvas[0] || bounds[3] != canvas[1],
+            source_size: canvas,
+            source_offset: [bounds[0] as i32, bounds[1] as i32],
             pivot: None,
             duration_ms: Some(doc.frames[index].duration_ms),
         });
@@ -562,7 +647,13 @@ mod tests {
             user: None,
         }];
 
-        let sheet = decode(&doc.to_bytes(), None, Some("hero.aseprite")).unwrap();
+        let sheet = decode(
+            &doc.to_bytes(),
+            None,
+            Some("hero.aseprite"),
+            AsepriteLoadOptions::default(),
+        )
+        .unwrap();
 
         assert_eq!(sheet.app, "aseprite");
         assert_eq!((sheet.pixel_ratio, sheet.scale), ([2, 1], 1.0));
@@ -609,5 +700,100 @@ mod tests {
             matches!(&err, IoError::Parse(m) if m.contains("frames")),
             "{err:?}"
         );
+    }
+
+    /// Three 4x4 frames: a 2x2 dot at (1, 2), the same dot again, and nothing.
+    fn dotted() -> Vec<u8> {
+        use viewport_lib_io_testkit::synth::{AseCel, AseDocument, AseFrame, AseImage, AseLayer};
+        let dot = || AseImage::Raw {
+            size: [2, 2],
+            pixels: [9, 9, 9, 255].repeat(4),
+        };
+        let mut doc = AseDocument::new([4, 4], 32);
+        doc.layers = vec![AseLayer::image("a")];
+        doc.frames = vec![
+            AseFrame {
+                duration_ms: 10,
+                cels: vec![AseCel::new(0, [1, 2], dot())],
+            },
+            AseFrame {
+                duration_ms: 20,
+                cels: vec![AseCel::new(0, [1, 2], dot())],
+            },
+            AseFrame {
+                duration_ms: 30,
+                cels: vec![],
+            },
+        ];
+        doc.to_bytes()
+    }
+
+    #[test]
+    fn trim_crops_to_the_pixels_and_records_the_offset() {
+        let options = AsepriteLoadOptions::default().with_trim(true);
+        let sheet = decode(&dotted(), None, None, options).unwrap();
+        let f = &sheet.frames[0];
+        assert!(f.trimmed);
+        assert_eq!((f.rect.width, f.rect.height), (2, 2));
+        assert_eq!((f.source_size, f.source_offset), ([4, 4], [1, 2]));
+
+        let empty = &sheet.frames[2];
+        assert_eq!(
+            empty.rect,
+            PixelRect::default(),
+            "an empty frame takes no space"
+        );
+        assert_eq!((empty.source_offset, empty.duration_ms), ([0, 0], Some(30)));
+        assert!(empty.trimmed);
+        assert_eq!(sheet.size, [4, 2], "two 2x2 cells side by side");
+    }
+
+    #[test]
+    fn merged_duplicates_share_a_rect_and_keep_their_durations() {
+        let options = AsepriteLoadOptions::default()
+            .with_trim(true)
+            .with_merge_duplicates(true);
+        let sheet = decode(&dotted(), None, None, options).unwrap();
+        assert_eq!(sheet.frames[0].rect, sheet.frames[1].rect);
+        assert_eq!(
+            (sheet.frames[0].duration_ms, sheet.frames[1].duration_ms),
+            (Some(10), Some(20))
+        );
+        assert_eq!(sheet.size, [2, 2], "one cell for both");
+
+        // Untrimmed, the empty frame is a cell of its own.
+        let untrimmed = AsepriteLoadOptions::default().with_merge_duplicates(true);
+        let sheet = decode(&dotted(), None, None, untrimmed).unwrap();
+        assert_eq!(sheet.frames[0].rect, sheet.frames[1].rect);
+        assert_ne!(sheet.frames[0].rect, sheet.frames[2].rect);
+    }
+
+    #[test]
+    fn the_gutter_spaces_frames_apart() {
+        let options = AsepriteLoadOptions::default().with_gutter(2);
+        let sheet = decode(&dotted(), None, None, options).unwrap();
+        let x: Vec<u32> = sheet.frames.iter().map(|f| f.rect.x).collect();
+        assert_eq!(x, [0, 6, 0]);
+        assert_eq!(sheet.frames[2].rect.y, 6);
+        assert_eq!(sheet.size, [10, 10]);
+    }
+
+    #[test]
+    fn options_leave_a_json_sheet_as_it_is() {
+        let json = br#"{"frames": {"a": {"frame": {"x": 0, "y": 0, "w": 3, "h": 3}}}, "meta": {}}"#;
+        let plain = sprite_sheet_from_bytes(json, None).unwrap();
+        let options = AsepriteLoadOptions::default()
+            .with_trim(true)
+            .with_merge_duplicates(true)
+            .with_gutter(4);
+        assert_eq!(decode(json, None, None, options).unwrap(), plain);
+    }
+
+    #[test]
+    fn opaque_bounds_find_the_drawn_pixels() {
+        let mut rgba = vec![0u8; 3 * 2 * 4];
+        assert_eq!(opaque_bounds(&rgba, [3, 2]), None);
+        rgba[(3 + 2) * 4 + 3] = 1;
+        assert_eq!(opaque_bounds(&rgba, [3, 2]), Some([2, 1, 1, 1]));
     }
 }
