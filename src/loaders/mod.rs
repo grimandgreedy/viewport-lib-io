@@ -50,6 +50,10 @@ pub mod hdr;
 #[cfg(feature = "jpeg")]
 pub mod jpeg;
 
+/// LDtk project decoding.
+#[cfg(feature = "ldtk")]
+pub mod ldtk;
+
 /// Gmsh mesh decoding.
 #[cfg(feature = "msh")]
 pub mod msh;

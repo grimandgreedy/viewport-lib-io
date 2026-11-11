@@ -1600,6 +1600,8 @@ pub enum PropertyValue {
     File(PathBuf),
     /// A reference to a [`MapObject`] by its id, `0` for none.
     Object(u32),
+    /// A list of values, from a format whose fields can hold several.
+    List(Vec<PropertyValue>),
     /// A value of a custom class: its class name and its members.
     Class {
         /// The class name.
@@ -1706,6 +1708,49 @@ pub struct TileMapData {
     pub properties: Properties,
 }
 
+/// Several tile maps placed in one world, as an LDtk project holds its levels.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TileWorldData {
+    /// The world's name, empty for a project with a single unnamed world.
+    pub name: String,
+    /// How the levels are arranged.
+    pub layout: WorldLayout,
+    /// The levels, in the project's order.
+    pub levels: Vec<TileWorldLevel>,
+}
+
+/// One level of a [`TileWorldData`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TileWorldLevel {
+    /// The level's name.
+    pub name: String,
+    /// The level's unique id in the project.
+    pub iid: String,
+    /// The level's top-left corner in world pixels, X right and Y down.
+    pub position: [i32; 2],
+    /// Its depth in the world, for levels stacked on top of each other.
+    pub depth: i32,
+    /// The level itself.
+    pub map: TileMapData,
+}
+
+/// How the levels of a [`TileWorldData`] are arranged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum WorldLayout {
+    /// Anywhere, at their own positions.
+    #[default]
+    Free,
+    /// On a grid of cells this many pixels across, at their own positions.
+    GridVania {
+        /// Size of one world grid cell in pixels.
+        cell_size: [u32; 2],
+    },
+    /// In a row, left to right in level order.
+    LinearHorizontal,
+    /// In a column, top to bottom in level order.
+    LinearVertical,
+}
+
 /// One layer of a [`TileMapData`]: the settings every layer has, and what it
 /// holds.
 ///
@@ -1757,8 +1802,36 @@ pub enum TileLayerKind {
         /// Whether the image repeats across the X and Y axes.
         repeat: [bool; 2],
     },
+    /// A grid of integer values rather than tiles, from LDtk: collision,
+    /// terrain kinds, anything a game reads by cell.
+    IntGrid(IntGridData),
     /// A group of layers, in paint order.
     Group(Vec<TileLayerData>),
+}
+
+/// The cells of an integer grid layer, in row-major order, top row first.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct IntGridData {
+    /// Width and height in cells.
+    pub size: [u32; 2],
+    /// Size of one cell in pixels.
+    pub cell_size: [u32; 2],
+    /// `size[0] * size[1]` values, row by row from the top. `0` is an empty
+    /// cell.
+    pub values: Vec<u32>,
+    /// What each value means, as the project defines it.
+    pub definitions: Vec<IntGridValue>,
+}
+
+/// The definition of one value an integer grid holds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IntGridValue {
+    /// The value in the grid.
+    pub value: u32,
+    /// Its name, empty when unset.
+    pub name: String,
+    /// The colour the editor shows it in.
+    pub colour: Colour,
 }
 
 /// The cells of a tile layer: a dense grid in row-major order, top row first.
@@ -1769,6 +1842,9 @@ pub struct TileGrid {
     pub origin: [i32; 2],
     /// Width and height in tiles.
     pub size: [u32; 2],
+    /// Size of one cell in pixels: the map's tile size for Tiled, the layer's
+    /// own grid size for LDtk.
+    pub cell_size: [u32; 2],
     /// `size[0] * size[1]` cells, row by row from the top. A cell with no tile
     /// is [`TileCell::EMPTY`].
     pub cells: Vec<TileCell>,

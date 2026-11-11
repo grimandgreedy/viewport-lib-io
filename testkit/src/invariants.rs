@@ -629,6 +629,12 @@ fn check_layers(report: &mut Report, subject: &str, map: &TileMapData, layers: &
                 }
             }
             TileLayerKind::Objects { objects, .. } => check_objects(report, &sub, map, objects),
+            TileLayerKind::IntGrid(grid) => report.check(
+                grid.values.len() == grid.size[0] as usize * grid.size[1] as usize,
+                &sub,
+                "int-grid-size",
+                format!("{} values for {}x{}", grid.values.len(), grid.size[0], grid.size[1]),
+            ),
             TileLayerKind::Group(children) => check_layers(report, &sub, map, children),
             TileLayerKind::Image { .. } => {}
         }

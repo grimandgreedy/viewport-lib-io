@@ -697,3 +697,117 @@ pub fn tiled_template() -> String {
 "#
     .to_string()
 }
+
+fn ldtk_level_0() -> String {
+    r##"{"identifier": "Level_0", "iid": "level-0", "uid": 0, "worldX": 0, "worldY": 0, "worldDepth": 0,
+ "pxWid": 32, "pxHei": 16, "__bgColor": "#112233", "bgRelPath": "bg/sky.png",
+ "__bgPos": {"topLeftPx": [-4, 2], "scale": [1, 1], "cropRect": [0, 0, 32, 16]},
+ "fieldInstances": [{"__identifier": "music", "__type": "String", "__value": "cave", "defUid": 1}],
+ "layerInstances": [
+  {"__identifier": "Entities", "__type": "Entities", "__cWid": 2, "__cHei": 1, "__gridSize": 16,
+   "__opacity": 1, "__pxTotalOffsetX": 0, "__pxTotalOffsetY": 0, "layerDefUid": 10, "visible": true,
+   "entityInstances": [
+    {"__identifier": "Player", "iid": "p-1", "px": [8, 16], "__pivot": [0.5, 1], "width": 16, "height": 16,
+     "__tile": {"tilesetUid": 7, "x": 32, "y": 16, "w": 16, "h": 16},
+     "fieldInstances": [
+      {"__identifier": "hp", "__type": "Int", "__value": 3},
+      {"__identifier": "target", "__type": "EntityRef", "__value": {"entityIid": "c-1", "layerIid": "l", "levelIid": "level-0", "worldIid": "w"}}
+     ]},
+    {"__identifier": "Chest", "iid": "c-1", "px": [16, 0], "__pivot": [0, 0], "width": 16, "height": 16,
+     "__tile": null, "fieldInstances": []}
+   ]},
+  {"__identifier": "Walls", "__type": "IntGrid", "__cWid": 4, "__cHei": 2, "__gridSize": 8,
+   "__opacity": 0.5, "__pxTotalOffsetX": 0, "__pxTotalOffsetY": 0, "__tilesetDefUid": 7,
+   "layerDefUid": 11, "visible": true, "intGridCsv": [1, 1, 0, 0, 0, 2, 2, 0],
+   "autoLayerTiles": [{"px": [0, 0], "src": [16, 16], "f": 0, "t": 5, "d": [0], "a": 1}]},
+  {"__identifier": "Ground", "__type": "Tiles", "__cWid": 2, "__cHei": 1, "__gridSize": 16,
+   "__opacity": 1, "__pxTotalOffsetX": 4, "__pxTotalOffsetY": -2, "__tilesetDefUid": 7,
+   "layerDefUid": 12, "visible": true,
+   "gridTiles": [
+    {"px": [0, 0], "src": [0, 0], "f": 0, "t": 0, "d": [0], "a": 1},
+    {"px": [16, 0], "src": [16, 0], "f": 1, "t": 1, "d": [1], "a": 1},
+    {"px": [16, 0], "src": [48, 0], "f": 2, "t": 3, "d": [1], "a": 1}
+   ]},
+  {"__identifier": "Shadows", "__type": "AutoLayer", "__cWid": 2, "__cHei": 1, "__gridSize": 16,
+   "__opacity": 1, "__pxTotalOffsetX": 0, "__pxTotalOffsetY": 0, "__tilesetDefUid": 7,
+   "layerDefUid": 13, "visible": false,
+   "autoLayerTiles": [{"px": [0, 0], "src": [48, 16], "f": 3, "t": 7, "d": [0], "a": 1}]}
+ ]}"##
+        .to_string()
+}
+
+fn ldtk_level_1() -> String {
+    r##"{"identifier": "Level_1", "iid": "level-1", "uid": 1, "worldX": 256, "worldY": 0, "worldDepth": 1,
+ "pxWid": 16, "pxHei": 16, "__bgColor": "#000000", "bgRelPath": null, "fieldInstances": [],
+ "layerInstances": [
+  {"__identifier": "Ground", "__type": "Tiles", "__cWid": 1, "__cHei": 1, "__gridSize": 16,
+   "__opacity": 1, "__pxTotalOffsetX": 0, "__pxTotalOffsetY": 0, "__tilesetDefUid": 7,
+   "layerDefUid": 12, "visible": true,
+   "gridTiles": [{"px": [0, 0], "src": [32, 0], "f": 0, "t": 2, "d": [0], "a": 1}]}
+ ]}"##
+        .to_string()
+}
+
+/// An LDtk project of two levels in a GridVania world, sharing one tileset.
+///
+/// The first level has a layer of every kind: entities with fields and a
+/// tile, an IntGrid that also draws auto-layer tiles, a tile layer with two
+/// tiles stacked in one cell and a parallax factor, and a hidden auto layer,
+/// plus a background colour, image and a level field. The second is one tile.
+///
+/// With `external` the levels are saved separately, as LDtk does with "save
+/// levels to separate files": the project lists them by `externalRelPath`
+/// with no layers, and the returned files (path relative to the project, and
+/// contents) hold them. Either way the project decodes the same.
+pub fn ldtk_project(external: bool) -> (String, Vec<(String, String)>) {
+    let levels = [("Level_0", ldtk_level_0()), ("Level_1", ldtk_level_1())];
+    let mut files = Vec::new();
+    let listed: Vec<String> = levels
+        .iter()
+        .enumerate()
+        .map(|(i, (name, level))| {
+            if !external {
+                return level.clone();
+            }
+            let rel = format!("game/{name}.ldtkl");
+            files.push((rel.clone(), level.clone()));
+            format!(
+                r#"{{"identifier": "{name}", "iid": "level-{i}", "uid": {i}, "worldX": {}, "worldY": 0,
+ "pxWid": 16, "pxHei": 16, "externalRelPath": "{rel}", "layerInstances": null, "fieldInstances": []}}"#,
+                i * 256
+            )
+        })
+        .collect();
+
+    let project = format!(
+        r##"{{"__header__": {{"fileType": "LDtk Project JSON", "app": "LDtk"}},
+ "jsonVersion": "1.5.3", "iid": "project", "defaultGridSize": 16, "bgColor": "#40465B",
+ "worldLayout": "GridVania", "worldGridWidth": 256, "worldGridHeight": 256,
+ "externalLevels": {external},
+ "defs": {{
+  "layers": [
+   {{"uid": 10, "identifier": "Entities", "type": "Entities", "gridSize": 16}},
+   {{"uid": 11, "identifier": "Walls", "type": "IntGrid", "gridSize": 8,
+     "intGridValues": [{{"value": 1, "identifier": "wall", "color": "#FF0000"}},
+                       {{"value": 2, "identifier": "water", "color": "#0000FF"}}]}},
+   {{"uid": 12, "identifier": "Ground", "type": "Tiles", "gridSize": 16,
+     "parallaxFactorX": 0.5, "parallaxFactorY": 0}},
+   {{"uid": 13, "identifier": "Shadows", "type": "AutoLayer", "gridSize": 16}}
+  ],
+  "entities": [],
+  "tilesets": [
+   {{"uid": 7, "identifier": "Terrain", "relPath": "atlas/terrain.png", "pxWid": 64, "pxHei": 32,
+     "tileGridSize": 16, "spacing": 0, "padding": 0, "__cWid": 4, "__cHei": 2,
+     "customData": [{{"tileId": 1, "data": "grass"}}],
+     "enumTags": [{{"enumValueId": "Solid", "tileIds": [0, 2]}}]}}
+  ],
+  "enums": [], "externalEnums": [], "levelFields": []
+ }},
+ "levels": [{}],
+ "worlds": []
+}}
+"##,
+        listed.join(",\n")
+    );
+    (project, files)
+}

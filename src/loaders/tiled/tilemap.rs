@@ -102,6 +102,7 @@ struct Template {
 /// read so far.
 struct Walk {
     base: Option<PathBuf>,
+    tile_size: [u32; 2],
     tilesets: Vec<TileSetData>,
     templates: HashMap<PathBuf, Template>,
 }
@@ -194,6 +195,7 @@ pub(super) fn map(root: &Element, base: Option<&Path>) -> Result<TileMapData, Io
     }
     let mut walk = Walk {
         base: base.map(Path::to_path_buf),
+        tile_size: [u32_attr(root, "tilewidth", 0), u32_attr(root, "tileheight", 0)],
         tilesets: Vec::new(),
         templates: HashMap::new(),
     };
@@ -265,6 +267,7 @@ pub(super) fn standalone_tileset(root: &Element, path: &Path) -> Result<TileSetD
     }
     let mut walk = Walk {
         base: path.parent().map(Path::to_path_buf),
+        tile_size: [0, 0],
         tilesets: Vec::new(),
         templates: HashMap::new(),
     };
@@ -436,6 +439,7 @@ fn grid(walk: &Walk, layer: &Element) -> Result<TileGrid, IoError> {
         return Ok(TileGrid {
             origin: [0, 0],
             size,
+            cell_size: walk.tile_size,
             cells,
         });
     }
@@ -473,6 +477,7 @@ fn grid(walk: &Walk, layer: &Element) -> Result<TileGrid, IoError> {
     Ok(TileGrid {
         origin: lo,
         size,
+        cell_size: walk.tile_size,
         cells,
     })
 }

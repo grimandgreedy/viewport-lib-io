@@ -11,7 +11,7 @@
 //! ```
 
 use viewport_lib_io::error::IoError;
-use viewport_lib_io::types::{PointSet, SceneData, TileMapData};
+use viewport_lib_io::types::{PointSet, SceneData, TileMapData, TileWorldData};
 use viewport_lib_io::viewport_lib_types::data::mesh::MeshData;
 
 use crate::invariants::{check_mesh, check_point_set, check_scene, check_tilemap};
@@ -133,6 +133,33 @@ where
     assert!(
         first == second,
         "{label} decoded a different map the second time"
+    );
+
+    first
+}
+
+/// Decode a set of tile worlds twice, check every level's invariants, and hand
+/// back the first.
+#[track_caller]
+pub fn worlds<F>(label: &str, decode: F) -> Vec<TileWorldData>
+where
+    F: Fn() -> Result<Vec<TileWorldData>, IoError>,
+{
+    let first = decode().unwrap_or_else(|e| panic!("{label} failed to decode: {e}"));
+    for world in &first {
+        for level in &world.levels {
+            check_tilemap(
+                &format!("{label} / {} / {}", world.name, level.name),
+                &level.map,
+            )
+            .expect_clean();
+        }
+    }
+
+    let second = decode().unwrap_or_else(|e| panic!("{label} failed to decode a second time: {e}"));
+    assert!(
+        first == second,
+        "{label} decoded different worlds the second time"
     );
 
     first
