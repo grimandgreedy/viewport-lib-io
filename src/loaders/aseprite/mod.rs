@@ -16,6 +16,8 @@ use crate::types::SpriteSheetData;
 
 // Read only by the tests until the document path is wired into the sheet.
 #[allow(dead_code)]
+mod composite;
+#[allow(dead_code)]
 mod raw;
 mod sheet;
 
