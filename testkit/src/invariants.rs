@@ -5,8 +5,9 @@
 //! thing at a time.
 
 use viewport_lib_io::types::{
-    AnimationTrackValues, BitmapFontData, MapObject, PointSet, SceneData, SceneMesh, Skeleton,
-    SpriteSheetData, TileCell, TileLayerData, TileLayerKind, TileMapData, TileSetData,
+    AnimationTrackValues, BitmapFontData, LayeredSpriteData, MapObject, PointSet, SceneData,
+    SceneMesh, Skeleton, SpriteSheetData, TileCell, TileLayerData, TileLayerKind, TileMapData,
+    TileSetData,
 };
 use viewport_lib_io::viewport_lib_types::data::attribute::AttributeData;
 use viewport_lib_io::viewport_lib_types::data::mesh::MeshData;
@@ -720,6 +721,61 @@ pub fn check_bitmap_font(subject: &str, font: &BitmapFontData) -> Report {
             subject,
             "kerning-glyphs",
             format!("pair ({first}, {second}) names a glyph the font does not have"),
+        );
+    }
+    report
+}
+
+/// Check a decoded layered sprite: every layer's parent is an earlier group,
+/// every cel is on an image layer the sprite has with at most one cel per
+/// layer per frame, every cel image holds one RGBA pixel per its size, and
+/// every animation names frames the sprite has.
+pub fn check_layered_sprite(subject: &str, sprite: &LayeredSpriteData) -> Report {
+    use viewport_lib_io::types::SpriteLayerKind;
+    use viewport_lib_io::viewport_lib_types::data::texture::TexturePayload;
+
+    let mut report = Report::default();
+    for (i, layer) in sprite.layers.iter().enumerate() {
+        if let Some(parent) = layer.parent {
+            report.check(
+                (parent as usize) < i
+                    && sprite.layers[parent as usize].kind == SpriteLayerKind::Group,
+                &format!("{subject} / layer {}", layer.name),
+                "layer-parent",
+                format!("parent {parent} is not an earlier group"),
+            );
+        }
+    }
+    for (f, frame) in sprite.frames.iter().enumerate() {
+        let mut seen = Vec::new();
+        for cel in &frame.cels {
+            let sub = format!("{subject} / frame[{f}] / cel on layer {}", cel.layer);
+            let layer = sprite.layers.get(cel.layer as usize);
+            report.check(
+                layer.is_some_and(|l| l.kind == SpriteLayerKind::Image),
+                &sub,
+                "cel-layer",
+                "not on an image layer the sprite has",
+            );
+            report.check(
+                !seen.contains(&cel.layer),
+                &sub,
+                "cel-per-layer",
+                "a second cel on the layer in one frame",
+            );
+            seen.push(cel.layer);
+            let want = cel.image.width() as usize * cel.image.height() as usize * 4;
+            let ok = matches!(cel.image.payload(), TexturePayload::Rgba8(p) if p.len() == want);
+            report.check(ok, &sub, "cel-image", "not RGBA8 of its size");
+        }
+    }
+    let count = sprite.frames.len() as u32;
+    for animation in &sprite.animations {
+        report.check(
+            animation.first <= animation.last && animation.last < count,
+            &format!("{subject} / animation {}", animation.name),
+            "sprite-animation-range",
+            format!("frames {}..={} of {count}", animation.first, animation.last),
         );
     }
     report

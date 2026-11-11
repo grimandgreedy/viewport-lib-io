@@ -1369,3 +1369,122 @@ impl AseDocument {
         out
     }
 }
+
+impl AseDocument {
+    /// The JSON sheet Aseprite's default export of this document, saved as
+    /// `file_name`, writes beside its atlas: hash layout, frames untrimmed in
+    /// a horizontal strip and named `{title} {frame}.{extension}` (just the
+    /// file name for one frame), with tags and slices.
+    pub fn export_json(&self, file_name: &str) -> String {
+        let [w, h] = [self.size[0] as u32, self.size[1] as u32];
+        let count = self.frames.len();
+        let name = |i: usize| match (count, file_name.rsplit_once('.')) {
+            (1, _) => file_name.to_string(),
+            (_, Some((stem, ext))) => format!("{stem} {i}.{ext}"),
+            (_, None) => format!("{file_name} {i}"),
+        };
+        let hex = |c: [u8; 4]| format!("#{:02x}{:02x}{:02x}{:02x}", c[0], c[1], c[2], c[3]);
+
+        let frames: Vec<String> = self
+            .frames
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                format!(
+                    r#"  "{}": {{"frame": {{"x": {}, "y": 0, "w": {w}, "h": {h}}}, "rotated": false, "trimmed": false,
+   "spriteSourceSize": {{"x": 0, "y": 0, "w": {w}, "h": {h}}}, "sourceSize": {{"w": {w}, "h": {h}}}, "duration": {}}}"#,
+                    name(i),
+                    i as u32 * w,
+                    f.duration_ms
+                )
+            })
+            .collect();
+        let tags: Vec<String> = self
+            .tags
+            .iter()
+            .map(|t| {
+                let direction = ["forward", "reverse", "pingpong", "pingpong_reverse"]
+                    .get(t.direction as usize)
+                    .unwrap_or(&"forward");
+                let colour = t
+                    .user
+                    .as_ref()
+                    .map_or([t.rgb[0], t.rgb[1], t.rgb[2], 255], |u| u.1);
+                let mut tag = format!(
+                    r#"{{"name": "{}", "from": {}, "to": {}, "direction": "{direction}", "color": "{}""#,
+                    t.name,
+                    t.from,
+                    t.to,
+                    hex(colour)
+                );
+                if t.repeat > 0 {
+                    tag.push_str(&format!(r#", "repeat": "{}""#, t.repeat));
+                }
+                if let Some((text, _)) = &t.user {
+                    tag.push_str(&format!(r#", "data": "{text}""#));
+                }
+                tag.push('}');
+                tag
+            })
+            .collect();
+        let slices: Vec<String> = self
+            .slices
+            .iter()
+            .map(|s| {
+                let keys: Vec<String> = s
+                    .keys
+                    .iter()
+                    .map(|k| {
+                        let b = k.bounds;
+                        let mut key = format!(
+                            r#"{{"frame": {}, "bounds": {{"x": {}, "y": {}, "w": {}, "h": {}}}"#,
+                            k.frame, b[0], b[1], b[2], b[3]
+                        );
+                        if let Some(c) = k.centre {
+                            key.push_str(&format!(
+                                r#", "center": {{"x": {}, "y": {}, "w": {}, "h": {}}}"#,
+                                c[0], c[1], c[2], c[3]
+                            ));
+                        }
+                        if let Some(p) = k.pivot {
+                            key.push_str(&format!(
+                                r#", "pivot": {{"x": {}, "y": {}}}"#,
+                                p[0], p[1]
+                            ));
+                        }
+                        key.push('}');
+                        key
+                    })
+                    .collect();
+                let mut slice = format!(r#"{{"name": "{}""#, s.name);
+                if let Some((text, colour)) = &s.user {
+                    slice.push_str(&format!(
+                        r#", "color": "{}", "data": "{text}""#,
+                        hex(*colour)
+                    ));
+                }
+                slice.push_str(&format!(r#", "keys": [{}]}}"#, keys.join(", ")));
+                slice
+            })
+            .collect();
+        let stem = file_name.rsplit_once('.').map_or(file_name, |(s, _)| s);
+        format!(
+            r#"{{ "frames": {{
+{}
+ }},
+ "meta": {{
+  "app": "https://www.aseprite.org/", "version": "1.3.7", "image": "{stem}.png",
+  "format": "RGBA8888", "size": {{"w": {}, "h": {h}}}, "scale": "1",
+  "frameTags": [{}],
+  "layers": [],
+  "slices": [{}]
+ }}
+}}
+"#,
+            frames.join(",\n"),
+            w * count as u32,
+            tags.join(", "),
+            slices.join(", ")
+        )
+    }
+}

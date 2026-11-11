@@ -37,7 +37,7 @@ viewport-lib-io = { version = "0.9", features = ["all-formats"] }
 One feature per format: `png`, `jpeg`, `tga`, `bmp`, `hdr`, `exr`, `svg`, `stl`,
 `obj`, `msh`, `gltf`, `fbx`, `bvh`, `ply`, `csv`, `numpy`, `raw`, `vtk`, `xdmf`,
 `exodus`, `ensight`, `tecplot`, `cgns`, `netcdf`, and for 2D assets `tiled`,
-`ldtk`, `aseprite` (which also reads TexturePacker JSON) and `bmfont`. `xdmf`, `exodus` and `cgns`
+`ldtk`, `aseprite` (Aseprite documents and JSON exports, and TexturePacker JSON) and `bmfont`. `xdmf`, `exodus` and `cgns`
 build the HDF5 C library statically and need `cmake`.
 
 Three more extend `gltf` to compressed assets: `gltf-draco`
@@ -175,12 +175,22 @@ let worlds = viewport_lib_io::loaders::ldtk::worlds_from_path("game.ldtk".as_ref
 let first_level = &worlds[0].levels[0].map;
 ```
 
-Sprite sheets (Aseprite or TexturePacker JSON) and bitmap fonts (BMFont):
+Sprite sheets (an Aseprite document, or Aseprite or TexturePacker JSON) and
+bitmap fonts (BMFont). A document is composited and packed into a decoded
+atlas, as a default export would be:
 
 ```rust
-let sheet = viewport_lib_io::loaders::aseprite::sprite_sheet_from_path("hero.json".as_ref())?;
+use viewport_lib_io::loaders::aseprite::{self, AsepriteLoadOptions};
+
+let sheet = aseprite::sprite_sheet_from_path("hero.json".as_ref())?;
 let walk = sheet.animations.iter().find(|a| a.name == "walk");
 let uv = sheet.frames[0].uv; // [u_min, v_min, u_max, v_max], v down
+
+let options = AsepriteLoadOptions::default().with_trim(true).with_gutter(1);
+let packed = aseprite::sprite_sheet_from_path_with_options("hero.aseprite".as_ref(), options)?;
+
+// The layers and cels, unflattened.
+let parts = aseprite::layered_sprite_from_path("hero.aseprite".as_ref())?;
 
 let font = viewport_lib_io::loaders::bmfont::bitmap_font_from_path("ui.fnt".as_ref())?;
 let a = font.glyphs[&('A' as u32)];

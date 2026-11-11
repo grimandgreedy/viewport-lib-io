@@ -9,9 +9,9 @@
 //! files and embedded colour profiles are not decoded; each is named in
 //! [`unsupported`](crate::types::SpriteSheetData::unsupported).
 //!
-//! [`layered_sprite_from_path`] reads a document without flattening it: the
-//! canvas, the layers and each frame's cels, for a consumer that draws a
-//! sprite in parts or hides a layer.
+//! [`layered_sprite_from_path`](crate::loaders::aseprite::layered_sprite_from_path)
+//! reads a document without flattening it: the canvas, the layers and each
+//! frame's cels, for a consumer that draws a sprite in parts or hides a layer.
 //!
 //! TexturePacker writes the same JSON shape as Aseprite, so its sheets read
 //! here too, as does any other JSON with a `frames` member in that shape, in

@@ -12,12 +12,14 @@
 
 use viewport_lib_io::error::IoError;
 use viewport_lib_io::types::{
-    BitmapFontData, PointSet, SceneData, SpriteSheetData, TileMapData, TileWorldData,
+    BitmapFontData, LayeredSpriteData, PointSet, SceneData, SpriteSheetData, TileMapData,
+    TileWorldData,
 };
 use viewport_lib_io::viewport_lib_types::data::mesh::MeshData;
 
 use crate::invariants::{
-    check_bitmap_font, check_mesh, check_point_set, check_scene, check_sprite_sheet, check_tilemap,
+    check_bitmap_font, check_layered_sprite, check_mesh, check_point_set, check_scene,
+    check_sprite_sheet, check_tilemap,
 };
 
 /// One mesh as a consumer addresses it: its name, its size, and what it points
@@ -200,6 +202,25 @@ where
     assert!(
         first == second,
         "{label} decoded a different font the second time"
+    );
+
+    first
+}
+
+/// Decode a layered sprite twice, check the invariants, and hand back the
+/// first.
+#[track_caller]
+pub fn layered_sprite<F>(label: &str, decode: F) -> LayeredSpriteData
+where
+    F: Fn() -> Result<LayeredSpriteData, IoError>,
+{
+    let first = decode().unwrap_or_else(|e| panic!("{label} failed to decode: {e}"));
+    check_layered_sprite(label, &first).expect_clean();
+
+    let second = decode().unwrap_or_else(|e| panic!("{label} failed to decode a second time: {e}"));
+    assert!(
+        first == second,
+        "{label} decoded a different layered sprite the second time"
     );
 
     first

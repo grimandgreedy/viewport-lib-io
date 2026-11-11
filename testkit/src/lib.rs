@@ -26,6 +26,6 @@ pub mod synth;
 
 pub use determinism::{decode_twice_identical, decode_twice_matches};
 pub use invariants::{
-    Report, Violation, check_bitmap_font, check_mesh, check_point_set, check_scene,
-    check_scene_mesh, check_skeleton, check_sprite_sheet, check_tilemap,
+    Report, Violation, check_bitmap_font, check_layered_sprite, check_mesh, check_point_set,
+    check_scene, check_scene_mesh, check_skeleton, check_sprite_sheet, check_tilemap,
 };
