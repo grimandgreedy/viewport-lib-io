@@ -20,7 +20,7 @@ This crate should not:
 ## Public Layout
 
 - `loaders/` contains source-format entrypoints
-- `types.rs` contains the decoded data models this crate owns: scenes, materials, skeletons and animation, point sets, volumes, vector art
+- `types.rs` contains the decoded data models this crate owns: scenes, materials, skeletons and animation, point sets, volumes, vector art, tile maps, sprite sheets, bitmap fonts
 - `viewport_lib_types` is re-exported, so the shared types are reachable without a second dependency
 
 Supported loader modules are listed in `loaders/` with their extension, e.g., `loaders/png.rs`
@@ -36,7 +36,8 @@ viewport-lib-io = { version = "0.9", features = ["all-formats"] }
 
 One feature per format: `png`, `jpeg`, `tga`, `bmp`, `hdr`, `exr`, `svg`, `stl`,
 `obj`, `msh`, `gltf`, `fbx`, `bvh`, `ply`, `csv`, `numpy`, `raw`, `vtk`, `xdmf`,
-`exodus`, `ensight`, `tecplot`, `cgns`, `netcdf`. `xdmf`, `exodus` and `cgns`
+`exodus`, `ensight`, `tecplot`, `cgns`, `netcdf`, and for 2D assets `tiled`,
+`ldtk`, `sprite-sheet` and `bmfont`. `xdmf`, `exodus` and `cgns`
 build the HDF5 C library statically and need `cmake`.
 
 Three more extend `gltf` to compressed assets: `gltf-draco`
@@ -136,6 +137,54 @@ The stored units are undone on the way in: scales are logarithms, opacity is a
 logit, and the quaternion is written `w` first and unnormalised. The
 spherical-harmonic degree is read from how many `f_rest_*` properties the file
 carries.
+
+SVG as vector paths rather than pixels, with gradients and stroke style, in
+the SVG canvas frame (Y down):
+
+```rust
+let art = viewport_lib_io::loaders::svg::vector_from_path("icon.svg".as_ref())?;
+for shape in &art.shapes {
+    // Gradients are relative to the overlay item's box, here the whole art.
+    let fill = shape
+        .fill
+        .as_ref()
+        .map(|paint| paint.to_overlay_fill([0.0, 0.0, art.size[0], art.size[1]]));
+    // Lengths scale from the art's units to logical pixels.
+    let stroke = shape.stroke.as_ref().map(|s| s.to_overlay_stroke(scale));
+}
+```
+
+Tile maps from Tiled (`.tmx`, `.tmj`) or LDtk (`.ldtk`), in a Y-down pixel
+frame. External tilesets, templates and level files are read from beside the
+map; images are left as paths:
+
+```rust
+use viewport_lib_io::types::TileLayerKind;
+
+let map = viewport_lib_io::loaders::tiled::tilemap_from_path("level.tmx".as_ref())?;
+for layer in &map.layers {
+    if let TileLayerKind::Tiles(grid) = &layer.kind {
+        for cell in grid.cells.iter().filter(|c| !c.is_empty()) {
+            let tileset = &map.tilesets[cell.tileset as usize];
+            let pixels = tileset.tile_rect(cell.index); // where in the atlas
+        }
+    }
+}
+
+let worlds = viewport_lib_io::loaders::ldtk::worlds_from_path("game.ldtk".as_ref())?;
+let first_level = &worlds[0].levels[0].map;
+```
+
+Sprite sheets (Aseprite or TexturePacker JSON) and bitmap fonts (BMFont):
+
+```rust
+let sheet = viewport_lib_io::loaders::sprite_sheet::sprite_sheet_from_path("hero.json".as_ref())?;
+let walk = sheet.animations.iter().find(|a| a.name == "walk");
+let uv = sheet.frames[0].uv; // [u_min, v_min, u_max, v_max], v down
+
+let font = viewport_lib_io::loaders::bmfont::bitmap_font_from_path("ui.fnt".as_ref())?;
+let a = font.glyphs[&('A' as u32)];
+```
 
 ## Versions
 
