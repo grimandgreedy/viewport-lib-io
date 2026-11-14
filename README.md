@@ -30,8 +30,8 @@ Supported loader modules are listed in `loaders/` with their extension, e.g., `l
 No format is enabled by default. Name the ones you read, or take them all:
 
 ```toml
-viewport-lib-io = { version = "0.9", features = ["png", "gltf"] }
-viewport-lib-io = { version = "0.9", features = ["all-formats"] }
+viewport-lib-io = { version = "0.10", features = ["png", "gltf"] }
+viewport-lib-io = { version = "0.10", features = ["all-formats"] }
 ```
 
 One feature per format: `png`, `jpeg`, `tga`, `bmp`, `hdr`, `exr`, `svg`, `stl`,
@@ -200,6 +200,7 @@ let a = font.glyphs[&('A' as u32)];
 
 | viewport-lib-io | viewport-lib | viewport-lib-types |
 | --- | --- | --- |
+| 0.10.0 | 0.24 | 0.4 |
 | 0.9.0 | 0.23 | 0.3 |
 | 0.8.0 | 0.23 | - |
 | 0.7.0 | 0.21 - 0.22 | - |
